@@ -10,6 +10,7 @@ import { buildRouter, type MutableCapabilityRouter } from './capabilities/routin
 import type { Capability, CapabilityInitDeps } from './capabilities/capability.js';
 import { CalendarCapability } from './capabilities/calendar/capability.js';
 import { ConfigurationCapability } from './capabilities/configuration/capability.js';
+import { GeneralChatCapability } from './capabilities/general_chat/capability.js';
 import { InstagramMonitorCapability } from './capabilities/instagram_monitor/capability.js';
 import { createClient } from './discord/client.js';
 import { registerHandlers } from './discord/handlers.js';
@@ -41,6 +42,7 @@ export async function run(): Promise<void> {
     configCap,
     new CalendarCapability(),
     new InstagramMonitorCapability(),
+    new GeneralChatCapability(),
   ];
 
   const initDepsFor = (cap: Capability): CapabilityInitDeps => ({

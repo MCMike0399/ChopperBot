@@ -6,6 +6,7 @@ import { buildHistory, normalizeTurns, type Turn } from './history.js';
 import { resolveAttachments } from '../attachments/resolver.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { CapabilityRouter } from '../capabilities/routing.js';
+import { GENERAL_CHAT_CAPABILITY_ID } from '../capabilities/general_chat/constants.js';
 import type { UserDirectory } from '../users/store.js';
 
 export interface HandlerDeps {
@@ -69,11 +70,16 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
       let reply: string;
       try {
         const capabilityId = deps.router.resolve(message.channelId);
-        const capability = capabilityId ? deps.registry.get(capabilityId) : undefined;
+        let capability = capabilityId ? deps.registry.get(capabilityId) : undefined;
+        if (!capability) {
+          // Fallback: any unbound channel in a guild the bot is in falls
+          // through to general_chat for a conversational intro + redirect.
+          capability = deps.registry.get(GENERAL_CHAT_CAPABILITY_ID);
+        }
         if (!capability) {
           log.error(
             { channelId: message.channelId, capabilityId },
-            'No capability registered for channel — refusing to answer',
+            'No capability resolvable for channel (general_chat not registered either) — refusing to answer',
           );
           return;
         }
@@ -139,13 +145,14 @@ export function shouldRespond(
     log.debug({ user: message.author.tag, reason: 'author_is_bot' }, 'Ignoring message');
     return false;
   }
-  if (authorizedChannels.size === 0) {
-    log.warn({ reason: 'no_channels_configured' }, 'Ignoring message');
-    return false;
-  }
-  if (!authorizedChannels.has(message.channelId)) {
+  // Specialized bindings always win. Otherwise, any channel inside a guild the
+  // bot is in is allowed (general_chat will pick it up as the fallback in the
+  // handler). DMs (message.guild == null) still require explicit authorization.
+  const inAuthorizedSet = authorizedChannels.has(message.channelId);
+  const inGuild = message.guild != null;
+  if (!inAuthorizedSet && !inGuild) {
     log.debug(
-      { channelId: message.channelId, guildId: message.guildId ?? 'DM', reason: 'unauthorized_channel' },
+      { channelId: message.channelId, reason: 'dm_not_authorized' },
       'Ignoring message',
     );
     return false;

@@ -15,12 +15,14 @@ interface MsgOverrides {
   mentioned?: boolean;
   isReplyToBot?: boolean;
   refId?: string;
+  inGuild?: boolean;
 }
 
 function makeMessage(o: MsgOverrides = {}): Message {
   return {
     author: { bot: o.authorBot ?? false },
     channelId: o.channelId ?? CHANNEL,
+    guild: o.inGuild ? { id: '40000000000000000001' } : null,
     mentions: {
       users: { has: (id: string) => (o.mentioned ? id === BOT_ID : false) },
       repliedUser: o.isReplyToBot ? { id: BOT_ID } : null,
@@ -104,6 +106,26 @@ describe('shouldRespond (live authorized-channel set is passed in per call)', ()
     expect(shouldRespond(makeClient(), makeMessage({ mentioned: true }), auth)).toBe(false);
     auth.add(CHANNEL);
     expect(shouldRespond(makeClient(), makeMessage({ mentioned: true }), auth)).toBe(true);
+  });
+
+  test('responds to an @mention in any guild channel even if not in the authorized set (general_chat fallback)', () => {
+    expect(
+      shouldRespond(
+        makeClient(),
+        makeMessage({ mentioned: true, channelId: '99999999999999999999', inGuild: true }),
+        new Set([CHANNEL]),
+      ),
+    ).toBe(true);
+  });
+
+  test('still ignores DMs (no guild) when not in the authorized set', () => {
+    expect(
+      shouldRespond(
+        makeClient(),
+        makeMessage({ mentioned: true, channelId: '99999999999999999999', inGuild: false }),
+        new Set([CHANNEL]),
+      ),
+    ).toBe(false);
   });
 });
 

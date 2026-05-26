@@ -11,6 +11,7 @@ import { CalendarStore } from '../calendar/store.js';
 import { formatInTimezone } from '../calendar/time.js';
 import type { UserDirectory } from '../../users/store.js';
 import { CONFIGURATION_CAPABILITY_ID, CONFIGURATION_CHANNEL_ID } from './constants.js';
+import { GENERAL_CHAT_CAPABILITY_ID } from '../general_chat/constants.js';
 import { ConfigurationStore } from './store.js';
 
 export interface ConfigurationToolSourceDeps {
@@ -283,6 +284,15 @@ export class ConfigurationToolSource implements ToolSource {
         payload: {
           error:
             "The 'configuration' capability is bound to a single hardcoded channel and cannot be assigned elsewhere.",
+        },
+      };
+    }
+    if (capability === GENERAL_CHAT_CAPABILITY_ID) {
+      return {
+        status: 'error',
+        payload: {
+          error:
+            "The 'general_chat' capability is the bot's baseline fallback and cannot be bound to a specific channel — it runs automatically wherever no other capability is bound.",
         },
       };
     }
