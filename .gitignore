@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+*.pem
+*.log
+.DS_Store
+data/
+.claude/
+logs/
+coverage/
+*.tsbuildinfo
