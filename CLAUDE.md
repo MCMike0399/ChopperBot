@@ -29,7 +29,12 @@ This `ChopperBot-public` directory is the **open-source mirror**. The actually-d
 
 ## Architecture
 
-**One Discord channel = exactly one Capability.** A Capability is a self-contained bundle of system prompt + tools + private SQLite namespace. Three ship: `configuration` (admin console, hardcoded to one channel), `calendar` (per-channel/per-user events with daily/weekly/monthly recurrence), `instagram_monitor` (autonomous background poller).
+**One Discord channel = at most one specialized Capability**, with `general_chat` as the baseline fallback for any unbound guild channel. A Capability is a self-contained bundle of system prompt + tools + private SQLite namespace. Four ship today:
+
+- `configuration` — admin console, hardcoded to one channel.
+- `calendar` — **per-user globally**: events belong to a Discord user, visible from any channel bound to the capability. No channel scoping. Daily/weekly/monthly recurrence.
+- `instagram_monitor` — global account list + fan-out: one row per IG username, posts pushed to **every channel currently bound to the capability**. Per-channel dedup table gives newly-bound channels no backfill.
+- `general_chat` — baseline conversation/redirect. Never bound to a channel; runs automatically when the bot is @-mentioned in any guild channel that has no specialized binding.
 
 ### Boot sequence (`src/app.ts`)
 
@@ -75,7 +80,14 @@ Single SQLite file, **one row per capability+version in `_migrations`** (see `sr
 
 ### Instagram monitor scheduler
 
-`InstagramMonitorScheduler` ticks every minute (`DEFAULT_TICK_MS`), polls each due account every ~20 min (`DEFAULT_POLL_INTERVAL_MS`), with `ACCOUNTS_PER_TICK=3` and `MAX_PUSHES_PER_ACCOUNT_PER_TICK=5`. **First-ever poll for an account seeds the dedup anchor and does NOT backfill** — only posts strictly newer than the last seen IG post id are processed. Posts are pushed to Discord in chronological order even though the IG endpoint returns newest-first.
+`InstagramMonitorScheduler` ticks every minute (`DEFAULT_TICK_MS`), polls each due account every ~20 min (`DEFAULT_POLL_INTERVAL_MS`), with `ACCOUNTS_PER_TICK=3` and `MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL=5`. **First-ever poll for an account seeds the dedup anchor and does NOT backfill** — only posts strictly newer than the last seen IG post id are processed.
+
+**Accounts are global** (one row per username, `instagram_monitor_accounts.UNIQUE(username)`). On every detection cycle the scheduler reads the live router for the list of channels currently bound to `instagram_monitor` and **fans out each new post to every bound channel** with per-channel dedup via `instagram_monitor_seen_posts (ig_post_id, channel_id)`. Consequences:
+- A newly-bound channel sees no backfill — its `seen_posts` rows start empty and the global `last_post_id` anchor is already current.
+- If no channels are bound when a poll fires, the anchor still advances; no posts are classified or recorded as seen.
+- Pause / remove / force-poll affect every bound channel.
+
+Posts are pushed in chronological order even though the IG endpoint returns newest-first.
 
 In production, IG fetches go through an AWS Lambda relay (`INSTAGRAM_RELAY_LAMBDA_ARN`, region `AWS_REGION_LAMBDA_RELAY`, default `us-west-2`) so the outbound IP rotates from the Lambda pool. Unset → direct fetch from this Node process (fine for dev, risks IP throttling in prod). Direct mode requires the spoofed `sec-fetch-*` headers in `fetcher.ts` because Node's undici sends `sec-fetch-site: cross-site` by default and IG rejects it with a 400.
 

@@ -17,15 +17,16 @@ import { formatInTimezone, DEFAULT_TIMEZONE } from './time.js';
 const SNAPSHOT_LIMIT = 5;
 
 /**
- * Calendar capability: a shared per-channel calendar backed by SQLite. The
- * tools (create/list/search/update/delete events) are exposed to the model;
- * the system prompt is rebuilt every turn so it includes the current time
- * and a snapshot of the next few events.
+ * Calendar capability: a per-USER calendar backed by SQLite. A user sees the
+ * same calendar from any channel bound to this capability — events are not
+ * channel-scoped. The tools (create/list/search/update/delete events) are
+ * exposed to the model; the system prompt is rebuilt every turn so it
+ * includes the current time and a snapshot of the user's next few events.
  */
 export class CalendarCapability implements Capability {
   readonly id = 'calendar';
   readonly description =
-    'Shared per-channel calendar. Create, list, search, update, and delete events. Persistent across restarts.';
+    'Per-user calendar. Each Discord user has their own events, visible from any channel bound to this capability. Create, list, search, update, and delete.';
 
   private store: CalendarStore | null = null;
 
@@ -38,16 +39,10 @@ export class CalendarCapability implements Capability {
   async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
     if (!this.store) throw new Error('CalendarCapability.buildTurn called before init');
 
-    const upcoming = this.store.listUpcoming(
-      ctx.channelId,
-      ctx.userId,
-      'mine',
-      ctx.now.getTime(),
-      SNAPSHOT_LIMIT,
-    );
+    const upcoming = this.store.listUpcoming(ctx.userId, ctx.now.getTime(), SNAPSHOT_LIMIT);
     const system = renderSystemPrompt(ctx.now, upcoming);
 
-    const source = new CalendarToolSource(this.store, ctx.channelId, ctx.userId, ctx.now.getTime());
+    const source = new CalendarToolSource(this.store, ctx.userId, ctx.now.getTime());
     const tools = composeToolSources([source]);
 
     return { system, tools };
@@ -69,7 +64,7 @@ function renderSystemPrompt(now: Date, upcoming: CalendarOccurrence[]): string {
         })
         .join('\n');
 
-  return `You are ChopperBot in **Calendar mode**. You manage a shared calendar for this Discord channel.
+  return `You are ChopperBot in **Calendar mode**. You manage a per-user calendar for the Discord user talking to you.
 
 # Time awareness
 - Current UTC time: ${now.toISOString()}
@@ -106,13 +101,10 @@ Mirror the user's language. If they write in Spanish, respond in Spanish. If in 
 - Never end with an invitation to keep talking ("anything else?", "let me know"). Close the topic.
 
 # Per-user scoping (important)
-- Every event has an owner (the Discord user who created it). By default tools return ONLY the calling user's events — "what's on my calendar" lists *their* events, not the channel-wide list.
-- When the user explicitly asks about the team, channel, shared, or everyone's calendar ("what's on the team calendar?", "qué tiene agendado el equipo?", "show me everyone's events"), pass \`scope: "all"\` on the read tools (\`calendar_list_upcoming\`, \`calendar_search_events\`, \`calendar_get_event\`).
-- \`calendar_create_event\` always tags the new event with the calling user. \`calendar_update_event\` and \`calendar_delete_event\` only succeed on events the calling user owns — you cannot edit or remove another user's events.
+- Every event belongs to a Discord user — the user talking to you right now. You can ONLY see and modify their events. The capability is per-user globally: the same user sees the same events from any channel bound to this calendar.
+- There is no team / channel / shared calendar mode. If a user asks to see "the team calendar" or another user's events, explain that calendars are per-user and that an admin can inspect cross-user data from the configuration channel.
 
-# Upcoming events for the CURRENT user in this channel
+# Upcoming events for this user
 ${upcomingSection}
-
-(This snapshot is filtered to the calling user. Call \`calendar_list_upcoming\` with \`scope: "all"\` to see the rest of the channel.)
 `;
 }

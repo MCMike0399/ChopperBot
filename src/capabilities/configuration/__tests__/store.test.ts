@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
-import { CALENDAR_MIGRATIONS, CalendarStore } from '../../calendar/store.js';
+import { INSTAGRAM_MONITOR_MIGRATIONS, InstagramMonitorStore } from '../../instagram_monitor/store.js';
 import {
   CONFIGURATION_CAPABILITY_ID,
   CONFIGURATION_CHANNEL_ID,
@@ -159,21 +159,59 @@ describe('ConfigurationStore — purgeChannelData (capability-agnostic)', () => 
   test('deletes only rows in tables prefixed with the capability id AND carrying channel_id', async () => {
     const memory = new SqliteMemoryStore({ path: ':memory:' });
     await memory.migrate(CONFIGURATION_CAPABILITY_ID, CONFIGURATION_MIGRATIONS);
-    await memory.migrate('calendar', CALENDAR_MIGRATIONS);
+    await memory.migrate('instagram_monitor', INSTAGRAM_MONITOR_MIGRATIONS);
     const store = new ConfigurationStore(memory.db());
-    const cal = new CalendarStore(memory.db());
+    const ig = new InstagramMonitorStore(memory.db());
 
-    cal.create({ channel_id: CH_A, discord_user_id: 'u', title: 't1', start_at: Date.now() + 10_000 });
-    cal.create({ channel_id: CH_A, discord_user_id: 'u', title: 't2', start_at: Date.now() + 20_000 });
-    cal.create({ channel_id: CH_B, discord_user_id: 'u', title: 't3', start_at: Date.now() + 30_000 });
+    // instagram_monitor_accounts is GLOBAL (no channel_id) so it won't be
+    // touched by purge. instagram_monitor_seen_posts is still per-channel
+    // and IS what purge targets.
+    ig.upsertAccount({ username: 'foo', added_by: 'u' });
+    ig.recordSeen({
+      channel_id: CH_A,
+      ig_post_id: 'P1',
+      account_username: 'foo',
+      caption: null,
+      media_type: null,
+      posted_at: null,
+      classification_json: null,
+      pushed: true,
+      discord_message_id: 'm1',
+    });
+    ig.recordSeen({
+      channel_id: CH_A,
+      ig_post_id: 'P2',
+      account_username: 'foo',
+      caption: null,
+      media_type: null,
+      posted_at: null,
+      classification_json: null,
+      pushed: false,
+      discord_message_id: null,
+    });
+    ig.recordSeen({
+      channel_id: CH_B,
+      ig_post_id: 'P3',
+      account_username: 'foo',
+      caption: null,
+      media_type: null,
+      posted_at: null,
+      classification_json: null,
+      pushed: true,
+      discord_message_id: 'm3',
+    });
 
-    const result = store.purgeChannelData('calendar', CH_A);
+    const result = store.purgeChannelData('instagram_monitor', CH_A);
     expect(result.rows_deleted).toBe(2);
-    expect(result.tables_affected.map((t) => t.table)).toContain('calendar_events');
+    expect(result.tables_affected.map((t) => t.table)).toContain('instagram_monitor_seen_posts');
+    // Global accounts table untouched.
+    expect(result.tables_affected.map((t) => t.table)).not.toContain('instagram_monitor_accounts');
 
-    // Purge wipes EVERY user's events in that channel — verify with 'all'.
-    expect(cal.listUpcoming(CH_A, 'u', 'all', Date.now(), 10)).toHaveLength(0);
-    expect(cal.listUpcoming(CH_B, 'u', 'all', Date.now(), 10)).toHaveLength(1);
+    // CH_A is gone, CH_B is intact, account survives.
+    expect(ig.hasSeen(CH_A, 'P1')).toBe(false);
+    expect(ig.hasSeen(CH_A, 'P2')).toBe(false);
+    expect(ig.hasSeen(CH_B, 'P3')).toBe(true);
+    expect(ig.getAccount('foo')).not.toBeNull();
     memory.close();
   });
 
@@ -187,10 +225,10 @@ describe('ConfigurationStore — purgeChannelData (capability-agnostic)', () => 
 
   test('reports zero-row result when nothing matches', async () => {
     const memory = new SqliteMemoryStore({ path: ':memory:' });
-    await memory.migrate('calendar', CALENDAR_MIGRATIONS);
+    await memory.migrate('instagram_monitor', INSTAGRAM_MONITOR_MIGRATIONS);
     await memory.migrate(CONFIGURATION_CAPABILITY_ID, CONFIGURATION_MIGRATIONS);
     const store = new ConfigurationStore(memory.db());
-    const result = store.purgeChannelData('calendar', CH_C);
+    const result = store.purgeChannelData('instagram_monitor', CH_C);
     expect(result.rows_deleted).toBe(0);
     expect(result.tables_affected).toEqual([]);
     memory.close();

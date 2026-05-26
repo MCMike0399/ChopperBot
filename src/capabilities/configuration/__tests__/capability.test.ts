@@ -383,7 +383,7 @@ describe('ConfigurationCapability — destructive guards', () => {
           {
             id: 'd1',
             name: 'config_calendar_delete',
-            input: { channel_id: TARGET_CH, event_id: 1, confirm: false },
+            input: { event_id: 1, confirm: false },
           },
         ]),
       )
@@ -463,8 +463,6 @@ describe('ConfigurationCapability — DB introspection tools', () => {
   test('config_calendar_peek surfaces discord_user_id + tag and supports filtering by owner', async () => {
     const { configCap, calCap, userDirectory, memory } = await buildHarness();
     void calCap;
-    // Use snowflake-shaped ids because config_calendar_peek validates the
-    // optional discord_user_id filter through asSnowflake.
     const USER_ALICE = '50000000000000000001';
     const USER_BOB = '50000000000000000002';
     userDirectory.upsert(USER_ALICE, 'alice#0001', NOW.getTime());
@@ -473,13 +471,11 @@ describe('ConfigurationCapability — DB introspection tools', () => {
     const { CalendarStore } = await import('../../calendar/store.js');
     const cal = new CalendarStore(memory.db());
     cal.create({
-      channel_id: TARGET_CH,
       discord_user_id: USER_ALICE,
       title: 'AliceEvent',
       start_at: Date.now() + 60_000,
     });
     cal.create({
-      channel_id: TARGET_CH,
       discord_user_id: USER_BOB,
       title: 'BobEvent',
       start_at: Date.now() + 120_000,
@@ -489,7 +485,7 @@ describe('ConfigurationCapability — DB introspection tools', () => {
     createMock
       .mockResolvedValueOnce(
         toolCalls([
-          { id: 'p1', name: 'config_calendar_peek', input: { channel_id: TARGET_CH } },
+          { id: 'p1', name: 'config_calendar_peek', input: {} },
         ]),
       )
       .mockResolvedValueOnce(endStop('ok'))
@@ -498,7 +494,7 @@ describe('ConfigurationCapability — DB introspection tools', () => {
           {
             id: 'p2',
             name: 'config_calendar_peek',
-            input: { channel_id: TARGET_CH, discord_user_id: USER_ALICE },
+            input: { discord_user_id: USER_ALICE },
           },
         ]),
       )

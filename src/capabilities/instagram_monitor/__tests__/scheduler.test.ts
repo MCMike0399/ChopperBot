@@ -8,6 +8,10 @@ import type { Classification } from '../classifier.js';
 import type { PublishResult } from '../publisher.js';
 
 const CHAN = '111111111111111111';
+const CHAN_B = '222222222222222222';
+const ONE_CHANNEL = () => [CHAN];
+const NO_CHANNELS = () => [];
+const TWO_CHANNELS = () => [CHAN, CHAN_B];
 
 async function newStore() {
   const mem = new SqliteMemoryStore({ path: ':memory:' });
@@ -46,13 +50,14 @@ const fakeClient = { channels: { cache: new Map() } } as unknown as Client;
 describe('InstagramMonitorScheduler', () => {
   test('first poll seeds dedup anchor without publishing', async () => {
     const { store, mem } = await newStore();
-    store.upsertAccount({ channel_id: CHAN, username: 'foo', added_by: 'U' });
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
     const publish = vi.fn();
     const classify = vi.fn();
     const sch = new InstagramMonitorScheduler({
       store,
       fetcher: fakeFetcher({ foo: [post('P3'), post('P2'), post('P1')] }),
       client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
       classify,
       publish: publish as unknown as (...args: unknown[]) => Promise<PublishResult>,
       fetchCover: async () => null,
@@ -60,21 +65,17 @@ describe('InstagramMonitorScheduler', () => {
     await sch.tickOnce();
     expect(classify).not.toHaveBeenCalled();
     expect(publish).not.toHaveBeenCalled();
-    expect(store.getAccount(CHAN, 'foo')?.last_post_id).toBe('P3');
+    expect(store.getAccount('foo')?.last_post_id).toBe('P3');
     mem.close();
   });
 
   test('publishes only LLM-relevant posts; records pushed=0 for skipped', async () => {
     const { store, mem } = await newStore();
-    store.upsertAccount({ channel_id: CHAN, username: 'foo', added_by: 'U' });
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
     // Seed so it's not the first poll.
-    store.markPollSuccess(store.getAccount(CHAN, 'foo')!.id, 1, 'P0');
-    // Force due immediately.
-    store.resetLastPost(CHAN, 'foo');
-    store.markPollSuccess(store.getAccount(CHAN, 'foo')!.id, 1, 'P0');
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0');
 
     const classify = vi.fn(async (_account: string, p: RecentPost): Promise<Classification> => {
-      // P2 = relevant evento; P1 = skip
       if (p.igPostId === 'P2') {
         return {
           relevant: true,
@@ -102,6 +103,7 @@ describe('InstagramMonitorScheduler', () => {
       store,
       fetcher: fakeFetcher({ foo: [post('P2'), post('P1'), post('P0')] }),
       client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
       classify,
       publish,
       fetchCover: async () => null,
@@ -112,26 +114,19 @@ describe('InstagramMonitorScheduler', () => {
     expect(publish).toHaveBeenCalledTimes(1);
     const publishedShortcodes = publish.mock.calls.map((c) => (c[3] as RecentPost).shortcode);
     expect(publishedShortcodes).toEqual(['P2']);
-    // Both seen rows written. Anchor moved to P2.
     expect(store.hasSeen(CHAN, 'P1')).toBe(true);
     expect(store.hasSeen(CHAN, 'P2')).toBe(true);
-    expect(store.getAccount(CHAN, 'foo')?.last_post_id).toBe('P2');
-    // Only the pushed post shows up in recentPushed.
+    expect(store.getAccount('foo')?.last_post_id).toBe('P2');
     expect(store.recentPushed(CHAN, 10).map((s) => s.ig_post_id)).toEqual(['P2']);
     mem.close();
   });
 
   test('processes posts oldest-first so Discord sees them in posted order', async () => {
     const { store, mem } = await newStore();
-    store.upsertAccount({ channel_id: CHAN, username: 'foo', added_by: 'U' });
-    store.markPollSuccess(store.getAccount(CHAN, 'foo')!.id, 1, 'P0');
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0');
 
     const order: string[] = [];
-    const publish = vi.fn(async (..._args) => {
-      const p = arguments[3] as RecentPost; // placeholder, replaced below
-      return { ok: true, messageId: 'm' } as PublishResult;
-    });
-    // Replace publish with a properly typed capture
     const realPublish = vi.fn(async (
       _client: Client,
       _channelId: string,
@@ -146,6 +141,7 @@ describe('InstagramMonitorScheduler', () => {
       store,
       fetcher: fakeFetcher({ foo: [post('P3'), post('P2'), post('P1'), post('P0')] }),
       client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
       classify: async () => ({
         relevant: true,
         type: 'evento',
@@ -159,17 +155,13 @@ describe('InstagramMonitorScheduler', () => {
       fetchCover: async () => null,
     });
     await sch.tickOnce();
-    // P1, P2, P3 were new (P0 is the anchor). Should be published in
-    // chronological order: P1 → P2 → P3.
     expect(order).toEqual(['P1', 'P2', 'P3']);
     mem.close();
-    // Silence unused
-    void publish;
   });
 
   test('marks failure + advances backoff on fetch error', async () => {
     const { store, mem } = await newStore();
-    store.upsertAccount({ channel_id: CHAN, username: 'foo', added_by: 'U' });
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
     const broken: InstagramFetcher = {
       source: () => 'direct',
       async fetchRecentPosts() {
@@ -180,6 +172,7 @@ describe('InstagramMonitorScheduler', () => {
       store,
       fetcher: broken,
       client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
       classify: async () => ({
         relevant: false,
         type: 'otro',
@@ -193,16 +186,16 @@ describe('InstagramMonitorScheduler', () => {
       fetchCover: async () => null,
     });
     await sch.tickOnce();
-    const a = store.getAccount(CHAN, 'foo')!;
+    const a = store.getAccount('foo')!;
     expect(a.consecutive_failures).toBe(1);
     expect(a.last_polled_at).not.toBeNull();
     mem.close();
   });
 
-  test('caps pushes per account per tick', async () => {
+  test('caps pushes per account per tick per channel', async () => {
     const { store, mem } = await newStore();
-    store.upsertAccount({ channel_id: CHAN, username: 'foo', added_by: 'U' });
-    store.markPollSuccess(store.getAccount(CHAN, 'foo')!.id, 1, 'P0');
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0');
 
     const posts: RecentPost[] = [];
     for (let i = 10; i > 0; i--) posts.push(post(`P${i}`));
@@ -213,6 +206,7 @@ describe('InstagramMonitorScheduler', () => {
       store,
       fetcher: fakeFetcher({ foo: posts }),
       client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
       classify: async () => ({
         relevant: true,
         type: 'evento',
@@ -226,13 +220,137 @@ describe('InstagramMonitorScheduler', () => {
       fetchCover: async () => null,
     });
     await sch.tickOnce();
-    // Cap is 5 pushes per account per tick — older overflowed posts are
-    // recorded with pushed=0 and skipped reason.
+    // Cap is 5 pushes per (account × channel) per tick.
     expect(publish).toHaveBeenCalledTimes(5);
-    // All 10 new posts should be marked seen, plus the 5 non-pushed get the
-    // rate-limited reason.
     for (let i = 1; i <= 10; i++) expect(store.hasSeen(CHAN, `P${i}`)).toBe(true);
-    expect(store.getAccount(CHAN, 'foo')?.last_post_id).toBe('P10');
+    expect(store.getAccount('foo')?.last_post_id).toBe('P10');
+    mem.close();
+  });
+
+  test('fans out new posts to every channel currently bound to the capability', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0');
+
+    const publishedTo: Array<{ channelId: string; postId: string }> = [];
+    const publish = vi.fn(async (
+      _client: Client,
+      channelId: string,
+      _account: string,
+      p: RecentPost,
+    ): Promise<PublishResult> => {
+      publishedTo.push({ channelId, postId: p.igPostId });
+      return { ok: true, messageId: 'm' };
+    });
+
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({ foo: [post('P2'), post('P1'), post('P0')] }),
+      client: fakeClient,
+      getBoundChannels: TWO_CHANNELS,
+      classify: async () => ({
+        relevant: true,
+        type: 'evento',
+        title: 't',
+        summary: 's',
+        when: null,
+        where: null,
+        tags: [],
+      }),
+      publish,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    // 2 new posts × 2 channels = 4 push attempts.
+    expect(publish).toHaveBeenCalledTimes(4);
+    // Each channel got both posts, in chronological order.
+    expect(publishedTo).toEqual([
+      { channelId: CHAN, postId: 'P1' },
+      { channelId: CHAN_B, postId: 'P1' },
+      { channelId: CHAN, postId: 'P2' },
+      { channelId: CHAN_B, postId: 'P2' },
+    ]);
+    expect(store.hasSeen(CHAN, 'P1')).toBe(true);
+    expect(store.hasSeen(CHAN, 'P2')).toBe(true);
+    expect(store.hasSeen(CHAN_B, 'P1')).toBe(true);
+    expect(store.hasSeen(CHAN_B, 'P2')).toBe(true);
+    mem.close();
+  });
+
+  test('zero bound channels: advances anchor without publishing or classifying', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0');
+
+    const publish = vi.fn();
+    const classify = vi.fn();
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({ foo: [post('P3'), post('P2'), post('P1'), post('P0')] }),
+      client: fakeClient,
+      getBoundChannels: NO_CHANNELS,
+      classify,
+      publish: publish as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    expect(classify).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    // Anchor still moves so a future channel binding doesn't backfill.
+    expect(store.getAccount('foo')?.last_post_id).toBe('P3');
+    mem.close();
+  });
+
+  test('new channel binding gets no backfill — only posts detected after the bind', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+
+    // Round 1: only channel A is bound. Post P1 arrives.
+    let boundChannels = [CHAN];
+    const publish = vi.fn(async (
+      _client: Client,
+      channelId: string,
+      _account: string,
+      p: RecentPost,
+    ): Promise<PublishResult> => ({ ok: true, messageId: `${channelId}:${p.igPostId}` }));
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({ foo: [post('P1')] }),
+      client: fakeClient,
+      getBoundChannels: () => boundChannels,
+      classify: async () => ({
+        relevant: true,
+        type: 'evento',
+        title: 't',
+        summary: 's',
+        when: null,
+        where: null,
+        tags: [],
+      }),
+      publish,
+      fetchCover: async () => null,
+    });
+    // First poll: seed anchor only (no publish).
+    await sch.tickOnce();
+    expect(publish).toHaveBeenCalledTimes(0);
+
+    // Channel B binds *after* the first poll. Then a new post P2 arrives.
+    boundChannels = [CHAN, CHAN_B];
+    // Force the account to be due immediately and supply the new feed.
+    store.markPollSuccess(store.getAccount('foo')!.id, 0, 'P1');
+    (sch as unknown as { deps: { fetcher: InstagramFetcher } }).deps.fetcher = fakeFetcher({
+      foo: [post('P2'), post('P1')],
+    });
+    await sch.tickOnce();
+
+    // Only P2 should have been published, and to BOTH channels (no P1 backfill).
+    expect(publish).toHaveBeenCalledTimes(2);
+    const got = publish.mock.calls.map((c) => `${c[1]}:${(c[3] as RecentPost).igPostId}`).sort();
+    expect(got).toEqual([`${CHAN}:P2`, `${CHAN_B}:P2`]);
+    expect(store.hasSeen(CHAN_B, 'P1')).toBe(false);
+    expect(store.hasSeen(CHAN_B, 'P2')).toBe(true);
     mem.close();
   });
 });

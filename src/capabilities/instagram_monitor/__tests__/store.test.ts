@@ -12,10 +12,10 @@ async function newStore() {
 }
 
 describe('InstagramMonitorStore', () => {
-  test('upsertAccount is idempotent on (channel, username)', async () => {
+  test('upsertAccount is idempotent on username', async () => {
     const { store, mem } = await newStore();
-    const a = store.upsertAccount({ channel_id: 'C1', username: 'foo', added_by: 'U1' });
-    const b = store.upsertAccount({ channel_id: 'C1', username: 'foo', added_by: 'U2' });
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U1' });
+    const b = store.upsertAccount({ username: 'foo', added_by: 'U2' });
     expect(a.created).toBe(true);
     expect(b.created).toBe(false);
     expect(a.account.id).toBe(b.account.id);
@@ -23,22 +23,22 @@ describe('InstagramMonitorStore', () => {
     mem.close();
   });
 
-  test('channel isolation: same username on different channels is distinct', async () => {
+  test('accounts are global: usernames are unique across the table', async () => {
     const { store, mem } = await newStore();
-    store.upsertAccount({ channel_id: 'C1', username: 'foo', added_by: 'U1' });
-    store.upsertAccount({ channel_id: 'C2', username: 'foo', added_by: 'U1' });
-    expect(store.listAccountsForChannel('C1')).toHaveLength(1);
-    expect(store.listAccountsForChannel('C2')).toHaveLength(1);
+    store.upsertAccount({ username: 'foo', added_by: 'U1' });
+    store.upsertAccount({ username: 'bar', added_by: 'U1' });
+    expect(store.listAccounts()).toHaveLength(2);
+    expect(store.listAccounts().map((a) => a.username).sort()).toEqual(['bar', 'foo']);
     mem.close();
   });
 
   test('dueAccounts respects paused, last_polled_at, backoff', async () => {
     const { store, mem } = await newStore();
-    store.upsertAccount({ channel_id: 'C', username: 'never_polled', added_by: 'U' });
-    const a = store.upsertAccount({ channel_id: 'C', username: 'fresh', added_by: 'U' });
-    const b = store.upsertAccount({ channel_id: 'C', username: 'stale', added_by: 'U' });
-    const p = store.upsertAccount({ channel_id: 'C', username: 'paused', added_by: 'U' });
-    store.setPaused('C', 'paused', true);
+    store.upsertAccount({ username: 'never_polled', added_by: 'U' });
+    const a = store.upsertAccount({ username: 'fresh', added_by: 'U' });
+    const b = store.upsertAccount({ username: 'stale', added_by: 'U' });
+    const p = store.upsertAccount({ username: 'paused', added_by: 'U' });
+    store.setPaused('paused', true);
 
     const now = 100_000_000;
     store.markPollSuccess(a.account.id, now - 5 * 60_000, 'A1'); // 5 min ago — not due
@@ -53,7 +53,7 @@ describe('InstagramMonitorStore', () => {
 
   test('exponential backoff on consecutive_failures', async () => {
     const { store, mem } = await newStore();
-    const r = store.upsertAccount({ channel_id: 'C', username: 'x', added_by: 'U' });
+    const r = store.upsertAccount({ username: 'x', added_by: 'U' });
     const now = 1_000_000_000;
     store.markPollFailure(r.account.id, now - 10 * 60_000); // 10 min ago
     // After 1 failure, next due = 10min + 20min*2^1 = 50min from poll. So not due at +10min.
@@ -67,7 +67,7 @@ describe('InstagramMonitorStore', () => {
     mem.close();
   });
 
-  test('hasSeen + recordSeen + recentPushed only returns pushed=1', async () => {
+  test('hasSeen + recordSeen + recentPushed are still per-channel for fan-out dedup', async () => {
     const { store, mem } = await newStore();
     expect(store.hasSeen('C', 'P1')).toBe(false);
     store.recordSeen({
@@ -96,16 +96,19 @@ describe('InstagramMonitorStore', () => {
     expect(store.hasSeen('C', 'P2')).toBe(true);
     const pushed = store.recentPushed('C', 10);
     expect(pushed.map((p) => p.ig_post_id)).toEqual(['P1']);
+    // A different channel sees neither — that's the no-backfill guarantee.
+    expect(store.hasSeen('OTHER', 'P1')).toBe(false);
+    expect(store.recentPushed('OTHER', 10)).toHaveLength(0);
     mem.close();
   });
 
   test('resetLastPost clears the dedup anchor', async () => {
     const { store, mem } = await newStore();
-    const r = store.upsertAccount({ channel_id: 'C', username: 'x', added_by: 'U' });
+    const r = store.upsertAccount({ username: 'x', added_by: 'U' });
     store.markPollSuccess(r.account.id, 1, 'A1');
-    expect(store.getAccount('C', 'x')?.last_post_id).toBe('A1');
-    store.resetLastPost('C', 'x');
-    const after = store.getAccount('C', 'x');
+    expect(store.getAccount('x')?.last_post_id).toBe('A1');
+    store.resetLastPost('x');
+    const after = store.getAccount('x');
     expect(after?.last_post_id).toBeNull();
     expect(after?.last_polled_at).toBeNull();
     mem.close();

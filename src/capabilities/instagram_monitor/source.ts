@@ -6,6 +6,7 @@ import type { RecentPost } from './fetcher.js';
 
 export interface InstagramMonitorToolSourceDeps {
   store: InstagramMonitorStore;
+  /** Channel the caller is in. Used ONLY by monitor_recent_pushed; account ops are global. */
   channelId: string;
   userId: string;
   nowMs: number;
@@ -27,7 +28,7 @@ export class InstagramMonitorToolSource implements ToolSource {
       {
         name: 'monitor_add_account',
         description:
-          'Agrega una cuenta pública de Instagram a la lista de monitoreo de este canal. Acepta el handle con o sin "@", se normaliza a minúsculas. Si el usuario menciona varias cuentas, llama una vez por cada una.',
+          'Agrega una cuenta pública de Instagram a la lista GLOBAL de monitoreo. La cuenta es vigilada una sola vez y sus posts se publican en todos los canales bindeados a esta capacidad. Acepta el handle con o sin "@", se normaliza a minúsculas. Si el usuario menciona varias cuentas, llama una vez por cada una.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -39,7 +40,7 @@ export class InstagramMonitorToolSource implements ToolSource {
       {
         name: 'monitor_remove_account',
         description:
-          'Elimina una cuenta de la lista de monitoreo de este canal. El historial de posts detectados se conserva.',
+          'Elimina una cuenta de la lista GLOBAL de monitoreo. Deja de publicarse en todos los canales bindeados. El historial de posts detectados se conserva.',
         inputSchema: {
           type: 'object',
           properties: { username: { type: 'string' } },
@@ -49,13 +50,13 @@ export class InstagramMonitorToolSource implements ToolSource {
       {
         name: 'monitor_list_accounts',
         description:
-          'Lista todas las cuentas vigiladas en este canal con su estado (activa/pausada), último poll, y fallos consecutivos.',
+          'Lista todas las cuentas vigiladas (lista global) con su estado (activa/pausada), último poll, y fallos consecutivos.',
         inputSchema: { type: 'object', properties: {} },
       },
       {
         name: 'monitor_pause_account',
         description:
-          'Pausa o reanuda una cuenta sin borrarla. Pasa `paused: true` para pausar, `paused: false` para reanudar.',
+          'Pausa o reanuda una cuenta sin borrarla. Pasa `paused: true` para pausar, `paused: false` para reanudar. Afecta todos los canales bindeados.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -78,7 +79,7 @@ export class InstagramMonitorToolSource implements ToolSource {
       {
         name: 'monitor_recent_pushed',
         description:
-          'Devuelve los últimos N posts que ya fueron publicados al canal (con título, tipo, enlace y fecha). Default 10, máximo 25.',
+          'Devuelve los últimos N posts ya publicados a ESTE canal (con tipo, enlace y fecha). Default 10, máximo 25. Si recién bindeaste este canal, la lista estará vacía hasta que lleguen nuevos posts.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -110,7 +111,6 @@ export class InstagramMonitorToolSource implements ToolSource {
         case 'monitor_add_account': {
           const username = normalizeUsername(obj.username);
           const { account, created } = this.deps.store.upsertAccount({
-            channel_id: this.deps.channelId,
             username,
             added_by: this.deps.userId,
           });
@@ -122,17 +122,17 @@ export class InstagramMonitorToolSource implements ToolSource {
         }
         case 'monitor_remove_account': {
           const username = normalizeUsername(obj.username);
-          const removed = this.deps.store.removeAccount(this.deps.channelId, username);
+          const removed = this.deps.store.removeAccount(username);
           if (!removed) {
             return {
               status: 'error',
-              payload: { error: `La cuenta @${username} no está en la lista de este canal.` },
+              payload: { error: `La cuenta @${username} no está en la lista global.` },
             };
           }
           return { status: 'success', payload: { removed: serializeAccount(removed) } };
         }
         case 'monitor_list_accounts': {
-          const rows = this.deps.store.listAccountsForChannel(this.deps.channelId);
+          const rows = this.deps.store.listAccounts();
           return {
             status: 'success',
             payload: {
@@ -146,22 +146,22 @@ export class InstagramMonitorToolSource implements ToolSource {
           if (typeof obj.paused !== 'boolean') {
             return { status: 'error', payload: { error: 'paused debe ser boolean.' } };
           }
-          const updated = this.deps.store.setPaused(this.deps.channelId, username, obj.paused);
+          const updated = this.deps.store.setPaused(username, obj.paused);
           if (!updated) {
             return {
               status: 'error',
-              payload: { error: `La cuenta @${username} no está en la lista de este canal.` },
+              payload: { error: `La cuenta @${username} no está en la lista global.` },
             };
           }
           return { status: 'success', payload: { account: serializeAccount(updated) } };
         }
         case 'monitor_force_poll': {
           const username = normalizeUsername(obj.username);
-          const updated = this.deps.store.resetLastPost(this.deps.channelId, username);
+          const updated = this.deps.store.resetLastPost(username);
           if (!updated) {
             return {
               status: 'error',
-              payload: { error: `La cuenta @${username} no está en la lista de este canal.` },
+              payload: { error: `La cuenta @${username} no está en la lista global.` },
             };
           }
           return {

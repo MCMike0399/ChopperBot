@@ -130,7 +130,7 @@ export class ConfigurationToolSource implements ToolSource {
       {
         name: 'config_purge_channel_data',
         description:
-          "DESTRUCTIVE. Delete every row a capability owns for a given channel. Works against any table named `<capability>_*` that carries a `channel_id` column. Refuses to touch configuration_*. Requires `confirm: true` — without it the call is rejected.",
+          "DESTRUCTIVE. Delete every row a capability owns for a given channel. Works against any table named `<capability>_*` that carries a `channel_id` column. NOTE: `calendar_events` is no longer channel-scoped (per-user) so calendar purge by channel is a no-op — use `config_calendar_delete` for individual events. `instagram_monitor_accounts` is global; only `instagram_monitor_seen_posts` (the per-channel dedup log) is purged. Refuses to touch configuration_*. Requires `confirm: true`.",
         inputSchema: {
           type: 'object',
           properties: {
@@ -144,19 +144,17 @@ export class ConfigurationToolSource implements ToolSource {
       {
         name: 'config_calendar_peek',
         description:
-          'List upcoming calendar events in ANY channel (bypasses the normal per-channel and per-user scoping). Each row includes the owning user. Optionally pass `discord_user_id` to filter to one user. Use to inspect calendar state from the admin console.',
+          'List upcoming calendar events across all users (bypasses the normal per-user scoping). Each row includes the owning user id + tag. Optionally pass `discord_user_id` to filter to one user. Calendar is per-user globally — there is no channel filter.',
         inputSchema: {
           type: 'object',
           properties: {
-            channel_id: { type: 'string' },
             discord_user_id: {
               type: 'string',
               description:
-                'Optional. Discord snowflake of one user — only that user\'s events are returned. Omit to see every user\'s events in the channel.',
+                'Optional. Discord snowflake of one user — only that user\'s events are returned. Omit to see every user\'s events.',
             },
             limit: { type: 'integer', minimum: 1, maximum: 25 },
           },
-          required: ['channel_id'],
         },
       },
       {
@@ -173,15 +171,14 @@ export class ConfigurationToolSource implements ToolSource {
       {
         name: 'config_calendar_delete',
         description:
-          'DESTRUCTIVE. Delete a calendar event by id in any channel. For recurring events this kills the whole series (matches calendar_delete_event semantics). Requires `confirm: true`.',
+          'DESTRUCTIVE. Delete a calendar event by id, regardless of owner. For recurring events this kills the whole series (matches calendar_delete_event semantics). Requires `confirm: true`.',
         inputSchema: {
           type: 'object',
           properties: {
-            channel_id: { type: 'string' },
             event_id: { type: 'integer', minimum: 1 },
             confirm: { type: 'boolean' },
           },
-          required: ['channel_id', 'event_id', 'confirm'],
+          required: ['event_id', 'confirm'],
         },
       },
     ];
@@ -457,23 +454,16 @@ export class ConfigurationToolSource implements ToolSource {
   }
 
   private handleCalendarPeek(obj: Record<string, unknown>): ToolHandlerResult {
-    const channelId = asSnowflake(obj.channel_id, 'channel_id');
     const limit = clampInt(obj.limit, 1, 25, 10);
     const filterUserId =
       obj.discord_user_id !== undefined && obj.discord_user_id !== null && obj.discord_user_id !== ''
         ? asSnowflake(obj.discord_user_id, 'discord_user_id')
         : null;
     const cal = new CalendarStore(this.deps.db);
-    // Admin tool: default to channel-wide visibility ('all'). When a
-    // discord_user_id filter is provided, the store's 'mine' branch does
-    // the user-scoped query.
-    const rows = filterUserId
-      ? cal.listUpcoming(channelId, filterUserId, 'mine', Date.now(), limit)
-      : cal.listUpcoming(channelId, '', 'all', Date.now(), limit);
+    const rows = cal.adminListAll(filterUserId).slice(0, limit);
     return {
       status: 'success',
       payload: {
-        channel_id: channelId,
         filter_discord_user_id: filterUserId,
         events: rows.map((e) => {
           const owner = this.deps.userDirectory.get(e.discord_user_id);
@@ -485,8 +475,6 @@ export class ConfigurationToolSource implements ToolSource {
             end_at_iso: e.end_at !== null ? new Date(e.end_at).toISOString() : null,
             location: e.location,
             recurrence_freq: e.recurrence_freq,
-            is_recurring_instance: e.is_recurring_instance,
-            occurrence_index: e.occurrence_index,
             discord_user_id: e.discord_user_id,
             discord_tag: owner?.discord_tag ?? null,
           };
@@ -516,7 +504,6 @@ export class ConfigurationToolSource implements ToolSource {
     t0: number,
     toolName: string,
   ): ToolHandlerResult {
-    const channelId = asSnowflake(obj.channel_id, 'channel_id');
     const eventId = asPositiveInt(obj.event_id, 'event_id');
     if (obj.confirm !== true) {
       return {
@@ -527,17 +514,16 @@ export class ConfigurationToolSource implements ToolSource {
     const cal = new CalendarStore(this.deps.db);
     // Admin path: delete bypasses the per-user filter so we can recover
     // events the original owner left behind.
-    const deleted = cal.adminDelete(channelId, eventId);
+    const deleted = cal.adminDelete(eventId);
     if (!deleted) {
       return {
         status: 'error',
-        payload: { error: `Event #${eventId} not found in channel ${channelId}.` },
+        payload: { error: `Event #${eventId} not found.` },
       };
     }
     log.info(
       {
         tool: toolName,
-        channelId,
         eventId,
         title: deleted.title,
         owner: deleted.discord_user_id,

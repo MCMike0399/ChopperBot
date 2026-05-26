@@ -58,7 +58,7 @@ export class InstagramMonitorCapability implements Capability {
     }
   }
 
-  async start({ client }: CapabilityStartDeps): Promise<void> {
+  async start({ client, router }: CapabilityStartDeps): Promise<void> {
     if (!this.store || !this.fetcher) {
       throw new Error('InstagramMonitorCapability.start() called before init()');
     }
@@ -66,6 +66,14 @@ export class InstagramMonitorCapability implements Capability {
       store: this.store,
       fetcher: this.fetcher,
       client,
+      // Re-read on every tick so live re-bindings take effect without a restart.
+      getBoundChannels: () => {
+        const out: string[] = [];
+        for (const [channelId, capabilityId] of router.getAllBindings()) {
+          if (capabilityId === this.id) out.push(channelId);
+        }
+        return out;
+      },
     });
     this.scheduler.start();
     log.info({ capability: this.id }, 'InstagramMonitorCapability scheduler started');

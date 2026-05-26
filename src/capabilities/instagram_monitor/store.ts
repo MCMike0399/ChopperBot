@@ -1,10 +1,19 @@
 import type Database from 'better-sqlite3';
 import type { Migration } from '../../memory/store.js';
 
+/**
+ * Monitored Instagram account. Accounts are GLOBAL — there is one row per
+ * username, and posts are fanned out at detection time to every channel
+ * currently bound to the `instagram_monitor` capability.
+ *
+ * Dedup is still per-channel (see {@link SeenPost} below), so a channel
+ * bound after the account already has post history sees only newly-detected
+ * posts (no backfill).
+ */
 export interface MonitoredAccount {
   id: number;
-  channel_id: string;
   username: string;
+  /** Discord user who first added this account. Kept for audit, never used for filtering. */
   added_by: string;
   added_at: number;
   paused: number;
@@ -64,13 +73,45 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
         ON instagram_monitor_seen_posts (channel_id, pushed, detected_at DESC);
     `,
   },
+  {
+    // v2 — accounts go GLOBAL. Drop channel_id from the accounts table.
+    // Existing rows are deduped by username, keeping the earliest add
+    // (preserves added_by + last_post_id of whoever set it up first).
+    // seen_posts stays per-channel — that's the dedup substrate for
+    // fan-out, and it's what gives "new channel binding gets no backfill".
+    version: 2,
+    up: `
+      CREATE TABLE instagram_monitor_accounts_new (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        username              TEXT    NOT NULL,
+        added_by              TEXT    NOT NULL,
+        added_at              INTEGER NOT NULL,
+        paused                INTEGER NOT NULL DEFAULT 0,
+        last_polled_at        INTEGER,
+        last_post_id          TEXT,
+        consecutive_failures  INTEGER NOT NULL DEFAULT 0,
+        UNIQUE (username)
+      );
+
+      INSERT OR IGNORE INTO instagram_monitor_accounts_new
+        (username, added_by, added_at, paused, last_polled_at, last_post_id, consecutive_failures)
+      SELECT username, added_by, added_at, paused, last_polled_at, last_post_id, consecutive_failures
+      FROM instagram_monitor_accounts
+      ORDER BY added_at ASC, id ASC;
+
+      DROP TABLE instagram_monitor_accounts;
+      ALTER TABLE instagram_monitor_accounts_new RENAME TO instagram_monitor_accounts;
+
+      CREATE INDEX IF NOT EXISTS instagram_monitor_accounts_paused
+        ON instagram_monitor_accounts (paused);
+    `,
+  },
 ];
 
 /** Backoff: next allowed poll is min(POLL_INTERVAL * 2^failures, MAX_BACKOFF). */
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 export interface AddAccountInput {
-  channel_id: string;
   username: string;
   added_by: string;
 }
@@ -80,65 +121,50 @@ export class InstagramMonitorStore {
 
   /** Returns the new row, or the existing row if already present. */
   upsertAccount(input: AddAccountInput): { account: MonitoredAccount; created: boolean } {
-    const existing = this.getAccount(input.channel_id, input.username);
+    const existing = this.getAccount(input.username);
     if (existing) return { account: existing, created: false };
     const now = Date.now();
     this.db
       .prepare(
         `INSERT INTO instagram_monitor_accounts
-           (channel_id, username, added_by, added_at, paused, consecutive_failures)
-         VALUES (?, ?, ?, ?, 0, 0)`,
+           (username, added_by, added_at, paused, consecutive_failures)
+         VALUES (?, ?, ?, 0, 0)`,
       )
-      .run(input.channel_id, input.username, input.added_by, now);
-    const account = this.getAccount(input.channel_id, input.username);
+      .run(input.username, input.added_by, now);
+    const account = this.getAccount(input.username);
     if (!account) throw new Error('Failed to read back inserted account');
     return { account, created: true };
   }
 
-  removeAccount(channelId: string, username: string): MonitoredAccount | null {
-    const existing = this.getAccount(channelId, username);
+  removeAccount(username: string): MonitoredAccount | null {
+    const existing = this.getAccount(username);
     if (!existing) return null;
     this.db
-      .prepare(`DELETE FROM instagram_monitor_accounts WHERE channel_id = ? AND username = ?`)
-      .run(channelId, username);
+      .prepare(`DELETE FROM instagram_monitor_accounts WHERE username = ?`)
+      .run(username);
     return existing;
   }
 
-  setPaused(channelId: string, username: string, paused: boolean): MonitoredAccount | null {
-    const existing = this.getAccount(channelId, username);
+  setPaused(username: string, paused: boolean): MonitoredAccount | null {
+    const existing = this.getAccount(username);
     if (!existing) return null;
     this.db
-      .prepare(
-        `UPDATE instagram_monitor_accounts SET paused = ?
-         WHERE channel_id = ? AND username = ?`,
-      )
-      .run(paused ? 1 : 0, channelId, username);
-    return this.getAccount(channelId, username);
+      .prepare(`UPDATE instagram_monitor_accounts SET paused = ? WHERE username = ?`)
+      .run(paused ? 1 : 0, username);
+    return this.getAccount(username);
   }
 
-  getAccount(channelId: string, username: string): MonitoredAccount | null {
+  getAccount(username: string): MonitoredAccount | null {
     const row = this.db
-      .prepare(
-        `SELECT * FROM instagram_monitor_accounts WHERE channel_id = ? AND username = ?`,
-      )
-      .get(channelId, username) as MonitoredAccount | undefined;
+      .prepare(`SELECT * FROM instagram_monitor_accounts WHERE username = ?`)
+      .get(username) as MonitoredAccount | undefined;
     return row ?? null;
   }
 
-  listAccountsForChannel(channelId: string): MonitoredAccount[] {
+  listAccounts(): MonitoredAccount[] {
     return this.db
-      .prepare(
-        `SELECT * FROM instagram_monitor_accounts WHERE channel_id = ?
-         ORDER BY username ASC`,
-      )
-      .all(channelId) as MonitoredAccount[];
-  }
-
-  listAllChannels(): string[] {
-    const rows = this.db
-      .prepare(`SELECT DISTINCT channel_id FROM instagram_monitor_accounts`)
-      .all() as { channel_id: string }[];
-    return rows.map((r) => r.channel_id);
+      .prepare(`SELECT * FROM instagram_monitor_accounts ORDER BY username ASC`)
+      .all() as MonitoredAccount[];
   }
 
   /**
@@ -198,17 +224,17 @@ export class InstagramMonitorStore {
   }
 
   /** Reset the dedup anchor so the next poll re-classifies the most recent posts. */
-  resetLastPost(channelId: string, username: string): MonitoredAccount | null {
-    const existing = this.getAccount(channelId, username);
+  resetLastPost(username: string): MonitoredAccount | null {
+    const existing = this.getAccount(username);
     if (!existing) return null;
     this.db
       .prepare(
         `UPDATE instagram_monitor_accounts
          SET last_post_id = NULL, last_polled_at = NULL
-         WHERE channel_id = ? AND username = ?`,
+         WHERE username = ?`,
       )
-      .run(channelId, username);
-    return this.getAccount(channelId, username);
+      .run(username);
+    return this.getAccount(username);
   }
 
   hasSeen(channelId: string, igPostId: string): boolean {

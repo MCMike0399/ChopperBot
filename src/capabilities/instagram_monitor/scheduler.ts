@@ -8,7 +8,7 @@ import { fetchCover as defaultFetchCover, publishPost as defaultPublishPost, typ
 export const DEFAULT_POLL_INTERVAL_MS = 20 * 60 * 1000;
 export const DEFAULT_TICK_MS = 60 * 1000;
 const ACCOUNTS_PER_TICK = 3;
-const MAX_PUSHES_PER_ACCOUNT_PER_TICK = 5;
+const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
 
 /** Function signatures injected by the capability; tests can swap them. */
 export type ClassifyFn = (
@@ -30,6 +30,12 @@ export interface SchedulerDeps {
   store: InstagramMonitorStore;
   fetcher: InstagramFetcher;
   client: Client;
+  /**
+   * Returns the Discord channel ids currently bound to the instagram_monitor
+   * capability. Called fresh each tick so re-bindings take effect without a
+   * scheduler restart.
+   */
+  getBoundChannels: () => string[];
   /** Override for tests. Defaults to the real classifier. */
   classify?: ClassifyFn;
   /** Override for tests. Defaults to the real publisher. */
@@ -62,8 +68,6 @@ export class InstagramMonitorScheduler {
       { source: this.deps.fetcher.source(), tickMs: this.tickMs, pollIntervalMs: this.pollIntervalMs },
       'instagram_monitor.scheduler.start',
     );
-    // Run one tick on the next event-loop turn so the bot starts working
-    // before the first interval fires, useful for force-polled accounts.
     setImmediate(() => void this.tickOnce().catch(() => {}));
     this.intervalHandle = setInterval(() => {
       void this.tickOnce().catch((err) => {
@@ -147,76 +151,96 @@ export class InstagramMonitorScheduler {
       return;
     }
 
+    const boundChannels = this.deps.getBoundChannels();
+    // No channels bound right now: still advance the anchor so a future
+    // binding doesn't get this batch as backfill. Skip the per-post work.
+    if (boundChannels.length === 0) {
+      log.info(
+        { account: acc.username, new_posts: newPostsNewestFirst.length, advanced_to: newestPostId },
+        'instagram_monitor.no_bound_channels.advance_anchor',
+      );
+      this.deps.store.markPollSuccess(acc.id, Date.now(), newestPostId);
+      return;
+    }
+
     // Process oldest-first so Discord receives them in real-world order.
     const chronological = [...newPostsNewestFirst].reverse();
-    let pushed = 0;
+    const pushedByChannel = new Map<string, number>();
 
     for (const post of chronological) {
       if (this.disposed) return;
-      if (this.deps.store.hasSeen(acc.channel_id, post.igPostId)) continue;
 
-      if (pushed >= MAX_PUSHES_PER_ACCOUNT_PER_TICK) {
-        this.deps.store.recordSeen({
-          channel_id: acc.channel_id,
-          ig_post_id: post.igPostId,
-          account_username: acc.username,
-          caption: post.caption || null,
-          media_type: post.mediaType,
-          posted_at: post.takenAtMs,
-          classification_json: JSON.stringify({ skipped: 'rate_limited_first_run' }),
-          pushed: false,
-          discord_message_id: null,
-        });
-        continue;
-      }
-
+      // Classify once per post; same outcome for every channel that gets it.
       const coverBytes = await this.fetchCover(post.displayUrl);
       const classification = await this.classify(acc.username, post, {
         // Cover image omitted from the classifier prompt — caption-only
         // classification is sufficient for our categories and saves tokens.
-        // The publisher still uses coverBytes for the Discord attachment.
         nowMs: Date.now(),
       });
 
-      if (!classification.relevant) {
+      for (const channelId of boundChannels) {
+        if (this.disposed) return;
+        if (this.deps.store.hasSeen(channelId, post.igPostId)) continue;
+
+        if (!classification.relevant) {
+          this.deps.store.recordSeen({
+            channel_id: channelId,
+            ig_post_id: post.igPostId,
+            account_username: acc.username,
+            caption: post.caption || null,
+            media_type: post.mediaType,
+            posted_at: post.takenAtMs,
+            classification_json: JSON.stringify(classification),
+            pushed: false,
+            discord_message_id: null,
+          });
+          continue;
+        }
+
+        const pushedHere = pushedByChannel.get(channelId) ?? 0;
+        if (pushedHere >= MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL) {
+          this.deps.store.recordSeen({
+            channel_id: channelId,
+            ig_post_id: post.igPostId,
+            account_username: acc.username,
+            caption: post.caption || null,
+            media_type: post.mediaType,
+            posted_at: post.takenAtMs,
+            classification_json: JSON.stringify({ skipped: 'rate_limited_per_channel' }),
+            pushed: false,
+            discord_message_id: null,
+          });
+          continue;
+        }
+
+        const result = await this.publish(
+          this.deps.client,
+          channelId,
+          acc.username,
+          post,
+          classification,
+          coverBytes,
+        );
         this.deps.store.recordSeen({
-          channel_id: acc.channel_id,
+          channel_id: channelId,
           ig_post_id: post.igPostId,
           account_username: acc.username,
           caption: post.caption || null,
           media_type: post.mediaType,
           posted_at: post.takenAtMs,
           classification_json: JSON.stringify(classification),
-          pushed: false,
-          discord_message_id: null,
+          pushed: result.ok,
+          discord_message_id: result.messageId,
         });
+        if (result.ok) pushedByChannel.set(channelId, pushedHere + 1);
+      }
+
+      if (!classification.relevant) {
         log.info(
           { account: acc.username, shortcode: post.shortcode, type: classification.type },
           'instagram_monitor.classify.skip',
         );
-        continue;
       }
-
-      const result = await this.publish(
-        this.deps.client,
-        acc.channel_id,
-        acc.username,
-        post,
-        classification,
-        coverBytes,
-      );
-      this.deps.store.recordSeen({
-        channel_id: acc.channel_id,
-        ig_post_id: post.igPostId,
-        account_username: acc.username,
-        caption: post.caption || null,
-        media_type: post.mediaType,
-        posted_at: post.takenAtMs,
-        classification_json: JSON.stringify(classification),
-        pushed: result.ok,
-        discord_message_id: result.messageId,
-      });
-      if (result.ok) pushed++;
     }
 
     this.deps.store.markPollSuccess(acc.id, Date.now(), newestPostId);

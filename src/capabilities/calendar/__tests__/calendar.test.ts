@@ -1,9 +1,13 @@
 /**
  * Calendar capability tests.
  *
+ * Calendar is per-user globally — events belong to a Discord user and are
+ * visible from any channel bound to the capability. There is no channel
+ * scoping and no `scope: "all"` mode.
+ *
  * Two layers of coverage:
- *   1. Direct CalendarStore tests — schema, channel + user isolation,
- *      CRUD shapes, scope: 'all' reveal path.
+ *   1. Direct CalendarStore tests — schema, user isolation, CRUD shapes,
+ *      admin-list / admin-delete bypass.
  *   2. Full agent-loop integration via ask() with a mocked Kimi/OpenAI
  *      client, a real CalendarCapability, and an in-memory SQLite store.
  */
@@ -72,147 +76,125 @@ describe('CalendarStore (direct)', () => {
   test('create → get → update → delete roundtrip', async () => {
     const { store, memory } = await newCapability();
     const created = store.create({
-      channel_id: 'CHAN_A',
       discord_user_id: 'USER_1',
       title: 'Standup',
       start_at: Date.parse('2026-05-24T15:00:00Z'),
     });
     expect(created.id).toBeGreaterThan(0);
     expect(created.title).toBe('Standup');
-    expect(created.channel_id).toBe('CHAN_A');
     expect(created.discord_user_id).toBe('USER_1');
     expect(created.created_by).toBe('USER_1');
 
-    const fetched = store.get('CHAN_A', 'USER_1', 'mine', created.id);
+    const fetched = store.get('USER_1', created.id);
     expect(fetched?.title).toBe('Standup');
 
-    const updated = store.update('CHAN_A', 'USER_1', created.id, { title: 'Daily Standup' });
+    const updated = store.update('USER_1', created.id, { title: 'Daily Standup' });
     expect(updated?.title).toBe('Daily Standup');
 
-    const deleted = store.delete('CHAN_A', 'USER_1', created.id);
+    const deleted = store.delete('USER_1', created.id);
     expect(deleted?.title).toBe('Daily Standup');
-    expect(store.get('CHAN_A', 'USER_1', 'mine', created.id)).toBeNull();
+    expect(store.get('USER_1', created.id)).toBeNull();
     memory.close();
   });
 
-  test('channel isolation: cannot read or mutate another channel\'s events', async () => {
+  test('user isolation: only the owner can read or mutate an event', async () => {
     const { store, memory } = await newCapability();
-    const e = store.create({
-      channel_id: 'CHAN_A',
-      discord_user_id: 'USER_1',
-      title: 'Lunch',
-      start_at: Date.parse('2026-05-24T18:00:00Z'),
+    const a = store.create({
+      discord_user_id: 'USER_A',
+      title: 'A-event',
+      start_at: NOW.getTime() + 1000,
     });
-    expect(store.get('CHAN_B', 'USER_1', 'mine', e.id)).toBeNull();
-    expect(store.get('CHAN_B', 'USER_1', 'all', e.id)).toBeNull();
-    expect(store.update('CHAN_B', 'USER_1', e.id, { title: 'Hacked' })).toBeNull();
-    expect(store.delete('CHAN_B', 'USER_1', e.id)).toBeNull();
-    expect(store.get('CHAN_A', 'USER_1', 'mine', e.id)?.title).toBe('Lunch');
+
+    // USER_B cannot see or mutate it.
+    expect(store.get('USER_B', a.id)).toBeNull();
+    expect(store.update('USER_B', a.id, { title: 'Hacked' })).toBeNull();
+    expect(store.delete('USER_B', a.id)).toBeNull();
+
+    // Owner still sees + mutates fine.
+    expect(store.get('USER_A', a.id)?.title).toBe('A-event');
+    expect(store.update('USER_A', a.id, { title: 'Renamed' })?.title).toBe('Renamed');
     memory.close();
   });
 
-  test('user isolation: in the same channel, scope: "mine" only returns the caller\'s events', async () => {
+  test('listUpcoming + search are scoped to the calling user', async () => {
     const { store, memory } = await newCapability();
     store.create({
-      channel_id: 'C',
       discord_user_id: 'USER_A',
       title: 'A-event',
       start_at: NOW.getTime() + 1000,
     });
     store.create({
-      channel_id: 'C',
       discord_user_id: 'USER_B',
       title: 'B-event',
       start_at: NOW.getTime() + 2000,
     });
 
-    const aOnly = store.listUpcoming('C', 'USER_A', 'mine', NOW.getTime(), 10);
+    const aOnly = store.listUpcoming('USER_A', NOW.getTime(), 10);
     expect(aOnly.map((r) => r.title)).toEqual(['A-event']);
 
-    const bOnly = store.listUpcoming('C', 'USER_B', 'mine', NOW.getTime(), 10);
+    const bOnly = store.listUpcoming('USER_B', NOW.getTime(), 10);
     expect(bOnly.map((r) => r.title)).toEqual(['B-event']);
 
-    const everyone = store.listUpcoming('C', 'USER_A', 'all', NOW.getTime(), 10);
-    expect(everyone.map((r) => r.title).sort()).toEqual(['A-event', 'B-event']);
-
-    const everyoneSearch = store.search('C', 'USER_B', 'all', 'event', null, null, 10);
-    expect(everyoneSearch.map((r) => r.title).sort()).toEqual(['A-event', 'B-event']);
-
-    const mineSearch = store.search('C', 'USER_A', 'mine', 'event', null, null, 10);
-    expect(mineSearch.map((r) => r.title)).toEqual(['A-event']);
+    const aSearch = store.search('USER_A', 'event', null, null, 10);
+    expect(aSearch.map((r) => r.title)).toEqual(['A-event']);
 
     memory.close();
   });
 
-  test('user isolation: cannot update or delete another user\'s event in the same channel', async () => {
+  test('adminListAll surfaces every user\'s events; optional filter narrows to one user', async () => {
     const { store, memory } = await newCapability();
-    const a = store.create({
-      channel_id: 'C',
-      discord_user_id: 'USER_A',
-      title: 'A-event',
-      start_at: NOW.getTime() + 1000,
-    });
+    store.create({ discord_user_id: 'USER_A', title: 'A1', start_at: NOW.getTime() + 1000 });
+    store.create({ discord_user_id: 'USER_A', title: 'A2', start_at: NOW.getTime() + 2000 });
+    store.create({ discord_user_id: 'USER_B', title: 'B1', start_at: NOW.getTime() + 3000 });
 
-    // USER_B sees scope:'mine' as not-found:
-    expect(store.get('C', 'USER_B', 'mine', a.id)).toBeNull();
-    // ...but scope:'all' reveals it:
-    expect(store.get('C', 'USER_B', 'all', a.id)?.title).toBe('A-event');
+    const all = store.adminListAll(null);
+    expect(all.map((r) => r.title).sort()).toEqual(['A1', 'A2', 'B1']);
 
-    // USER_B cannot mutate via update/delete (no scope knob — always 'mine'):
-    expect(store.update('C', 'USER_B', a.id, { title: 'Hacked' })).toBeNull();
-    expect(store.delete('C', 'USER_B', a.id)).toBeNull();
+    const aOnly = store.adminListAll('USER_A');
+    expect(aOnly.map((r) => r.title).sort()).toEqual(['A1', 'A2']);
 
-    // Owner still sees + mutates fine:
-    expect(store.get('C', 'USER_A', 'mine', a.id)?.title).toBe('A-event');
-    expect(store.update('C', 'USER_A', a.id, { title: 'Renamed' })?.title).toBe('Renamed');
     memory.close();
   });
 
   test('adminDelete bypasses the user filter', async () => {
     const { store, memory } = await newCapability();
     const a = store.create({
-      channel_id: 'C',
       discord_user_id: 'USER_A',
       title: 'Owned by A',
       start_at: NOW.getTime() + 1000,
     });
-    const deleted = store.adminDelete('C', a.id);
+    const deleted = store.adminDelete(a.id);
     expect(deleted?.title).toBe('Owned by A');
-    expect(store.get('C', 'USER_A', 'mine', a.id)).toBeNull();
-    // Channel isolation still applies — different channel returns null:
-    const b = store.create({
-      channel_id: 'C',
-      discord_user_id: 'USER_A',
-      title: 'Other',
-      start_at: NOW.getTime() + 2000,
-    });
-    expect(store.adminDelete('OTHER_CHAN', b.id)).toBeNull();
+    expect(store.get('USER_A', a.id)).toBeNull();
+
+    // A second admin delete on the same id is a clean null.
+    expect(store.adminDelete(a.id)).toBeNull();
     memory.close();
   });
 
   test('listUpcoming returns only future events, ordered by start_at', async () => {
     const { store, memory } = await newCapability();
-    store.create({ channel_id: 'C', discord_user_id: 'U', title: 'past', start_at: NOW.getTime() - 10_000 });
-    store.create({ channel_id: 'C', discord_user_id: 'U', title: 'second', start_at: NOW.getTime() + 20_000 });
-    store.create({ channel_id: 'C', discord_user_id: 'U', title: 'first', start_at: NOW.getTime() + 10_000 });
-    const rows = store.listUpcoming('C', 'U', 'mine', NOW.getTime(), 10);
+    store.create({ discord_user_id: 'U', title: 'past', start_at: NOW.getTime() - 10_000 });
+    store.create({ discord_user_id: 'U', title: 'second', start_at: NOW.getTime() + 20_000 });
+    store.create({ discord_user_id: 'U', title: 'first', start_at: NOW.getTime() + 10_000 });
+    const rows = store.listUpcoming('U', NOW.getTime(), 10);
     expect(rows.map((r) => r.title)).toEqual(['first', 'second']);
     memory.close();
   });
 
   test('search filters by query and optional date range', async () => {
     const { store, memory } = await newCapability();
-    store.create({ channel_id: 'C', discord_user_id: 'U', title: 'Sprint planning', start_at: NOW.getTime() + 1000 });
-    store.create({ channel_id: 'C', discord_user_id: 'U', title: 'Demo', description: 'Sprint demo for stakeholders', start_at: NOW.getTime() + 2000 });
-    store.create({ channel_id: 'C', discord_user_id: 'U', title: 'Unrelated', start_at: NOW.getTime() + 3000 });
-    const sprintMatches = store.search('C', 'U', 'mine', 'sprint', null, null, 10);
+    store.create({ discord_user_id: 'U', title: 'Sprint planning', start_at: NOW.getTime() + 1000 });
+    store.create({ discord_user_id: 'U', title: 'Demo', description: 'Sprint demo for stakeholders', start_at: NOW.getTime() + 2000 });
+    store.create({ discord_user_id: 'U', title: 'Unrelated', start_at: NOW.getTime() + 3000 });
+    const sprintMatches = store.search('U', 'sprint', null, null, 10);
     expect(sprintMatches.map((r) => r.title).sort()).toEqual(['Demo', 'Sprint planning']);
-    const ranged = store.search('C', 'U', 'mine', 'sprint', NOW.getTime() + 1500, null, 10);
+    const ranged = store.search('U', 'sprint', NOW.getTime() + 1500, null, 10);
     expect(ranged.map((r) => r.title)).toEqual(['Demo']);
     memory.close();
   });
 
-  test('migration is idempotent across reinitialisations', async () => {
+  test('migration v4 drops channel_id but preserves discord_user_id + recurrence columns', async () => {
     const memory = new SqliteMemoryStore({ path: ':memory:' });
     const c1 = new CalendarCapability();
     await c1.init({ memory: new NamespacedMemory(memory, c1.id), projectRoot: '.' });
@@ -220,19 +202,18 @@ describe('CalendarStore (direct)', () => {
     await c2.init({ memory: new NamespacedMemory(memory, c2.id), projectRoot: '.' });
     const tableInfo = memory.db().prepare('PRAGMA table_info(calendar_events)').all() as { name: string }[];
     const cols = tableInfo.map((c) => c.name);
-    expect(cols).toContain('channel_id');
+    expect(cols).not.toContain('channel_id');
     expect(cols).toContain('discord_user_id');
     expect(cols).toContain('recurrence_freq');
     expect(cols).toContain('recurrence_until');
     const indexes = memory.db().prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[];
-    expect(indexes.map((i) => i.name)).toContain('calendar_events_channel_user_start');
+    expect(indexes.map((i) => i.name)).toContain('calendar_events_user_start');
     memory.close();
   });
 
   test('recurring weekly event expands into multiple occurrences when listed', async () => {
     const { store, memory } = await newCapability();
     const master = store.create({
-      channel_id: 'C',
       discord_user_id: 'U',
       title: 'Book club',
       start_at: Date.parse('2026-05-27T02:00:00Z'),
@@ -241,7 +222,7 @@ describe('CalendarStore (direct)', () => {
     expect(master.recurrence_freq).toBe('weekly');
     expect(master.recurrence_until).toBeNull();
 
-    const rows = store.listUpcoming('C', 'U', 'mine', Date.parse('2026-05-27T00:00:00Z'), 4);
+    const rows = store.listUpcoming('U', Date.parse('2026-05-27T00:00:00Z'), 4);
     expect(rows).toHaveLength(4);
     expect(rows.every((r) => r.id === master.id)).toBe(true);
     expect(rows.map((r) => new Date(r.start_at).toISOString())).toEqual([
@@ -259,7 +240,6 @@ describe('CalendarStore (direct)', () => {
   test('recurring + one-off events merge and sort by occurrence start time', async () => {
     const { store, memory } = await newCapability();
     store.create({
-      channel_id: 'C',
       discord_user_id: 'U',
       title: 'Weekly standup',
       start_at: Date.parse('2026-05-27T15:00:00Z'),
@@ -267,12 +247,11 @@ describe('CalendarStore (direct)', () => {
       recurrence_until: Date.parse('2026-06-30T23:59:59Z'),
     });
     store.create({
-      channel_id: 'C',
       discord_user_id: 'U',
       title: 'One-off',
       start_at: Date.parse('2026-05-29T18:00:00Z'),
     });
-    const rows = store.listUpcoming('C', 'U', 'mine', Date.parse('2026-05-27T00:00:00Z'), 10);
+    const rows = store.listUpcoming('U', Date.parse('2026-05-27T00:00:00Z'), 10);
     const labels = rows.map((r) => `${r.title}@${new Date(r.start_at).toISOString().slice(0, 10)}`);
     expect(labels).toEqual([
       'Weekly standup@2026-05-27',
@@ -288,15 +267,14 @@ describe('CalendarStore (direct)', () => {
   test('updating recurrence_freq to null converts a series into a one-off', async () => {
     const { store, memory } = await newCapability();
     const master = store.create({
-      channel_id: 'C',
       discord_user_id: 'U',
       title: 'Was weekly',
       start_at: Date.parse('2026-05-27T15:00:00Z'),
       recurrence_freq: 'weekly',
     });
-    expect(store.listUpcoming('C', 'U', 'mine', master.start_at, 5).length).toBeGreaterThanOrEqual(2);
-    store.update('C', 'U', master.id, { recurrence_freq: null });
-    const after = store.listUpcoming('C', 'U', 'mine', master.start_at, 5);
+    expect(store.listUpcoming('U', master.start_at, 5).length).toBeGreaterThanOrEqual(2);
+    store.update('U', master.id, { recurrence_freq: null });
+    const after = store.listUpcoming('U', master.start_at, 5);
     expect(after).toHaveLength(1);
     expect(after[0].recurrence_freq).toBeNull();
     memory.close();
@@ -309,13 +287,11 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
   test('buildTurn snapshot is user-scoped — only the caller\'s events appear in the system prompt', async () => {
     const { cap, store, memory } = await newCapability();
     store.create({
-      channel_id: 'CHAN_A',
       discord_user_id: 'USER_1',
       title: 'Deploy review',
       start_at: Date.parse('2026-05-24T21:00:00Z'),
     });
     store.create({
-      channel_id: 'CHAN_A',
       discord_user_id: 'USER_2',
       title: 'Other user event',
       start_at: Date.parse('2026-05-24T22:00:00Z'),
@@ -341,6 +317,33 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
     });
     expect(turn2.system).toContain('Other user event');
     expect(turn2.system).not.toContain('Deploy review');
+    memory.close();
+  });
+
+  test('the same user sees their events from any channel bound to the capability', async () => {
+    const { cap, store, memory } = await newCapability();
+    store.create({
+      discord_user_id: 'USER_1',
+      title: 'Cross-channel event',
+      start_at: NOW.getTime() + 60_000,
+    });
+
+    const turnA = await cap.buildTurn({
+      channelId: 'CHAN_A',
+      guildId: null,
+      userId: 'USER_1',
+      userTag: 't',
+      now: NOW,
+    });
+    const turnB = await cap.buildTurn({
+      channelId: 'CHAN_B',
+      guildId: null,
+      userId: 'USER_1',
+      userTag: 't',
+      now: NOW,
+    });
+    expect(turnA.system).toContain('Cross-channel event');
+    expect(turnB.system).toContain('Cross-channel event');
     memory.close();
   });
 
@@ -372,23 +375,21 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
       tools: turn.tools,
     });
     expect(out).toContain('Deploy review');
-    const rows = store.listUpcoming('CHAN_A', 'USER_1', 'mine', NOW.getTime(), 10);
+    const rows = store.listUpcoming('USER_1', NOW.getTime(), 10);
     expect(rows).toHaveLength(1);
     expect(rows[0].title).toBe('Deploy review');
     expect(rows[0].discord_user_id).toBe('USER_1');
     memory.close();
   });
 
-  test('list path: returns only the calling user\'s events by default', async () => {
+  test('list path: returns only the calling user\'s events (no scope param)', async () => {
     const { cap, store, memory } = await newCapability();
     store.create({
-      channel_id: 'CHAN_A',
       discord_user_id: 'USER_1',
       title: 'Standup',
       start_at: NOW.getTime() + 60_000,
     });
     store.create({
-      channel_id: 'CHAN_A',
       discord_user_id: 'OTHER',
       title: 'OtherUserMeeting',
       start_at: NOW.getTime() + 90_000,
@@ -413,59 +414,14 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
     expect(out).toContain('Standup');
 
     const toolMsg = findToolMessage(1, 'l1');
-    const payload = JSON.parse(toolMsg.content) as { scope: string; events: Array<{ title: string }> };
-    expect(payload.scope).toBe('mine');
+    const payload = JSON.parse(toolMsg.content) as { events: Array<{ title: string }> };
     expect(payload.events.map((e) => e.title)).toEqual(['Standup']);
-    memory.close();
-  });
-
-  test('scope: "all" path: model can ask for the channel-wide calendar', async () => {
-    const { cap, store, memory } = await newCapability();
-    store.create({
-      channel_id: 'CHAN_A',
-      discord_user_id: 'USER_1',
-      title: 'Mine event',
-      start_at: NOW.getTime() + 60_000,
-    });
-    store.create({
-      channel_id: 'CHAN_A',
-      discord_user_id: 'OTHER',
-      title: 'TeamMeeting',
-      start_at: NOW.getTime() + 90_000,
-    });
-
-    createMock
-      .mockResolvedValueOnce(
-        toolCalls([{ id: 'l1', name: 'calendar_list_upcoming', input: { scope: 'all' } }]),
-      )
-      .mockResolvedValueOnce(endStop('Hay 2 eventos en el canal: Mine event y TeamMeeting.'));
-
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: '¿qué hay en el calendario del equipo?' }] as Turn[],
-      tools: turn.tools,
-    });
-    expect(out).toContain('TeamMeeting');
-
-    const toolMsg = findToolMessage(1, 'l1');
-    const payload = JSON.parse(toolMsg.content) as { scope: string; events: Array<{ title: string; discord_user_id: string }> };
-    expect(payload.scope).toBe('all');
-    expect(payload.events.map((e) => e.title).sort()).toEqual(['Mine event', 'TeamMeeting']);
-    expect(payload.events.some((e) => e.discord_user_id === 'OTHER')).toBe(true);
     memory.close();
   });
 
   test('cannot delete another user\'s event through the tool layer (returns not-found)', async () => {
     const { cap, store, memory } = await newCapability();
     const a = store.create({
-      channel_id: 'CHAN_A',
       discord_user_id: 'USER_A',
       title: 'A-event',
       start_at: NOW.getTime() + 60_000,
@@ -495,47 +451,13 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
     const payload = JSON.parse(toolMsg.content) as { error?: string };
     expect(payload.error).toMatch(/not found/);
     // Event survives:
-    expect(store.get('CHAN_A', 'USER_A', 'mine', a.id)?.title).toBe('A-event');
-    memory.close();
-  });
-
-  test('channel isolation through the tool layer: capability for CHAN_B cannot see CHAN_A events', async () => {
-    const { cap, store, memory } = await newCapability();
-    store.create({
-      channel_id: 'CHAN_A',
-      discord_user_id: 'USER_1',
-      title: 'Channel-A only',
-      start_at: NOW.getTime() + 1000,
-    });
-
-    createMock
-      .mockResolvedValueOnce(toolCalls([{ id: 'l1', name: 'calendar_list_upcoming', input: { scope: 'all' } }]))
-      .mockResolvedValueOnce(endStop('No tienes eventos próximos.'));
-
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_B',
-      guildId: null,
-      userId: 'OTHER',
-      userTag: 't',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: 'list events' }] as Turn[],
-      tools: turn.tools,
-    });
-    expect(out).toContain('No tienes');
-
-    const toolMsg = findToolMessage(1, 'l1');
-    const payload = JSON.parse(toolMsg.content) as { events: unknown[] };
-    expect(payload.events).toEqual([]);
+    expect(store.get('USER_A', a.id)?.title).toBe('A-event');
     memory.close();
   });
 
   test('delete echoes the deleted event back to the model as a tool result', async () => {
     const { cap, store, memory } = await newCapability();
     const created = store.create({
-      channel_id: 'CHAN_A',
       discord_user_id: 'USER_1',
       title: 'Lunch',
       start_at: NOW.getTime() + 60_000,
@@ -560,7 +482,7 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
       tools: turn.tools,
     });
     expect(out).toContain('Lunch');
-    expect(store.get('CHAN_A', 'USER_1', 'mine', created.id)).toBeNull();
+    expect(store.get('USER_1', created.id)).toBeNull();
     memory.close();
   });
 
@@ -601,7 +523,7 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
     });
     expect(out).toContain('miércoles');
 
-    const all = memory.db().prepare('SELECT * FROM calendar_events WHERE channel_id = ?').all('CHAN_A') as Array<{
+    const all = memory.db().prepare('SELECT * FROM calendar_events').all() as Array<{
       title: string;
       recurrence_freq: string | null;
       discord_user_id: string;

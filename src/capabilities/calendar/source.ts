@@ -4,24 +4,24 @@ import {
   CalendarStore,
   type CalendarEvent,
   type CalendarOccurrence,
-  type CalendarScope,
 } from './store.js';
 import { isRecurrenceFreq, RECURRENCE_FREQUENCIES, type RecurrenceFreq } from './recurrence.js';
 import { formatInTimezone } from './time.js';
 
 /**
- * Calendar tools, scoped to a single Discord channel **and** a single
- * Discord user. Every SQL read is hard-scoped: the user can choose to opt
- * into channel-wide visibility for queries via `scope: 'all'`, but mutations
- * are always scoped to themselves — the model cannot edit or delete another
- * user's events through these tools.
+ * Calendar tools, scoped to a single Discord user. Every event belongs to
+ * the calling user; the calendar is per-user globally — the same user sees
+ * the same events from any channel bound to this capability.
+ *
+ * There is no `scope: "all"` knob: a user cannot see another user's events
+ * through these tools. Cross-user admin operations live in the configuration
+ * capability via `config_calendar_peek` and `config_calendar_delete`.
  */
 export class CalendarToolSource implements ToolSource {
   readonly name = 'calendar';
 
   constructor(
     private readonly store: CalendarStore,
-    private readonly channelId: string,
     private readonly userId: string,
     private readonly nowMs: number,
   ) {}
@@ -35,7 +35,7 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_list_upcoming',
         description:
-          'List the next N events on this channel\'s calendar, ordered by start time. Default scope is the CURRENT user\'s events only — use this for "what\'s on my calendar", "what\'s coming up for me", "next events". Pass `scope: "all"` only when the user explicitly asks about the team/channel/shared calendar.',
+          'List the next N events on the calling user\'s calendar, ordered by start time. Use for "what\'s on my calendar", "what\'s coming up", "next events". Events are per-user — only the calling user\'s events are returned.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -45,19 +45,13 @@ export class CalendarToolSource implements ToolSource {
               minimum: 1,
               maximum: 25,
             },
-            scope: {
-              type: 'string',
-              enum: ['mine', 'all'],
-              description:
-                'Default "mine" (only the calling user\'s events). Use "all" when the user asks about channel-wide / team / shared events.',
-            },
           },
         },
       },
       {
         name: 'calendar_search_events',
         description:
-          'Search events by title or description (LIKE match), optionally filtered to a date range. Default scope is the CURRENT user\'s events. Use to check whether the user already has a similar event before creating one. Pass `scope: "all"` when the user explicitly asks about channel-wide events.',
+          'Search the calling user\'s events by title or description (LIKE match), optionally filtered to a date range. Use to check whether the user already has a similar event before creating one.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -72,12 +66,6 @@ export class CalendarToolSource implements ToolSource {
               description: 'Optional. ISO 8601 UTC upper bound on start_at.',
             },
             limit: { type: 'integer', minimum: 1, maximum: 25 },
-            scope: {
-              type: 'string',
-              enum: ['mine', 'all'],
-              description:
-                'Default "mine" (only the calling user\'s events). Use "all" for channel-wide search.',
-            },
           },
           required: ['query'],
         },
@@ -85,16 +73,11 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_get_event',
         description:
-          'Fetch one event by its numeric id. Default scope is "mine" — looking up another user\'s event by id returns not-found unless you pass `scope: "all"`.',
+          'Fetch one of the calling user\'s events by its numeric id. Looking up another user\'s event returns not-found.',
         inputSchema: {
           type: 'object',
           properties: {
             id: { type: 'integer', minimum: 1 },
-            scope: {
-              type: 'string',
-              enum: ['mine', 'all'],
-              description: 'Default "mine". Use "all" to fetch any event in the channel by id.',
-            },
           },
           required: ['id'],
         },
@@ -102,7 +85,7 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_create_event',
         description:
-          'Create a new event on this channel\'s calendar. The event is OWNED by the calling user (visible to them by default; visible to others only via `scope: "all"`). Resolve relative times ("tomorrow at 3pm") against the current time supplied in the system prompt; pass start_at as ISO 8601 UTC. For recurring events ("every Wednesday at 8pm"), set `recurrence_freq` — DO NOT create separate events for each occurrence.',
+          'Create a new event on the calling user\'s calendar. Resolve relative times ("tomorrow at 3pm") against the current time supplied in the system prompt; pass start_at as ISO 8601 UTC. For recurring events ("every Wednesday at 8pm"), set `recurrence_freq` — DO NOT create separate events for each occurrence.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -183,54 +166,29 @@ export class CalendarToolSource implements ToolSource {
       switch (toolName) {
         case 'calendar_list_upcoming': {
           const limit = clampInt(obj.limit, 1, 25, 10);
-          const scope = parseScope(obj.scope);
-          const rows = this.store.listUpcoming(
-            this.channelId,
-            this.userId,
-            scope,
-            this.nowMs,
-            limit,
-          );
-          log.info(
-            { tool: toolName, scope, count: rows.length, ms: Date.now() - t0 },
-            'tool_call',
-          );
-          return { status: 'success', payload: { scope, events: rows.map(serialize) } };
+          const rows = this.store.listUpcoming(this.userId, this.nowMs, limit);
+          log.info({ tool: toolName, count: rows.length, ms: Date.now() - t0 }, 'tool_call');
+          return { status: 'success', payload: { events: rows.map(serialize) } };
         }
         case 'calendar_search_events': {
           const query = asNonEmptyString(obj.query, 'query');
           const fromMs = parseOptionalIso(obj.from_iso, 'from_iso');
           const toMs = parseOptionalIso(obj.to_iso, 'to_iso');
           const limit = clampInt(obj.limit, 1, 25, 10);
-          const scope = parseScope(obj.scope);
-          const rows = this.store.search(
-            this.channelId,
-            this.userId,
-            scope,
-            query,
-            fromMs,
-            toMs,
-            limit,
-          );
+          const rows = this.store.search(this.userId, query, fromMs, toMs, limit);
           log.info(
-            { tool: toolName, scope, query, count: rows.length, ms: Date.now() - t0 },
+            { tool: toolName, query, count: rows.length, ms: Date.now() - t0 },
             'tool_call',
           );
-          return { status: 'success', payload: { scope, events: rows.map(serialize) } };
+          return { status: 'success', payload: { events: rows.map(serialize) } };
         }
         case 'calendar_get_event': {
           const id = asPositiveInt(obj.id, 'id');
-          const scope = parseScope(obj.scope);
-          const row = this.store.get(this.channelId, this.userId, scope, id);
+          const row = this.store.get(this.userId, id);
           if (!row) {
             return {
               status: 'error',
-              payload: {
-                error:
-                  scope === 'mine'
-                    ? `Event #${id} not found among your events in this channel.`
-                    : `Event #${id} not found in this channel.`,
-              },
+              payload: { error: `Event #${id} not found among your events.` },
             };
           }
           return { status: 'success', payload: { event: serializeMaster(row) } };
@@ -250,9 +208,7 @@ export class CalendarToolSource implements ToolSource {
           if (recurrenceUntil !== null && recurrenceFreq === null) {
             return {
               status: 'error',
-              payload: {
-                error: 'recurrence_until_iso requires recurrence_freq to also be set.',
-              },
+              payload: { error: 'recurrence_until_iso requires recurrence_freq to also be set.' },
             };
           }
           if (recurrenceUntil !== null && recurrenceUntil < startMs) {
@@ -264,7 +220,6 @@ export class CalendarToolSource implements ToolSource {
           const description = asOptionalString(obj.description);
           const location = asOptionalString(obj.location);
           const created = this.store.create({
-            channel_id: this.channelId,
             discord_user_id: this.userId,
             title,
             start_at: startMs,
@@ -290,7 +245,7 @@ export class CalendarToolSource implements ToolSource {
         }
         case 'calendar_update_event': {
           const id = asPositiveInt(obj.id, 'id');
-          const patch: Parameters<CalendarStore['update']>[3] = {};
+          const patch: Parameters<CalendarStore['update']>[2] = {};
           if (obj.title !== undefined) patch.title = asNonEmptyString(obj.title, 'title');
           if (obj.start_at_iso !== undefined) patch.start_at = parseRequiredIso(obj.start_at_iso, 'start_at_iso');
           if (obj.end_at_iso !== undefined) {
@@ -310,7 +265,7 @@ export class CalendarToolSource implements ToolSource {
           if (Object.keys(patch).length === 0) {
             return { status: 'error', payload: { error: 'No fields to update.' } };
           }
-          const updated = this.store.update(this.channelId, this.userId, id, patch);
+          const updated = this.store.update(this.userId, id, patch);
           if (!updated) {
             return {
               status: 'error',
@@ -322,7 +277,7 @@ export class CalendarToolSource implements ToolSource {
         }
         case 'calendar_delete_event': {
           const id = asPositiveInt(obj.id, 'id');
-          const deleted = this.store.delete(this.channelId, this.userId, id);
+          const deleted = this.store.delete(this.userId, id);
           if (!deleted) {
             return {
               status: 'error',
@@ -392,12 +347,6 @@ function serializeMaster(e: CalendarEvent) {
     created_by: e.created_by,
     created_at_iso: new Date(e.created_at).toISOString(),
   };
-}
-
-function parseScope(v: unknown): CalendarScope {
-  if (v === undefined || v === null || v === '') return 'mine';
-  if (v === 'mine' || v === 'all') return v;
-  throw new Error(`scope: must be "mine" or "all" (got ${JSON.stringify(v)})`);
 }
 
 function parseRecurrenceFreq(v: unknown, field: string): RecurrenceFreq | null {
