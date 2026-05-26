@@ -1,6 +1,10 @@
 import { describe, test, expect } from 'vitest';
 import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
-import { InstagramMonitorStore, INSTAGRAM_MONITOR_MIGRATIONS } from '../store.js';
+import {
+  InstagramMonitorStore,
+  INSTAGRAM_MONITOR_MIGRATIONS,
+  pollJitterMs,
+} from '../store.js';
 
 async function newStore() {
   const mem = new SqliteMemoryStore({ path: ':memory:' });
@@ -64,6 +68,48 @@ describe('InstagramMonitorStore', () => {
       .dueAccounts(now + 60 * 60_000, 20 * 60_000, 10)
       .map((d) => d.username);
     expect(dueLater).toContain('x');
+    mem.close();
+  });
+
+  test('pollJitterMs is deterministic, bounded, varies by account, and off-able', () => {
+    const max = 600_000;
+    const cycle = 1_700_000_000_000;
+    // Bounded to [0, max).
+    for (let id = 1; id <= 50; id++) {
+      const j = pollJitterMs(id, cycle, max);
+      expect(j).toBeGreaterThanOrEqual(0);
+      expect(j).toBeLessThan(max);
+    }
+    // Deterministic for the same (id, cycle).
+    expect(pollJitterMs(7, cycle, max)).toBe(pollJitterMs(7, cycle, max));
+    // Reshuffles when last_polled_at (the cycle) changes.
+    expect(pollJitterMs(7, cycle, max)).not.toBe(pollJitterMs(7, cycle + 999_999, max));
+    // Decorrelates accounts: not all 20 ids collapse to the same value.
+    const vals = new Set(
+      Array.from({ length: 20 }, (_, i) => pollJitterMs(i + 1, cycle, max)),
+    );
+    expect(vals.size).toBeGreaterThan(1);
+    // Disabled paths return 0.
+    expect(pollJitterMs(1, cycle, 0)).toBe(0);
+    expect(pollJitterMs(1, null, max)).toBe(0);
+  });
+
+  test('dueAccounts: jitter can defer an account that would be due without it', async () => {
+    const { store, mem } = await newStore();
+    const r = store.upsertAccount({ username: 'x', added_by: 'U' });
+    const interval = 20 * 60_000;
+    const now = 1_000_000_000;
+    // Polled exactly one interval ago: due when jitter is off (dueAt == now).
+    store.markPollSuccess(r.account.id, now - interval, 'A');
+    expect(store.dueAccounts(now, interval, 10, 0).map((a) => a.username)).toContain('x');
+    // Polled "now": never due regardless of jitter (dueAt strictly in future).
+    store.markPollSuccess(r.account.id, now, 'A');
+    expect(store.dueAccounts(now, interval, 10, interval).map((a) => a.username)).not.toContain(
+      'x',
+    );
+    // Polled beyond interval + max jitter: always due.
+    store.markPollSuccess(r.account.id, now - interval - interval - 1, 'A');
+    expect(store.dueAccounts(now, interval, 10, interval).map((a) => a.username)).toContain('x');
     mem.close();
   });
 

@@ -80,7 +80,11 @@ Single SQLite file, **one row per capability+version in `_migrations`** (see `sr
 
 ### Instagram monitor scheduler
 
-`InstagramMonitorScheduler` ticks every minute (`DEFAULT_TICK_MS`), polls each due account every ~20 min (`DEFAULT_POLL_INTERVAL_MS`), with `ACCOUNTS_PER_TICK=3` and `MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL=5`. **First-ever poll for an account seeds the dedup anchor and does NOT backfill** — only posts strictly newer than the last seen IG post id are processed.
+`InstagramMonitorScheduler` ticks every minute (`DEFAULT_TICK_MS`), polls each due account every ~20 min (`DEFAULT_POLL_INTERVAL_MS`), with `ACCOUNTS_PER_TICK=1` and `MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL=5`. **First-ever poll for an account seeds the dedup anchor and does NOT backfill** — only posts strictly newer than the last seen IG post id are processed.
+
+**One account per tick + jitter (anti-burst).** Polling is one account per minute (never a synchronized burst), and `store.dueAccounts()` adds a deterministic per-(account, cycle) jitter of up to `POLL_JITTER_FRACTION` (50%) of the interval to each account's next-due time, so accounts decorrelate and requests scatter irregularly across the window. The jitter is stable within a cycle (so an account never flickers in/out of "due" between ticks) and reshuffles after each poll. This both looks less bot-like and reduces IP throttling.
+
+**Pinned-post ordering gotcha.** Instagram returns *pinned* posts first, out of chronological order. The scheduler sorts fetched posts by `takenAtMs` before the dedup walk and anchor advance — otherwise a pinned (old) post sitting at array index 0 would freeze detection (the walk would hit the anchor immediately and never see newer posts below the pins).
 
 **Accounts are global** (one row per username, `instagram_monitor_accounts.UNIQUE(username)`). On every detection cycle the scheduler reads the live router for the list of channels currently bound to `instagram_monitor` and **fans out each new post to every bound channel** with per-channel dedup via `instagram_monitor_seen_posts (ig_post_id, channel_id)`. Consequences:
 - A newly-bound channel sees no backfill — its `seen_posts` rows start empty and the global `last_post_id` anchor is already current.
@@ -89,7 +93,13 @@ Single SQLite file, **one row per capability+version in `_migrations`** (see `sr
 
 Posts are pushed in chronological order even though the IG endpoint returns newest-first.
 
-In production, IG fetches go through an AWS Lambda relay (`INSTAGRAM_RELAY_LAMBDA_ARN`, region `AWS_REGION_LAMBDA_RELAY`, default `us-west-2`) so the outbound IP rotates from the Lambda pool. Unset → direct fetch from this Node process (fine for dev, risks IP throttling in prod). Direct mode requires the spoofed `sec-fetch-*` headers in `fetcher.ts` because Node's undici sends `sec-fetch-site: cross-site` by default and IG rejects it with a 400.
+The `INSTAGRAM_RELAY_LAMBDA_ARN` Lambda relay exists in the code but is a **dead end in practice**: Instagram blocks all AWS (datacenter) IP ranges, so rotating within the Lambda pool doesn't help. The bot runs **direct** from the host's residential IP. Direct mode requires the spoofed `sec-fetch-*` headers in `fetcher.ts` because Node's undici sends `sec-fetch-site: cross-site` by default and IG rejects it with a 400.
+
+**Two fetch modes in `DirectInstagramFetcher`:**
+- **Anonymous** (no `IG_SESSIONID`): hits the public `web_profile_info` GraphQL endpoint. Returns timeline media but is heavily IP-throttled (frequent `401 require_login`).
+- **Authenticated** (`IG_SESSIONID` + `IG_CSRFTOKEN` + `IG_DS_USER_ID` set, optional `IG_MID`/`IG_DID`): far higher rate limits. **Gotcha:** authed `web_profile_info` returns an *empty* timeline, so auth mode does a two-step fetch — resolve the account's numeric pk via `web_profile_info` (cached per handle), then read the private `feed/user/{pk}` endpoint (different REST item shape, parsed by `parseUserFeedBody`). The bare post id is recovered from the string `item.id` (`"{pk}_{owner}"`), not the numeric `item.pk` (which exceeds `Number.MAX_SAFE_INTEGER` and loses precision); this keeps dedup anchors consistent with the old GraphQL ids. Use a **throwaway** IG account — automated polling risks a ban.
+
+**Session expiry → notification.** A 401/403 (or `require_login` body) on an *authenticated* request throws `InstagramAuthError`, which the scheduler logs as `instagram_monitor.auth.expired`. The launchd log-watcher (`chopperbot-log-watcher.py`) matches that msg and fires a macOS `auth-expired` notification (`chopperbot-notify.sh`, Sosumi, rate-limited 1/hr) telling the operator to refresh the cookies in `.env`. Editing the parser requires restarting the `com.user.chopperbot-watcher` agent.
 
 ## Env & configuration gotchas
 

@@ -3,7 +3,7 @@ import type { Client } from 'discord.js';
 import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
 import { InstagramMonitorStore, INSTAGRAM_MONITOR_MIGRATIONS } from '../store.js';
 import { InstagramMonitorScheduler } from '../scheduler.js';
-import type { InstagramFetcher, RecentPost } from '../fetcher.js';
+import { InstagramAuthError, type InstagramFetcher, type RecentPost } from '../fetcher.js';
 import type { Classification } from '../classifier.js';
 import type { PublishResult } from '../publisher.js';
 
@@ -159,6 +159,56 @@ describe('InstagramMonitorScheduler', () => {
     mem.close();
   });
 
+  test('pinned posts (returned first, out of order) do not freeze detection', async () => {
+    // Instagram returns pinned posts at the top of the array regardless of age.
+    // The dedup anchor here IS the pinned post. The scheduler must sort by
+    // takenAtMs and still detect the chronologically-newest post sitting below
+    // the pins, instead of breaking immediately on the anchor at index 0.
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    // Anchor = the pinned post 'PIN'.
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'PIN');
+
+    const publish = vi.fn(async (
+      _client: Client,
+      _channelId: string,
+      _account: string,
+      p: RecentPost,
+    ): Promise<PublishResult> => ({ ok: true, messageId: p.igPostId }));
+
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({
+        foo: [
+          post('PIN', { takenAtMs: 2_000 }), // pinned, returned first, but OLD
+          post('NEW', { takenAtMs: 3_000 }), // genuinely newest, sits below pin
+          post('OLD', { takenAtMs: 1_000 }),
+        ],
+      }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => ({
+        relevant: true,
+        type: 'evento',
+        title: 't',
+        summary: 's',
+        when: null,
+        where: null,
+        tags: [],
+      }),
+      publish,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    // Only NEW is published; PIN (the anchor) stops the walk, OLD is older.
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect((publish.mock.calls[0][3] as RecentPost).igPostId).toBe('NEW');
+    // Anchor advances to the time-newest post, not the pinned one.
+    expect(store.getAccount('foo')?.last_post_id).toBe('NEW');
+    mem.close();
+  });
+
   test('marks failure + advances backoff on fetch error', async () => {
     const { store, mem } = await newStore();
     store.upsertAccount({ username: 'foo', added_by: 'U' });
@@ -189,6 +239,40 @@ describe('InstagramMonitorScheduler', () => {
     const a = store.getAccount('foo')!;
     expect(a.consecutive_failures).toBe(1);
     expect(a.last_polled_at).not.toBeNull();
+    mem.close();
+  });
+
+  test('auth error is caught, records a failure, and publishes nothing', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0');
+    const fetcher: InstagramFetcher = {
+      source: () => 'direct',
+      async fetchRecentPosts() {
+        throw new InstagramAuthError('session expired');
+      },
+    };
+    const publish = vi.fn();
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher,
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => ({
+        relevant: false,
+        type: 'otro',
+        title: '',
+        summary: '',
+        when: null,
+        where: null,
+        tags: [],
+      }),
+      publish: publish as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+    expect(store.getAccount('foo')!.consecutive_failures).toBe(1);
+    expect(publish).not.toHaveBeenCalled();
     mem.close();
   });
 

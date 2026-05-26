@@ -111,6 +111,26 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
 /** Backoff: next allowed poll is min(POLL_INTERVAL * 2^failures, MAX_BACKOFF). */
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
+/**
+ * Deterministic per-(account, poll-cycle) jitter in [0, maxJitterMs). Added to
+ * an account's next-due time so accounts decorrelate and polls scatter
+ * irregularly across the interval instead of firing in a synchronized burst.
+ *
+ * It's stable within a cycle (depends only on id + last_polled_at, both fixed
+ * until the next poll) so an account never flickers in/out of "due" between
+ * ticks, and it reshuffles after each poll because last_polled_at changes.
+ */
+export function pollJitterMs(
+  id: number,
+  lastPolledAt: number | null,
+  maxJitterMs: number,
+): number {
+  if (maxJitterMs <= 0 || lastPolledAt === null) return 0;
+  let seed = Math.imul(id ^ 0x9e3779b9, 2654435761) ^ Math.imul(lastPolledAt | 0, 40503);
+  seed = (seed >>> 0) % 1_000_000;
+  return Math.floor((seed / 1_000_000) * maxJitterMs);
+}
+
 export interface AddAccountInput {
   username: string;
   added_by: string;
@@ -172,7 +192,12 @@ export class InstagramMonitorStore {
    * elapsed accounting for exponential backoff on consecutive_failures).
    * Ordered oldest-first so naturally-staggered polls don't burst.
    */
-  dueAccounts(nowMs: number, pollIntervalMs: number, limit: number): MonitoredAccount[] {
+  dueAccounts(
+    nowMs: number,
+    pollIntervalMs: number,
+    limit: number,
+    jitterMaxMs = 0,
+  ): MonitoredAccount[] {
     const rows = this.db
       .prepare(
         `SELECT * FROM instagram_monitor_accounts
@@ -184,7 +209,8 @@ export class InstagramMonitorStore {
     for (const r of rows) {
       const dueAt =
         (r.last_polled_at ?? 0) +
-        Math.min(pollIntervalMs * 2 ** Math.min(r.consecutive_failures, 10), MAX_BACKOFF_MS);
+        Math.min(pollIntervalMs * 2 ** Math.min(r.consecutive_failures, 10), MAX_BACKOFF_MS) +
+        pollJitterMs(r.id, r.last_polled_at, jitterMaxMs);
       if (r.last_polled_at === null || nowMs >= dueAt) {
         out.push(r);
         if (out.length >= limit) break;

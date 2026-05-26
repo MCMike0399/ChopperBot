@@ -1,13 +1,20 @@
 import type { Client } from 'discord.js';
 import { log } from '../../log.js';
 import type { InstagramMonitorStore, MonitoredAccount } from './store.js';
-import type { InstagramFetcher, RecentPost } from './fetcher.js';
+import { InstagramAuthError, type InstagramFetcher, type RecentPost } from './fetcher.js';
 import { classifyPost, type Classification } from './classifier.js';
 import { fetchCover as defaultFetchCover, publishPost as defaultPublishPost, type PublishResult } from './publisher.js';
 
 export const DEFAULT_POLL_INTERVAL_MS = 20 * 60 * 1000;
 export const DEFAULT_TICK_MS = 60 * 1000;
-const ACCOUNTS_PER_TICK = 3;
+// One account per tick (≤1 outbound IG request per minute) so we never fire a
+// synchronized burst that looks like a bot. With a 60s tick and 20min interval
+// this comfortably keeps up to ~20 accounts on cadence.
+const ACCOUNTS_PER_TICK = 1;
+// Up to +50% of the poll interval of random, per-account jitter on each
+// account's next-due time, so the accounts decorrelate and polls scatter
+// irregularly across the window rather than marching in lockstep.
+export const POLL_JITTER_FRACTION = 0.5;
 const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
 
 /** Function signatures injected by the capability; tests can swap them. */
@@ -90,7 +97,13 @@ export class InstagramMonitorScheduler {
     this.tickInFlight = true;
     const t0 = Date.now();
     try {
-      const due = this.deps.store.dueAccounts(Date.now(), this.pollIntervalMs, ACCOUNTS_PER_TICK);
+      const jitterMaxMs = Math.floor(this.pollIntervalMs * POLL_JITTER_FRACTION);
+      const due = this.deps.store.dueAccounts(
+        Date.now(),
+        this.pollIntervalMs,
+        ACCOUNTS_PER_TICK,
+        jitterMaxMs,
+      );
       if (due.length === 0) return;
       log.info({ due: due.length }, 'instagram_monitor.tick');
       for (const acc of due) {
@@ -114,10 +127,19 @@ export class InstagramMonitorScheduler {
       );
     } catch (err) {
       this.deps.store.markPollFailure(acc.id, Date.now());
-      log.warn(
-        { account: acc.username, err, failures: acc.consecutive_failures + 1 },
-        'instagram_monitor.fetch.failed',
-      );
+      if (err instanceof InstagramAuthError) {
+        // Distinct from ordinary throttling: the IG session cookies are dead.
+        // The log-watcher alerts on this msg so the operator can refresh them.
+        log.error(
+          { account: acc.username, err: String(err) },
+          'instagram_monitor.auth.expired',
+        );
+      } else {
+        log.warn(
+          { account: acc.username, err, failures: acc.consecutive_failures + 1 },
+          'instagram_monitor.fetch.failed',
+        );
+      }
       return;
     }
 
@@ -126,15 +148,20 @@ export class InstagramMonitorScheduler {
       return;
     }
 
-    // Posts arrive newest-first. Walk forward to collect everything strictly
-    // newer than the dedup anchor.
+    // Instagram returns PINNED posts first, out of chronological order, so the
+    // raw array order is not a reliable "newest first". Sort by capture time
+    // so the dedup anchor tracks the genuinely-newest post and pinned-but-old
+    // posts can't freeze detection.
+    const ordered = [...posts].sort((a, b) => b.takenAtMs - a.takenAtMs);
+
+    // Walk forward to collect everything strictly newer than the dedup anchor.
     const newPostsNewestFirst: RecentPost[] = [];
-    for (const p of posts) {
+    for (const p of ordered) {
       if (acc.last_post_id !== null && p.igPostId === acc.last_post_id) break;
       newPostsNewestFirst.push(p);
     }
 
-    const newestPostId = posts[0].igPostId;
+    const newestPostId = ordered[0].igPostId;
 
     // First-ever poll: no anchor → don't backfill anything, just seed.
     if (acc.last_post_id === null) {

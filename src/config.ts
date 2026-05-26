@@ -59,6 +59,17 @@ const ConfigSchema = z.object({
   // local dev on a residential IP). The Lambda is in us-west-2 by default.
   INSTAGRAM_RELAY_LAMBDA_ARN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   AWS_REGION_LAMBDA_RELAY: z.string().min(1).default('us-west-2'),
+  // Instagram session auth (optional). When IG_SESSIONID + IG_CSRFTOKEN +
+  // IG_DS_USER_ID are all present, direct fetches attach the logged-in cookies
+  // and x-csrftoken header, which gets far higher rate limits than anonymous
+  // requests. Use a THROWAWAY account — automated polling risks a ban. Sessions
+  // expire; the scheduler logs `instagram_monitor.auth.expired` so the
+  // log-watcher can alert you to refresh the cookies.
+  IG_SESSIONID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  IG_CSRFTOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  IG_DS_USER_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  IG_MID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  IG_DID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
 });
 
 const parsed = ConfigSchema.safeParse(process.env);

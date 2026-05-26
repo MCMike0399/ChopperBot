@@ -12,6 +12,7 @@ import { INSTAGRAM_MONITOR_MIGRATIONS, InstagramMonitorStore } from './store.js'
 import {
   DirectInstagramFetcher,
   LambdaInstagramFetcher,
+  type InstagramAuth,
   type InstagramFetcher,
 } from './fetcher.js';
 import { AwsLambdaRelay } from './lambda-relay-client.js';
@@ -50,10 +51,22 @@ export class InstagramMonitorCapability implements Capability {
         'InstagramMonitorCapability initialized (production: Lambda relay)',
       );
     } else {
-      this.fetcher = new DirectInstagramFetcher();
+      const auth: InstagramAuth | null =
+        config.IG_SESSIONID && config.IG_CSRFTOKEN && config.IG_DS_USER_ID
+          ? {
+              sessionid: config.IG_SESSIONID,
+              csrftoken: config.IG_CSRFTOKEN,
+              dsUserId: config.IG_DS_USER_ID,
+              mid: config.IG_MID,
+              igDid: config.IG_DID,
+            }
+          : null;
+      this.fetcher = new DirectInstagramFetcher(auth);
       log.warn(
-        { capability: this.id, source: 'direct' },
-        'InstagramMonitorCapability initialized in DIRECT mode (no INSTAGRAM_RELAY_LAMBDA_ARN set). OK for local dev; in prod this risks IP throttling.',
+        { capability: this.id, source: 'direct', authed: auth !== null },
+        auth
+          ? 'InstagramMonitorCapability initialized in DIRECT+AUTH mode (logged-in IG session cookies). Higher rate limits; session can expire (watch for instagram_monitor.auth.expired).'
+          : 'InstagramMonitorCapability initialized in DIRECT mode (no auth). OK for local dev; in prod this risks IP throttling.',
       );
     }
   }
