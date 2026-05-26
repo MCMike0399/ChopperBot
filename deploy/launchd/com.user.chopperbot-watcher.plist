@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.chopperbot-watcher</string>
+
+    <!--
+        Tails the bot's pino log and fires macOS notifications via osascript.
+        Designed to run forever; if it exits, launchd restarts it.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/burbujamc/.local/bin/chopperbot-log-watcher.sh</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>CHOPPERBOT_LOG</key>
+        <string>/Users/burbujamc/Library/Logs/chopperbot-bot.out.log</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-watcher.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-watcher.err.log</string>
+</dict>
+</plist>

@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.chopperbot-daily-summary</string>
+
+    <!--
+        Fires once a day at 21:00 local. Reads the DB and emits a single
+        macOS notification with today's push/skip/failure breakdown.
+        StartCalendarInterval is launchd's cron; daylight-saving safe.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/burbujamc/.local/bin/chopperbot-daily-summary.sh</string>
+    </array>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>21</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <!-- Don't keep alive — single-shot per day. -->
+    <key>RunAtLoad</key>
+    <false/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-daily-summary.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-daily-summary.err.log</string>
+</dict>
+</plist>

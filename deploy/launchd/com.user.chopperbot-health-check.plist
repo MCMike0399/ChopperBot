@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.chopperbot-health-check</string>
+
+    <!--
+        Runs every 30 minutes. Two checks:
+          1. Silent bot — no scheduler tick logged in 2h → alarm.
+          2. Account silent for 7+ days — newest fetched post per account is
+             older than a week → info notification (once per day per account).
+        Together these cover the "running but stuck" and "running but the
+        watched accounts are dead" failure modes that the realtime watcher
+        wouldn't notice.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/Users/burbujamc/.local/bin/chopperbot-health-check.sh</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>1800</integer>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-health-check.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-health-check.err.log</string>
+</dict>
+</plist>

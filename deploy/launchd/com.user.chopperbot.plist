@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.chopperbot</string>
+
+    <!--
+        Supervises the Discord bot. KeepAlive=true means launchd restarts it
+        on any exit (including clean SIGTERM), so you get auto-restart on
+        crashes, OS reboots, and network blips that kill the Node process.
+        ThrottleInterval=15 stops crashloops from saturating the CPU.
+
+        WorkingDirectory matters: dotenv reads .env from CWD, and pnpm needs
+        the project root to find package.json. Without these the bot exits
+        with "Invalid environment configuration".
+
+        `unset KIMI_API_KEY` runs before pnpm so a stale shell var (like the
+        one that burned an evening in May 2026) can't shadow .env again.
+    -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>-lc</string>
+        <string>unset KIMI_API_KEY; exec pnpm run start</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/burbujamc/Documents/Documents - MacBook/ChopperBot-public</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>NODE_ENV</key>
+        <string>production</string>
+    </dict>
+
+    <!--
+        KeepAlive runs only when conditions are met:
+        - Don't restart on a clean SuccessfulExit (lets you "stop for the
+          day" with `launchctl bootout`).
+        - Restart on Crashed (any signal exit).
+        - PathState gates on PORTABLESSD being mounted — if the external
+          SSD is unplugged, the bot stays down instead of crashlooping.
+    -->
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+        <key>Crashed</key>
+        <true/>
+        <key>PathState</key>
+        <dict>
+            <key>/Users/burbujamc/Documents/Documents - MacBook/ChopperBot-public</key>
+            <true/>
+        </dict>
+    </dict>
+
+    <key>ThrottleInterval</key>
+    <integer>15</integer>
+
+    <!-- Start at login so the bot is up whenever the user is logged in. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!--
+        Logs go to ~/Library/Logs/, NOT /Users/burbujamc/Documents/Documents - MacBook/ChopperBot-public/logs/.
+        launchd in the gui domain fails with EX_CONFIG=78 when opening
+        stdout/stderr on the external SSD even though /bin/bash has Full
+        Disk Access. Matches the pattern from the user's other launchd
+        agents (docker-storage-switch, mac-cleanup-monthly).
+        chopperbot-log-watcher.sh and chopperbot-status.sh tail this path.
+    -->
+    <key>StandardOutPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-bot.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/burbujamc/Library/Logs/chopperbot-bot.err.log</string>
+</dict>
+</plist>

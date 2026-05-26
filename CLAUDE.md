@@ -25,7 +25,9 @@ KIMI_API_KEY=sk-kimi-... tsx scripts/live-kimi-smoke.ts
 
 ## Deployment context — IMPORTANT
 
-This `ChopperBot-public` directory is the **open-source mirror**. The actually-deployed bot runs from a sibling `ChopperBot/` directory (private), supervised by macOS launchd. **Code edits here do not affect the running bot.** See `~/Library/LaunchAgents/com.user.chopperbot*.plist` if you need to verify which path the supervisor points at.
+As of 2026-05-26 this `ChopperBot-public` directory **IS** the live deployment, supervised by macOS launchd (the former private sibling `ChopperBot/` was consolidated into this dir and deleted). **Edits here affect the running bot — but only after `pnpm run build`**, since launchd runs `pnpm run start` → `node dist/index.js`, not `tsx watch`. To pick up changes: `pnpm run build && launchctl kickstart -k gui/$(id -u)/com.user.chopperbot`.
+
+The launchd plists and the helper scripts they invoke live **outside** this repo (`~/Library/LaunchAgents/com.user.chopperbot*.plist` and `~/.local/bin/chopperbot-*`). Version-controlled snapshots are kept in **`deploy/`** (`deploy/launchd/` = the 4 plists, `deploy/bin/` = the 6 helper scripts). Those snapshots are not auto-synced — if you change a deployed plist/script, re-copy it into `deploy/`. See the "Logs & observability" section and the launchd memory for what each agent does.
 
 ## Architecture
 
