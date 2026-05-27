@@ -25,9 +25,22 @@ KIMI_API_KEY=sk-kimi-... tsx scripts/live-kimi-smoke.ts
 
 ## Deployment context — IMPORTANT
 
-As of 2026-05-26 this `ChopperBot-public` directory **IS** the live deployment, supervised by macOS launchd (the former private sibling `ChopperBot/` was consolidated into this dir and deleted). **Edits here affect the running bot — but only after `pnpm run build`**, since launchd runs `pnpm run start` → `node dist/index.js`, not `tsx watch`. To pick up changes: `pnpm run build && launchctl kickstart -k gui/$(id -u)/com.user.chopperbot`.
+As of 2026-05-27 the live deployment runs on a **Raspberry Pi** (`raspberrypi`, `aarch64`, Node 22 at `/usr/bin/node`), supervised by a **systemd user service**. This repo directory at `/home/burbujamc/Documentos/ChopperBot` **IS** that live deployment. The former macOS/launchd host was decommissioned; see `RASPBERRY_PI_MIGRATION.md` for the full migration record.
 
-The launchd plists and the helper scripts they invoke live **outside** this repo (`~/Library/LaunchAgents/com.user.chopperbot*.plist` and `~/.local/bin/chopperbot-*`). Version-controlled snapshots are kept in **`deploy/`** (`deploy/launchd/` = the 4 plists, `deploy/bin/` = the 6 helper scripts). Those snapshots are not auto-synced — if you change a deployed plist/script, re-copy it into `deploy/`. See the "Logs & observability" section and the launchd memory for what each agent does.
+**Edits here affect the running bot — but only after `pnpm run build`**, since systemd runs `node dist/index.js` directly (not `pnpm`, not `tsx watch`). To pick up changes:
+
+```bash
+pnpm run build && systemctl --user restart chopperbot.service
+systemctl --user status chopperbot.service        # confirm: active (running)
+```
+
+The single unit is **`chopperbot.service`** (a `systemd --user` unit at `~/.config/systemd/user/chopperbot.service`). It runs `node dist/index.js` with `WorkingDirectory=` the repo root (so dotenv reads `.env` from here), `Restart=always`/`RestartSec=15`, and a crashloop guard (`StartLimitIntervalSec=300`/`StartLimitBurst=10`). `loginctl enable-linger` is set so it starts at **boot** without an interactive login. Running `node` directly (no shell rc sourced) is deliberate — it stops a stale `export KIMI_API_KEY=...` in `~/.bashrc` from shadowing `.env`.
+
+The unit is generated from the template at **`deploy/systemd/chopperbot.service`** by substituting two placeholders (`__REPO__` → repo root, `__NODE__` → node path). That snapshot is not auto-synced — if you change the installed unit, re-copy it into `deploy/` (and run `systemctl --user daemon-reload`).
+
+**The three auxiliary launchd agents were intentionally NOT ported.** On the Mac, `com.user.chopperbot-watcher` (log-watcher → desktop notifications), `com.user.chopperbot-daily-summary` (21:00 notification), and `com.user.chopperbot-health-check` (every 30 min) all fired `osascript`/Sosumi notifications, and `chopperbot-status.sh` was a SwiftBar menu-bar plugin — none of that exists on a headless Pi. **On the Pi there are no timers and no watcher: observability is `journalctl` only** (see "Logs & observability"). In particular, the `instagram_monitor.auth.expired` log line that the Mac watcher turned into a notification now just sits in the journal — grep for it manually. If push alerts are wanted later, the cleanest add is a log-tail service POSTing to ntfy.sh or a Discord webhook (`deploy/bin/chopperbot-log-watcher.py` has the matching logic; only the `notify()` sink changes).
+
+The old macOS artifacts are kept in **`deploy/`** purely for reference/rollback: `deploy/launchd/` = the 4 original plists, `deploy/bin/` = the 6 helper scripts. They are **not** used by the Pi.
 
 ## Architecture
 
@@ -116,4 +129,18 @@ The `INSTAGRAM_RELAY_LAMBDA_ARN` Lambda relay exists in the code but is a **dead
 
 ## Logs & observability
 
-The bot logs JSON via pino. For readable output pipe through `pino-pretty`: `pnpm run start | pino-pretty`.
+The bot logs JSON (pino) to stdout, which systemd routes to **journald**. There are no log files on the Pi.
+
+```bash
+journalctl --user -u chopperbot -f                    # live tail
+journalctl --user -u chopperbot -f -o cat | npx pino-pretty   # pretty
+journalctl --user -u chopperbot -b -n 100 --no-pager  # since boot / last 100 lines
+```
+
+Log lines worth recognizing: `Discord client ready` (gateway up), `InstagramMonitorCapability scheduler started` then recurring `instagram_monitor.tick` (poller alive), `instagram_monitor.auth.expired` (**IG cookies expired** — refresh `IG_SESSIONID`/`IG_CSRFTOKEN`/`IG_DS_USER_ID` in `.env`, then `systemctl --user restart chopperbot.service`), and pino `level: 50/60` = warn/error/fatal.
+
+For ad-hoc state (no status UI on the Pi), query SQLite directly, e.g. `sqlite3 data/chopperbot.db 'SELECT username, consecutive_failures, last_polled_at FROM instagram_monitor_accounts ORDER BY username;'`.
+
+If `systemctl --user` over SSH says "Failed to connect to bus", the session has no user D-Bus: `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
+
+For local dev (not the deployed service), `pnpm run start | pino-pretty` still works.
