@@ -124,7 +124,11 @@ function renderText(account: string, post: RecentPost, c: Classification): strin
   const tags = c.tags.length > 0 ? `\nTags: ${c.tags.map((t) => `\`${t}\``).join(' · ')}` : '';
   const url = `https://instagram.com/p/${post.shortcode}`;
   const body = c.summary || c.title;
-  return `${emoji} **${c.title || '(sin título)'}**\n_${meta.join(' · ')}_${tags}\n\n${body}\n\n🔗 ${url}`;
+  // Italicize the meta line with `*…*` rather than `_…_`: Discord's
+  // underscore-italic won't close when adjacent to an alphanumeric (the line
+  // ends in a digit, e.g. "12:01"), leaving a stray literal `_`. Asterisks have
+  // no intraword restriction and close cleanly.
+  return `${emoji} **${c.title || '(sin título)'}**\n*${meta.join(' · ')}*${tags}\n\n${body}\n\n🔗 ${url}`;
 }
 
 async function fetchBytes(url: string): Promise<Uint8Array | null> {
