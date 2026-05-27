@@ -19,6 +19,13 @@ export interface MonitoredAccount {
   paused: number;
   last_polled_at: number | null;
   last_post_id: string | null;
+  /**
+   * Capture time (`takenAtMs`) of the post `last_post_id` points at. The dedup
+   * anchor's *timestamp*, not just its id. Used to gate detection by time when
+   * IG returns a window that omits the anchor post, and to guarantee the anchor
+   * never moves backward in time. Null only for fresh/legacy rows.
+   */
+  last_post_at: number | null;
   consecutive_failures: number;
 }
 
@@ -104,6 +111,33 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
 
       CREATE INDEX IF NOT EXISTS instagram_monitor_accounts_paused
         ON instagram_monitor_accounts (paused);
+    `,
+  },
+  {
+    // v3 — record the dedup anchor's capture time alongside its id.
+    //
+    // The old detection walked the fetched feed until it hit the anchor *id*
+    // and treated everything above it as new. That breaks catastrophically
+    // when IG returns a stale/paginated window that OMITS the anchor post:
+    // the walk never finds it, classifies the entire (old) batch as new, and
+    // backfills weeks-old posts — and `markPollSuccess` then moves the anchor
+    // BACKWARD to that batch's (older) newest. Tracking the anchor's timestamp
+    // lets the scheduler time-gate the anchor-missing case and refuse to
+    // regress the anchor.
+    //
+    // Backfill from each account's newest already-seen post so existing rows
+    // get a correct anchor time immediately (accounts with no seen history
+    // stay NULL → the scheduler re-seeds them without backfilling).
+    version: 3,
+    up: `
+      ALTER TABLE instagram_monitor_accounts ADD COLUMN last_post_at INTEGER;
+
+      UPDATE instagram_monitor_accounts
+        SET last_post_at = (
+          SELECT MAX(s.posted_at)
+          FROM instagram_monitor_seen_posts s
+          WHERE s.account_username = instagram_monitor_accounts.username
+        );
     `,
   },
 ];
@@ -219,7 +253,12 @@ export class InstagramMonitorStore {
     return out;
   }
 
-  markPollSuccess(id: number, nowMs: number, newLastPostId: string | null): void {
+  markPollSuccess(
+    id: number,
+    nowMs: number,
+    newLastPostId: string | null,
+    newLastPostAt: number | null = null,
+  ): void {
     if (newLastPostId === null) {
       this.db
         .prepare(
@@ -232,10 +271,10 @@ export class InstagramMonitorStore {
       this.db
         .prepare(
           `UPDATE instagram_monitor_accounts
-           SET last_polled_at = ?, last_post_id = ?, consecutive_failures = 0
+           SET last_polled_at = ?, last_post_id = ?, last_post_at = ?, consecutive_failures = 0
            WHERE id = ?`,
         )
-        .run(nowMs, newLastPostId, id);
+        .run(nowMs, newLastPostId, newLastPostAt, id);
     }
   }
 
@@ -256,7 +295,7 @@ export class InstagramMonitorStore {
     this.db
       .prepare(
         `UPDATE instagram_monitor_accounts
-         SET last_post_id = NULL, last_polled_at = NULL
+         SET last_post_id = NULL, last_post_at = NULL, last_polled_at = NULL
          WHERE username = ?`,
       )
       .run(username);
