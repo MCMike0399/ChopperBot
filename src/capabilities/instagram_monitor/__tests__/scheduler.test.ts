@@ -524,6 +524,44 @@ describe('InstagramMonitorScheduler', () => {
     mem.close();
   });
 
+  test('inconsistent row (anchor id older than anchor time) does not backfill', async () => {
+    // The v3 migration backfills last_post_at = MAX(seen posted_at) without
+    // touching last_post_id, so a row that was mid-bug can end up with
+    // last_post_id pointing at a post OLDER than last_post_at. If that old
+    // anchor post reappears in the window with posts between it and the anchor
+    // time, the time-floor must still suppress them.
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const id = store.getAccount('foo')!.id;
+    // Anchor id points at t=2000, but recorded anchor time is t=5000.
+    store.markPollSuccess(id, 1, 'OLDANCHOR', 5_000);
+
+    const publish = vi.fn(async () => ({ ok: true, messageId: 'm' } as PublishResult));
+    const classify = vi.fn();
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({
+        foo: [
+          post('MID2', { takenAtMs: 4_000 }), // between anchor id and anchor time
+          post('MID1', { takenAtMs: 3_000 }),
+          post('OLDANCHOR', { takenAtMs: 2_000 }), // anchor present, but old
+        ],
+      }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify,
+      publish,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    // MID1/MID2 are above the anchor id but <= anchor time → suppressed.
+    expect(classify).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(store.getAccount('foo')?.last_post_at).toBe(5_000);
+    mem.close();
+  });
+
   test('seeding records the anchor capture time', async () => {
     const { store, mem } = await newStore();
     store.upsertAccount({ username: 'foo', added_by: 'U' });
