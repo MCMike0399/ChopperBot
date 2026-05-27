@@ -13,6 +13,9 @@ import type { UserDirectory } from '../../users/store.js';
 import { CONFIGURATION_CAPABILITY_ID } from './constants.js';
 import { CONFIGURATION_MIGRATIONS, ConfigurationStore } from './store.js';
 import { ConfigurationToolSource } from './source.js';
+import { ConfigInstagramAdminSource } from './instagram-admin-source.js';
+import { ConfigCalendarAdminSource } from './calendar-admin-source.js';
+import { ConfigDbSource } from './db-source.js';
 import { renderConfigurationPrompt } from './preamble.js';
 
 /**
@@ -77,7 +80,7 @@ export class ConfigurationCapability implements Capability {
       );
     }
     const userDirectory: UserDirectory = this.getUserDirectory();
-    const source = new ConfigurationToolSource({
+    const core = new ConfigurationToolSource({
       store: this.store,
       db: this.db,
       registry: this.getRegistry(),
@@ -88,9 +91,18 @@ export class ConfigurationCapability implements Capability {
       startedAtMs: this.startedAtMs,
       dbPath: this.dbPath,
     });
+    const instagram = new ConfigInstagramAdminSource({
+      db: this.db,
+      callerUserId: ctx.userId,
+    });
+    const calendar = new ConfigCalendarAdminSource({
+      db: this.db,
+      userDirectory,
+    });
+    const database = new ConfigDbSource({ db: this.db, store: this.store });
     return {
       system: renderConfigurationPrompt(ctx.now),
-      tools: composeToolSources([source]),
+      tools: composeToolSources([core, instagram, calendar, database]),
     };
   }
 }

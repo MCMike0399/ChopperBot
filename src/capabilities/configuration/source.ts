@@ -1,18 +1,23 @@
 import { statSync } from 'node:fs';
 import type Database from 'better-sqlite3';
 import type { Client, Guild, GuildBasedChannel } from 'discord.js';
-import { ChannelType } from 'discord.js';
+import { ChannelType, PermissionsBitField } from 'discord.js';
 import { config } from '../../config.js';
 import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
 import type { CapabilityRegistry } from '../registry.js';
 import type { MutableCapabilityRouter } from '../routing.js';
-import { CalendarStore } from '../calendar/store.js';
-import { formatInTimezone } from '../calendar/time.js';
 import type { UserDirectory } from '../../users/store.js';
 import { CONFIGURATION_CAPABILITY_ID, CONFIGURATION_CHANNEL_ID } from './constants.js';
 import { GENERAL_CHAT_CAPABILITY_ID } from '../general_chat/constants.js';
 import { ConfigurationStore } from './store.js';
+
+/**
+ * Capability id of the Instagram monitor. Hardcoded here (not imported from
+ * instagram_monitor/capability.ts) to keep the configuration source decoupled
+ * from the IG runtime module — we only need the string to flag push channels.
+ */
+const INSTAGRAM_MONITOR_CAPABILITY_ID = 'instagram_monitor';
 
 export interface ConfigurationToolSourceDeps {
   store: ConfigurationStore;
@@ -38,147 +43,58 @@ export class ConfigurationToolSource implements ToolSource {
   tools(): ToolSpec[] {
     return [
       {
-        name: 'config_list_bindings',
+        name: 'config_bindings',
         description:
-          "List every channel→capability binding currently active. Returns the capability id, description, the channel's name/guild when the bot can see it, and when/by-whom the binding was last set.",
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'config_bind_channel',
-        description:
-          "Bind a Discord channel to a capability. Persisted to SQLite AND applied to the live router (no restart needed). Refuses to touch the hardcoded configuration channel and refuses to bind anything to the 'configuration' capability.",
+          'Channel↔capability routing. `action` selects the operation:\n' +
+          '• "list" — every active binding (channel id, capability, channel/guild names when visible, who set it).\n' +
+          '• "by_capability" — bindings grouped per capability ("which channels does instagram_monitor fan out to?"), across ALL servers.\n' +
+          '• "bind" {channel_id, capability} — bind a channel; persisted to SQLite AND applied to the live router (no restart). Refuses the hardcoded config channel and the "configuration"/"general_chat" capabilities. If the target is a push capability (instagram_monitor) and the bot cannot post there, the result includes a non-blocking `permission_warning`.\n' +
+          '• "unbind" {channel_id} — remove a binding; refuses the config channel.',
         inputSchema: {
           type: 'object',
           properties: {
-            channel_id: {
-              type: 'string',
-              description: 'Discord channel snowflake (17–20 digits).',
-            },
-            capability: {
-              type: 'string',
-              description: 'A registered capability id, e.g. "calendar" or "instagram_monitor".',
-            },
+            action: { type: 'string', enum: ['list', 'by_capability', 'bind', 'unbind'] },
+            channel_id: { type: 'string', description: 'Discord channel snowflake (17–20 digits). Required for bind/unbind.' },
+            capability: { type: 'string', description: 'Registered capability id, e.g. "calendar" or "instagram_monitor". Required for bind.' },
           },
-          required: ['channel_id', 'capability'],
+          required: ['action'],
         },
       },
       {
-        name: 'config_unbind_channel',
+        name: 'config_discovery',
         description:
-          'Remove a channel→capability binding. The channel becomes unauthorized and the bot will stop responding there. Refuses to unbind the hardcoded configuration channel.',
+          'Discover Discord topology and check push readiness. `action`:\n' +
+          '• "capabilities" — every capability registered at boot (id + description); the valid values for binding.\n' +
+          '• "guilds" — every server the bot is in (id, name, member/channel counts).\n' +
+          '• "guild_channels" {guild_id} — that guild\'s text channels and their current binding.\n' +
+          '• "check_permissions" {channel_id} — whether ChopperBot can PUSH to a channel: reports View Channel / Send Messages / Attach Files / Embed Links and an overall `can_push` verdict. Run this before binding a channel to instagram_monitor.',
         inputSchema: {
           type: 'object',
           properties: {
-            channel_id: { type: 'string' },
+            action: { type: 'string', enum: ['capabilities', 'guilds', 'guild_channels', 'check_permissions'] },
+            guild_id: { type: 'string', description: 'Required for "guild_channels".' },
+            channel_id: { type: 'string', description: 'Required for "check_permissions".' },
           },
-          required: ['channel_id'],
+          required: ['action'],
         },
       },
       {
-        name: 'config_list_capabilities',
+        name: 'config_system',
         description:
-          'List every capability registered at boot, with its id and human description. Use this to see what values are valid for `capability` when binding.',
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'config_list_guilds',
-        description:
-          'List every Discord guild (server) the bot is currently a member of, with id, name, and channel count. Helpful for discovering where to bind capabilities.',
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'config_list_guild_channels',
-        description:
-          'List the text channels of one guild, including each channel\'s current capability binding (if any). Use this to find channel IDs without leaving Discord.',
-        inputSchema: {
-          type: 'object',
-          properties: { guild_id: { type: 'string' } },
-          required: ['guild_id'],
-        },
-      },
-      {
-        name: 'config_list_tables',
-        description:
-          "Introspection: list every user table in chopperbot.db with its row count. Excludes sqlite internals.",
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'config_inspect_table',
-        description:
-          'Read the first N rows of a table, raw. Read-only. Hard cap of 100 rows. Errors if the table does not exist.',
+          'Bot health, known users, and destructive per-channel purge. `action`:\n' +
+          '• "bot_info" — uptime, Node version, Kimi model id, max output tokens, data dir, DB size, capabilities, binding/guild counts.\n' +
+          '• "list_users" {limit?} — Discord users the bot has seen (id, tag, first/last seen), most-recent first.\n' +
+          '• "purge_channel_data" {capability, channel_id, confirm} — DESTRUCTIVE. Delete every row `<capability>_*` carries for a channel (tables with a channel_id column). Clears instagram_monitor_seen_posts (per-channel dedup); calendar_events is per-user (no-op — use config_calendar). Refuses configuration_*. Requires confirm:true.',
         inputSchema: {
           type: 'object',
           properties: {
-            name: { type: 'string' },
-            limit: { type: 'integer', minimum: 1, maximum: 100 },
+            action: { type: 'string', enum: ['bot_info', 'list_users', 'purge_channel_data'] },
+            limit: { type: 'integer', minimum: 1, maximum: 100, description: 'For "list_users".' },
+            capability: { type: 'string', description: 'For "purge_channel_data".' },
+            channel_id: { type: 'string', description: 'For "purge_channel_data".' },
+            confirm: { type: 'boolean', description: 'Must be true for "purge_channel_data".' },
           },
-          required: ['name'],
-        },
-      },
-      {
-        name: 'config_migration_status',
-        description:
-          "Show which migration versions have been applied per capability, with timestamps. Sourced from the framework's `_migrations` table.",
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'config_bot_info',
-        description:
-          'Snapshot of bot health: uptime, Node version, Kimi model id, max output tokens, data directory, DB file size, registered capabilities, total bindings, and guild count.',
-        inputSchema: { type: 'object', properties: {} },
-      },
-      {
-        name: 'config_purge_channel_data',
-        description:
-          "DESTRUCTIVE. Delete every row a capability owns for a given channel. Works against any table named `<capability>_*` that carries a `channel_id` column. NOTE: `calendar_events` is no longer channel-scoped (per-user) so calendar purge by channel is a no-op — use `config_calendar_delete` for individual events. `instagram_monitor_accounts` is global; only `instagram_monitor_seen_posts` (the per-channel dedup log) is purged. Refuses to touch configuration_*. Requires `confirm: true`.",
-        inputSchema: {
-          type: 'object',
-          properties: {
-            capability: { type: 'string' },
-            channel_id: { type: 'string' },
-            confirm: { type: 'boolean' },
-          },
-          required: ['capability', 'channel_id', 'confirm'],
-        },
-      },
-      {
-        name: 'config_calendar_peek',
-        description:
-          'List upcoming calendar events across all users (bypasses the normal per-user scoping). Each row includes the owning user id + tag. Optionally pass `discord_user_id` to filter to one user. Calendar is per-user globally — there is no channel filter.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            discord_user_id: {
-              type: 'string',
-              description:
-                'Optional. Discord snowflake of one user — only that user\'s events are returned. Omit to see every user\'s events.',
-            },
-            limit: { type: 'integer', minimum: 1, maximum: 25 },
-          },
-        },
-      },
-      {
-        name: 'config_list_users',
-        description:
-          'List every Discord user the bot has interacted with, most-recent first. Returns id, tag, first/last seen timestamps. Useful for cross-referencing event owners surfaced by `config_calendar_peek`.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            limit: { type: 'integer', minimum: 1, maximum: 100 },
-          },
-        },
-      },
-      {
-        name: 'config_calendar_delete',
-        description:
-          'DESTRUCTIVE. Delete a calendar event by id, regardless of owner. For recurring events this kills the whole series (matches calendar_delete_event semantics). Requires `confirm: true`.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            event_id: { type: 'integer', minimum: 1 },
-            confirm: { type: 'boolean' },
-          },
-          required: ['event_id', 'confirm'],
+          required: ['action'],
         },
       },
     ];
@@ -189,37 +105,12 @@ export class ConfigurationToolSource implements ToolSource {
     try {
       const obj = (input ?? {}) as Record<string, unknown>;
       switch (toolName) {
-        case 'config_list_bindings':
-          return this.handleListBindings(t0, toolName);
-        case 'config_bind_channel':
-          return this.handleBindChannel(obj, t0, toolName);
-        case 'config_unbind_channel':
-          return this.handleUnbindChannel(obj, t0, toolName);
-        case 'config_list_capabilities':
-          return this.handleListCapabilities();
-        case 'config_list_guilds':
-          return this.handleListGuilds();
-        case 'config_list_guild_channels':
-          return this.handleListGuildChannels(obj);
-        case 'config_list_tables':
-          return { status: 'success', payload: { tables: this.deps.store.listTables() } };
-        case 'config_inspect_table':
-          return this.handleInspectTable(obj);
-        case 'config_migration_status':
-          return {
-            status: 'success',
-            payload: { migrations: this.deps.store.migrationStatus() },
-          };
-        case 'config_bot_info':
-          return this.handleBotInfo();
-        case 'config_purge_channel_data':
-          return this.handlePurge(obj, t0, toolName);
-        case 'config_calendar_peek':
-          return this.handleCalendarPeek(obj);
-        case 'config_calendar_delete':
-          return this.handleCalendarDelete(obj, t0, toolName);
-        case 'config_list_users':
-          return this.handleListUsers(obj);
+        case 'config_bindings':
+          return this.handleBindings(obj, t0);
+        case 'config_discovery':
+          return this.handleDiscovery(obj, t0);
+        case 'config_system':
+          return this.handleSystem(obj, t0);
         default:
           return { status: 'error', payload: { error: `Unknown tool: ${toolName}` } };
       }
@@ -229,6 +120,51 @@ export class ConfigurationToolSource implements ToolSource {
         status: 'error',
         payload: { error: err instanceof Error ? err.message : String(err) },
       };
+    }
+  }
+
+  private handleBindings(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
+    const action = asAction(obj.action, ['list', 'by_capability', 'bind', 'unbind']);
+    switch (action) {
+      case 'list':
+        return this.handleListBindings(t0, 'config_bindings.list');
+      case 'by_capability':
+        return this.handleBindingsByCapability(t0);
+      case 'bind':
+        return this.handleBindChannel(obj, t0, 'config_bindings.bind');
+      case 'unbind':
+        return this.handleUnbindChannel(obj, t0, 'config_bindings.unbind');
+    }
+  }
+
+  private handleDiscovery(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
+    const action = asAction(obj.action, [
+      'capabilities',
+      'guilds',
+      'guild_channels',
+      'check_permissions',
+    ]);
+    switch (action) {
+      case 'capabilities':
+        return this.handleListCapabilities();
+      case 'guilds':
+        return this.handleListGuilds();
+      case 'guild_channels':
+        return this.handleListGuildChannels(obj);
+      case 'check_permissions':
+        return this.handleCheckPermissions(obj, t0);
+    }
+  }
+
+  private handleSystem(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
+    const action = asAction(obj.action, ['bot_info', 'list_users', 'purge_channel_data']);
+    switch (action) {
+      case 'bot_info':
+        return this.handleBotInfo();
+      case 'list_users':
+        return this.handleListUsers(obj);
+      case 'purge_channel_data':
+        return this.handlePurge(obj, t0, 'config_system.purge_channel_data');
     }
   }
 
@@ -312,6 +248,19 @@ export class ConfigurationToolSource implements ToolSource {
       'tool_call',
     );
 
+    // Push capabilities (instagram_monitor) post unprompted, so a successful
+    // bind is useless if the bot can't actually post there. Surface a
+    // non-blocking warning rather than refusing — perms can be fixed after.
+    let permissionWarning: string | null = null;
+    if (capability === INSTAGRAM_MONITOR_CAPABILITY_ID) {
+      const perms = this.computePushPermissions(channelId);
+      if (!perms.resolved) {
+        permissionWarning = `Could not verify push permissions: ${perms.error}`;
+      } else if (!perms.can_push) {
+        permissionWarning = `Bot cannot push to this channel — missing: ${(perms.missing ?? []).join(', ')}. IG posts will fail until granted.`;
+      }
+    }
+
     return {
       status: 'success',
       payload: {
@@ -319,6 +268,7 @@ export class ConfigurationToolSource implements ToolSource {
         capability,
         previous_capability: previous?.capability_id ?? null,
         action: previous ? 'updated' : 'created',
+        permission_warning: permissionWarning,
       },
     };
   }
@@ -391,13 +341,6 @@ export class ConfigurationToolSource implements ToolSource {
     };
   }
 
-  private handleInspectTable(obj: Record<string, unknown>): ToolHandlerResult {
-    const name = asNonEmptyString(obj.name, 'name');
-    const limit = clampInt(obj.limit, 1, 100, 20);
-    const rows = this.deps.store.inspectTable(name, limit);
-    return { status: 'success', payload: { table: name, limit, rows } };
-  }
-
   private handleBotInfo(): ToolHandlerResult {
     let dbSizeBytes: number | null = null;
     try {
@@ -453,36 +396,6 @@ export class ConfigurationToolSource implements ToolSource {
     return { status: 'success', payload: result };
   }
 
-  private handleCalendarPeek(obj: Record<string, unknown>): ToolHandlerResult {
-    const limit = clampInt(obj.limit, 1, 25, 10);
-    const filterUserId =
-      obj.discord_user_id !== undefined && obj.discord_user_id !== null && obj.discord_user_id !== ''
-        ? asSnowflake(obj.discord_user_id, 'discord_user_id')
-        : null;
-    const cal = new CalendarStore(this.deps.db);
-    const rows = cal.adminListAll(filterUserId).slice(0, limit);
-    return {
-      status: 'success',
-      payload: {
-        filter_discord_user_id: filterUserId,
-        events: rows.map((e) => {
-          const owner = this.deps.userDirectory.get(e.discord_user_id);
-          return {
-            id: e.id,
-            title: e.title,
-            start_at_iso: new Date(e.start_at).toISOString(),
-            start_at_local: formatInTimezone(e.start_at),
-            end_at_iso: e.end_at !== null ? new Date(e.end_at).toISOString() : null,
-            location: e.location,
-            recurrence_freq: e.recurrence_freq,
-            discord_user_id: e.discord_user_id,
-            discord_tag: owner?.discord_tag ?? null,
-          };
-        }),
-      },
-    };
-  }
-
   private handleListUsers(obj: Record<string, unknown>): ToolHandlerResult {
     const limit = clampInt(obj.limit, 1, 100, 25);
     const rows = this.deps.userDirectory.list(limit);
@@ -499,50 +412,164 @@ export class ConfigurationToolSource implements ToolSource {
     };
   }
 
-  private handleCalendarDelete(
-    obj: Record<string, unknown>,
-    t0: number,
-    toolName: string,
-  ): ToolHandlerResult {
-    const eventId = asPositiveInt(obj.event_id, 'event_id');
-    if (obj.confirm !== true) {
-      return {
-        status: 'error',
-        payload: { error: 'Refusing destructive delete without `confirm: true`.' },
-      };
+  private handleBindingsByCapability(t0: number): ToolHandlerResult {
+    const bindings = this.deps.router.getAllBindings();
+    // Invert the channel→capability map into capability→channels.
+    const byCapability = new Map<string, string[]>();
+    for (const [channelId, capabilityId] of bindings) {
+      const list = byCapability.get(capabilityId) ?? [];
+      list.push(channelId);
+      byCapability.set(capabilityId, list);
     }
-    const cal = new CalendarStore(this.deps.db);
-    // Admin path: delete bypasses the per-user filter so we can recover
-    // events the original owner left behind.
-    const deleted = cal.adminDelete(eventId);
-    if (!deleted) {
+    // List every registered capability (even those with zero bindings) so the
+    // operator sees the full picture, plus any orphan bindings whose capability
+    // is no longer registered.
+    const seen = new Set<string>();
+    const capabilities = this.deps.registry.list().map((cap) => {
+      seen.add(cap.id);
+      const channelIds = byCapability.get(cap.id) ?? [];
       return {
-        status: 'error',
-        payload: { error: `Event #${eventId} not found.` },
+        capability_id: cap.id,
+        description: cap.description,
+        is_fallback: cap.id === GENERAL_CHAT_CAPABILITY_ID,
+        is_protected: cap.id === CONFIGURATION_CAPABILITY_ID,
+        channel_count: channelIds.length,
+        channels: channelIds.map((id) => this.resolveChannelMeta(id)),
       };
-    }
+    });
+    const orphans = [...byCapability.entries()]
+      .filter(([capId]) => !seen.has(capId))
+      .map(([capId, channelIds]) => ({
+        capability_id: capId,
+        description: null,
+        is_fallback: false,
+        is_protected: false,
+        registered: false,
+        channel_count: channelIds.length,
+        channels: channelIds.map((id) => this.resolveChannelMeta(id)),
+      }));
     log.info(
-      {
-        tool: toolName,
-        eventId,
-        title: deleted.title,
-        owner: deleted.discord_user_id,
-        ms: Date.now() - t0,
-      },
+      { tool: 'config_bindings.by_capability', count: capabilities.length, ms: Date.now() - t0 },
       'tool_call',
     );
+    return { status: 'success', payload: { capabilities, orphan_bindings: orphans } };
+  }
+
+  private handleCheckPermissions(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
+    const channelId = asSnowflake(obj.channel_id, 'channel_id');
+    const result = this.computePushPermissions(channelId);
+    log.info({ tool: 'config_discovery.check_permissions', channelId, ms: Date.now() - t0 }, 'tool_call');
+    return { status: 'success', payload: { channel_id: channelId, ...result } };
+  }
+
+  /** {channel_name, guild_id, guild_name} for a channel id, best-effort from cache. */
+  private resolveChannelMeta(channelId: string): {
+    channel_id: string;
+    channel_name: string | null;
+    guild_id: string | null;
+    guild_name: string | null;
+  } {
+    const channel = this.deps.client.channels.cache.get(channelId);
+    const channelName =
+      channel && 'name' in channel && channel.name ? (channel.name as string) : null;
+    const guild =
+      channel && 'guild' in channel && channel.guild ? (channel.guild as Guild) : null;
     return {
-      status: 'success',
-      payload: {
-        deleted: {
-          id: deleted.id,
-          title: deleted.title,
-          recurrence_freq: deleted.recurrence_freq,
-          discord_user_id: deleted.discord_user_id,
-        },
-      },
+      channel_id: channelId,
+      channel_name: channelName,
+      guild_id: guild?.id ?? null,
+      guild_name: guild?.name ?? null,
     };
   }
+
+  /**
+   * Whether ChopperBot can PUSH (post + attach images) to a channel. The IG
+   * publisher sends `content + AttachmentBuilder` files — not rich embeds — so
+   * a successful push needs View Channel + Send Messages + Attach Files. Embed
+   * Links is surfaced as a nice-to-have. Duck-typed so production discord.js
+   * channels and test doubles both work.
+   */
+  private computePushPermissions(channelId: string): PushPermissionReport {
+    const channel = this.deps.client.channels.cache.get(channelId) as unknown as
+      | ChannelPermProbe
+      | undefined;
+    if (!channel) {
+      return {
+        resolved: false,
+        error: `Channel ${channelId} not in cache — the bot may not be in that server or cannot see the channel.`,
+      };
+    }
+    const guild = channel.guild ?? null;
+    if (!guild) {
+      return {
+        resolved: false,
+        error: 'Not a guild text channel — instagram_monitor only pushes to guild text channels.',
+      };
+    }
+    const me = guild.members?.me ?? null;
+    if (!me || typeof channel.permissionsFor !== 'function') {
+      return {
+        resolved: false,
+        guild_name: guild.name ?? null,
+        error: 'Could not resolve the bot member or channel permissions for this channel.',
+      };
+    }
+    const perms = channel.permissionsFor(me);
+    if (!perms) {
+      return {
+        resolved: false,
+        guild_name: guild.name ?? null,
+        error: 'permissionsFor returned no overwrites for the bot member.',
+      };
+    }
+    const view = perms.has(PermissionsBitField.Flags.ViewChannel);
+    const send = perms.has(PermissionsBitField.Flags.SendMessages);
+    const attach = perms.has(PermissionsBitField.Flags.AttachFiles);
+    const embed = perms.has(PermissionsBitField.Flags.EmbedLinks);
+    const missing: string[] = [];
+    if (!view) missing.push('View Channel');
+    if (!send) missing.push('Send Messages');
+    if (!attach) missing.push('Attach Files');
+    return {
+      resolved: true,
+      guild_name: guild.name ?? null,
+      permissions: {
+        view_channel: view,
+        send_messages: send,
+        attach_files: attach,
+        embed_links: embed,
+      },
+      can_push: view && send && attach,
+      missing,
+    };
+  }
+}
+
+interface ChannelPermProbe {
+  guild?: { name?: string; members?: { me?: unknown } } | null;
+  permissionsFor?: (member: unknown) => { has: (flag: bigint) => boolean } | null;
+}
+
+interface PushPermissionReport {
+  resolved: boolean;
+  error?: string;
+  guild_name?: string | null;
+  permissions?: {
+    view_channel: boolean;
+    send_messages: boolean;
+    attach_files: boolean;
+    embed_links: boolean;
+  };
+  can_push?: boolean;
+  missing?: string[];
+}
+
+/** Validate a multiplexed `action` param against the tool's allowed set. */
+function asAction<T extends string>(v: unknown, allowed: readonly T[]): T {
+  if (typeof v === 'string' && (allowed as readonly string[]).includes(v)) {
+    return v as T;
+  }
+  throw new Error(`action: must be one of ${allowed.join(', ')} (got ${JSON.stringify(v)})`);
 }
 
 function asNonEmptyString(v: unknown, field: string): string {
@@ -558,13 +585,6 @@ function asSnowflake(v: unknown, field: string): string {
     throw new Error(`${field}: must be a Discord snowflake (17–20 digits)`);
   }
   return s;
-}
-
-function asPositiveInt(v: unknown, field: string): number {
-  if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) {
-    throw new Error(`${field}: must be a positive integer`);
-  }
-  return v;
 }
 
 function clampInt(v: unknown, min: number, max: number, fallback: number): number {
