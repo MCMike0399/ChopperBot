@@ -437,4 +437,110 @@ describe('InstagramMonitorScheduler', () => {
     expect(store.hasSeen(CHAN_B, 'P2')).toBe(true);
     mem.close();
   });
+
+  test('anchor missing from a stale window does NOT backfill older posts', async () => {
+    // Regression: IG occasionally returns a feed window that omits the most
+    // recent post (eventual consistency / pagination). The old id-walk never
+    // found the anchor, classified the whole (older) batch as new, and
+    // backfilled weeks-old posts. With a recorded anchor time, the time-gate
+    // must reject everything at/older than the anchor.
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const id = store.getAccount('foo')!.id;
+    // Anchor = a recent post at t=5000 that is NOT in the upcoming batch.
+    store.markPollSuccess(id, 1, 'ANCHOR', 5_000);
+
+    const publish = vi.fn(async () => ({ ok: true, messageId: 'm' } as PublishResult));
+    const classify = vi.fn();
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({
+        foo: [
+          post('OLD3', { takenAtMs: 4_000 }),
+          post('OLD2', { takenAtMs: 3_000 }),
+          post('OLD1', { takenAtMs: 2_000 }),
+        ],
+      }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify,
+      publish,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    expect(classify).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    // Anchor must NOT regress to the older batch's newest.
+    expect(store.getAccount('foo')?.last_post_id).toBe('ANCHOR');
+    expect(store.getAccount('foo')?.last_post_at).toBe(5_000);
+    mem.close();
+  });
+
+  test('anchor missing but genuinely-newer posts present: time-gate publishes them', async () => {
+    // The other half of "anchor absent": the account posted enough that the
+    // anchor scrolled off the window, but the batch is genuinely newer. The
+    // time-gate must still surface posts captured after the anchor time.
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const id = store.getAccount('foo')!.id;
+    store.markPollSuccess(id, 1, 'ANCHOR', 5_000);
+
+    const publish = vi.fn(async (
+      _client: Client,
+      _channelId: string,
+      _account: string,
+      p: RecentPost,
+    ): Promise<PublishResult> => ({ ok: true, messageId: p.igPostId }));
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({
+        foo: [
+          post('NEW2', { takenAtMs: 7_000 }),
+          post('NEW1', { takenAtMs: 6_000 }),
+          post('SAME', { takenAtMs: 5_000 }), // exactly at anchor time → excluded
+        ],
+      }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => ({
+        relevant: true,
+        type: 'evento',
+        title: 't',
+        summary: 's',
+        when: null,
+        where: null,
+        tags: [],
+      }),
+      publish,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    // Only the two strictly-newer posts, oldest-first; SAME (== anchor time) excluded.
+    expect(publish.mock.calls.map((c) => (c[3] as RecentPost).igPostId)).toEqual(['NEW1', 'NEW2']);
+    expect(store.getAccount('foo')?.last_post_id).toBe('NEW2');
+    expect(store.getAccount('foo')?.last_post_at).toBe(7_000);
+    mem.close();
+  });
+
+  test('seeding records the anchor capture time', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({
+        foo: [post('P2', { takenAtMs: 9_000 }), post('P1', { takenAtMs: 8_000 })],
+      }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+    expect(store.getAccount('foo')?.last_post_id).toBe('P2');
+    expect(store.getAccount('foo')?.last_post_at).toBe(9_000);
+    mem.close();
+  });
 });
