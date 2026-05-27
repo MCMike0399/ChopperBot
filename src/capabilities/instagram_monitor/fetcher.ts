@@ -1,5 +1,16 @@
+import { Agent } from 'undici';
 import { log } from '../../log.js';
 import type { LambdaRelay } from './lambda-relay-client.js';
+
+// Instagram serves `i.instagram.com` over HTTP/2 and returns 429 to plain
+// HTTP/1.1 requests from some egress IPs (observed on the Raspberry Pi's
+// residential connection: curl --http2 → 200, curl --http1.1 → 429, identical
+// cookies/headers). Node's global `fetch` (undici) defaults to HTTP/1.1, so we
+// route IG requests through a shared agent with HTTP/2 enabled. The dispatcher
+// is passed via fetch's (undici-specific, untyped) `dispatcher` init option.
+const igDispatcher = new Agent({ allowH2: true });
+const withH2 = (init: RequestInit): RequestInit =>
+  ({ ...init, dispatcher: igDispatcher }) as RequestInit;
 
 export interface RecentPost {
   igPostId: string;
@@ -126,7 +137,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
       const pk = await this.resolvePk(username, this.auth);
       return this.fetchAuthedFeed(pk, this.auth);
     }
-    const res = await fetch(IG_URL(username), { headers: HEADERS });
+    const res = await fetch(IG_URL(username), withH2({ headers: HEADERS }));
     if (!res.ok) {
       throw new Error(`Instagram returned HTTP ${res.status} (direct)`);
     }
@@ -140,7 +151,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     const cached = this.pkCache.get(username);
     if (cached) return cached;
     const headers = { ...HEADERS, ...authCookieHeaders(auth) };
-    const res = await fetch(IG_URL(username), { headers });
+    const res = await fetch(IG_URL(username), withH2({ headers }));
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
         throw new InstagramAuthError(
@@ -168,7 +179,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
 
   private async fetchAuthedFeed(pk: string, auth: InstagramAuth): Promise<RecentPost[]> {
     const headers = { ...HEADERS, ...authCookieHeaders(auth) };
-    const res = await fetch(IG_FEED_URL(pk), { headers });
+    const res = await fetch(IG_FEED_URL(pk), withH2({ headers }));
     if (!res.ok) {
       if (res.status === 401 || res.status === 403) {
         throw new InstagramAuthError(
