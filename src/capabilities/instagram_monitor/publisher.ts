@@ -2,6 +2,7 @@ import { AttachmentBuilder, type Client, type Message, type TextChannel } from '
 import { log } from '../../log.js';
 import type { Classification } from './classifier.js';
 import type { RecentPost } from './fetcher.js';
+import { formatEventWhen, formatPostedAt } from './format.js';
 
 const DISCORD_FILE_LIMIT_BYTES = 8 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15_000;
@@ -117,9 +118,9 @@ export async function publishPost(
 function renderText(account: string, post: RecentPost, c: Classification): string {
   const emoji = TYPE_EMOJI[c.type] ?? '📌';
   const meta: string[] = [`Tipo: **${c.type}**`, `@${account}`];
-  if (c.when) meta.push(`Cuándo: ${c.when}`);
+  if (c.when) meta.push(`Cuándo: **${formatEventWhen(c.when)}**`);
   if (c.where) meta.push(`Dónde: ${c.where}`);
-  meta.push(`Posteado: ${new Date(post.takenAtMs).toISOString()}`);
+  meta.push(`Posteado: ${formatPostedAt(post.takenAtMs)}`);
   const tags = c.tags.length > 0 ? `\nTags: ${c.tags.map((t) => `\`${t}\``).join(' · ')}` : '';
   const url = `https://instagram.com/p/${post.shortcode}`;
   const body = c.summary || c.title;
