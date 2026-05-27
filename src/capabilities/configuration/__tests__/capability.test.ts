@@ -138,7 +138,7 @@ describe('ConfigurationCapability — boot wiring', () => {
       now: NOW,
     });
     expect(turn.system).toContain('2026-05-23T18:00:00.000Z');
-    expect(turn.system).toContain('config_list_bindings');
+    expect(turn.system).toContain('config_bindings');
     expect(turn.system).toContain('configuración');
     memory.close();
   });
@@ -150,7 +150,7 @@ describe('ConfigurationCapability — bind / unbind via the agent loop', () => {
   test('list_bindings reflects what the bootstrap created', async () => {
     const { configCap, memory } = await buildHarness();
     createMock
-      .mockResolvedValueOnce(toolCalls([{ id: 'l1', name: 'config_list_bindings', input: {} }]))
+      .mockResolvedValueOnce(toolCalls([{ id: 'l1', name: 'config_bindings', input: { action: 'list' } }]))
       .mockResolvedValueOnce(endStop('Hay 1 binding activo.'));
     const turn = await configCap.buildTurn({
       channelId: CONFIGURATION_CHANNEL_ID,
@@ -179,7 +179,7 @@ describe('ConfigurationCapability — bind / unbind via the agent loop', () => {
     createMock
       .mockResolvedValueOnce(
         toolCalls([
-          { id: 'b1', name: 'config_bind_channel', input: { channel_id: TARGET_CH, capability: 'calendar' } },
+          { id: 'b1', name: 'config_bindings', input: { action: 'bind', channel_id: TARGET_CH, capability: 'calendar' } },
         ]),
       )
       .mockResolvedValueOnce(endStop('Listo, bindeé el canal a calendar.'));
@@ -210,8 +210,8 @@ describe('ConfigurationCapability — bind / unbind via the agent loop', () => {
         toolCalls([
           {
             id: 'b1',
-            name: 'config_bind_channel',
-            input: { channel_id: CONFIGURATION_CHANNEL_ID, capability: 'calendar' },
+            name: 'config_bindings',
+            input: { action: 'bind', channel_id: CONFIGURATION_CHANNEL_ID, capability: 'calendar' },
           },
         ]),
       )
@@ -239,7 +239,7 @@ describe('ConfigurationCapability — bind / unbind via the agent loop', () => {
     createMock
       .mockResolvedValueOnce(
         toolCalls([
-          { id: 'b1', name: 'config_bind_channel', input: { channel_id: TARGET_CH, capability: 'nonexistent' } },
+          { id: 'b1', name: 'config_bindings', input: { action: 'bind', channel_id: TARGET_CH, capability: 'nonexistent' } },
         ]),
       )
       .mockResolvedValueOnce(endStop('Esa capability no existe.'));
@@ -267,7 +267,7 @@ describe('ConfigurationCapability — bind / unbind via the agent loop', () => {
     createMock
       .mockResolvedValueOnce(
         toolCalls([
-          { id: 'b1', name: 'config_bind_channel', input: { channel_id: TARGET_CH, capability: 'configuration' } },
+          { id: 'b1', name: 'config_bindings', input: { action: 'bind', channel_id: TARGET_CH, capability: 'configuration' } },
         ]),
       )
       .mockResolvedValueOnce(endStop('No puede.'));
@@ -293,7 +293,7 @@ describe('ConfigurationCapability — bind / unbind via the agent loop', () => {
     createMock
       .mockResolvedValueOnce(
         toolCalls([
-          { id: 'u1', name: 'config_unbind_channel', input: { channel_id: CONFIGURATION_CHANNEL_ID } },
+          { id: 'u1', name: 'config_bindings', input: { action: 'unbind', channel_id: CONFIGURATION_CHANNEL_ID } },
         ]),
       )
       .mockResolvedValueOnce(endStop('No puedo.'));
@@ -320,7 +320,7 @@ describe('ConfigurationCapability — bind / unbind via the agent loop', () => {
 
     createMock
       .mockResolvedValueOnce(
-        toolCalls([{ id: 'u1', name: 'config_unbind_channel', input: { channel_id: TARGET_CH } }]),
+        toolCalls([{ id: 'u1', name: 'config_bindings', input: { action: 'unbind', channel_id: TARGET_CH } }]),
       )
       .mockResolvedValueOnce(endStop('Desasignado.'));
     const turn = await configCap.buildTurn({
@@ -351,8 +351,8 @@ describe('ConfigurationCapability — destructive guards', () => {
         toolCalls([
           {
             id: 'p1',
-            name: 'config_purge_channel_data',
-            input: { capability: 'calendar', channel_id: TARGET_CH, confirm: false },
+            name: 'config_system',
+            input: { action: 'purge_channel_data', capability: 'calendar', channel_id: TARGET_CH, confirm: false },
           },
         ]),
       )
@@ -382,8 +382,8 @@ describe('ConfigurationCapability — destructive guards', () => {
         toolCalls([
           {
             id: 'd1',
-            name: 'config_calendar_delete',
-            input: { event_id: 1, confirm: false },
+            name: 'config_calendar',
+            input: { action: 'delete', event_id: 1, confirm: false },
           },
         ]),
       )
@@ -412,7 +412,7 @@ describe('ConfigurationCapability — DB introspection tools', () => {
   test('list_capabilities returns every registered capability', async () => {
     const { configCap, memory } = await buildHarness();
     createMock
-      .mockResolvedValueOnce(toolCalls([{ id: 'c1', name: 'config_list_capabilities', input: {} }]))
+      .mockResolvedValueOnce(toolCalls([{ id: 'c1', name: 'config_discovery', input: { action: 'capabilities' } }]))
       .mockResolvedValueOnce(endStop('ok'));
     const turn = await configCap.buildTurn({
       channelId: CONFIGURATION_CHANNEL_ID,
@@ -439,7 +439,7 @@ describe('ConfigurationCapability — DB introspection tools', () => {
     userDirectory.upsert('USER_C', 'gamma#0003', NOW.getTime() + 2_000);
 
     createMock
-      .mockResolvedValueOnce(toolCalls([{ id: 'u1', name: 'config_list_users', input: {} }]))
+      .mockResolvedValueOnce(toolCalls([{ id: 'u1', name: 'config_system', input: { action: 'list_users' } }]))
       .mockResolvedValueOnce(endStop('ok'));
     const turn = await configCap.buildTurn({
       channelId: CONFIGURATION_CHANNEL_ID,
@@ -485,7 +485,7 @@ describe('ConfigurationCapability — DB introspection tools', () => {
     createMock
       .mockResolvedValueOnce(
         toolCalls([
-          { id: 'p1', name: 'config_calendar_peek', input: {} },
+          { id: 'p1', name: 'config_calendar', input: { action: 'peek' } },
         ]),
       )
       .mockResolvedValueOnce(endStop('ok'))
@@ -493,8 +493,8 @@ describe('ConfigurationCapability — DB introspection tools', () => {
         toolCalls([
           {
             id: 'p2',
-            name: 'config_calendar_peek',
-            input: { discord_user_id: USER_ALICE },
+            name: 'config_calendar',
+            input: { action: 'peek', discord_user_id: USER_ALICE },
           },
         ]),
       )
@@ -540,7 +540,7 @@ describe('ConfigurationCapability — DB introspection tools', () => {
   test('list_tables surfaces user tables including those from other capabilities', async () => {
     const { configCap, memory } = await buildHarness();
     createMock
-      .mockResolvedValueOnce(toolCalls([{ id: 't1', name: 'config_list_tables', input: {} }]))
+      .mockResolvedValueOnce(toolCalls([{ id: 't1', name: 'config_db', input: { action: 'list_tables' } }]))
       .mockResolvedValueOnce(endStop('ok'));
     const turn = await configCap.buildTurn({
       channelId: CONFIGURATION_CHANNEL_ID,
