@@ -115,11 +115,11 @@ export async function publishPost(
   }
 }
 
-function renderText(account: string, post: RecentPost, c: Classification): string {
+export function renderText(account: string, post: RecentPost, c: Classification): string {
   const emoji = TYPE_EMOJI[c.type] ?? '📌';
   const meta: string[] = [`Tipo: **${c.type}**`, `@${account}`];
   if (c.when) meta.push(`Cuándo: **${formatEventWhen(c.when)}**`);
-  if (c.where) meta.push(`Dónde: ${c.where}`);
+  if (c.where) meta.push(`Dónde: **${c.where}**`);
   meta.push(`Posteado: ${formatPostedAt(post.takenAtMs)}`);
   const tags = c.tags.length > 0 ? `\nTags: ${c.tags.map((t) => `\`${t}\``).join(' · ')}` : '';
   const url = `https://instagram.com/p/${post.shortcode}`;
