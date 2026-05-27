@@ -9,3 +9,4 @@ data/
 logs/
 coverage/
 *.tsbuildinfo
+db-export/

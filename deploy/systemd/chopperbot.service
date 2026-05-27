@@ -1,0 +1,35 @@
+# ChopperBot Discord bot — systemd user unit (template).
+#
+# This is the Raspberry Pi analogue of deploy/launchd/com.user.chopperbot.plist.
+# Two placeholders are substituted at install time (see RASPBERRY_PI_MIGRATION.md §8):
+#   __REPO__ -> absolute repo root (becomes WorkingDirectory; dotenv reads .env from here)
+#   __NODE__ -> absolute path to the node binary (e.g. /usr/bin/node)
+#
+# Install:
+#   sed -e "s#__REPO__#$REPO#g" -e "s#__NODE__#$NODE_BIN#g" \
+#       deploy/systemd/chopperbot.service > ~/.config/systemd/user/chopperbot.service
+#   systemctl --user daemon-reload && systemctl --user enable --now chopperbot.service
+#   loginctl enable-linger "$USER"   # start at boot without an interactive login
+#
+# Runs `node dist/index.js` directly (no pnpm, no shell rc) so a stale
+# `export KIMI_API_KEY=...` in ~/.bashrc can't shadow .env the way it once did on the Mac.
+
+[Unit]
+Description=ChopperBot Discord bot
+After=network-online.target
+Wants=network-online.target
+# Crashloop guard, mirrors launchd ThrottleInterval=15: <=10 starts per 5 min.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+WorkingDirectory=__REPO__
+ExecStart=__NODE__ dist/index.js
+Environment=NODE_ENV=production
+# launchd KeepAlive{Crashed=true} equivalent: always restart, 15s throttle.
+Restart=always
+RestartSec=15
+
+[Install]
+WantedBy=default.target
