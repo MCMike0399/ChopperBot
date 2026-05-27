@@ -337,6 +337,51 @@ export class CalendarStore {
     this.db.prepare(`DELETE FROM calendar_events WHERE id = ?`).run(id);
     return row;
   }
+
+  /**
+   * Admin-only: fetch by id without the user filter. Used by the
+   * configuration capability. Never call from a user-facing capability.
+   */
+  adminGet(id: number): CalendarEvent | null {
+    const row = this.db
+      .prepare(`SELECT * FROM calendar_events WHERE id = ?`)
+      .get(id) as CalendarEvent | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Admin-only: update by id without the user filter. Same field-diff logic
+   * as {@link CalendarStore.update} but cross-user, for the configuration
+   * capability's `config_calendar` admin tool. Never call from a user-facing
+   * capability.
+   */
+  adminUpdate(id: number, patch: UpdateEventInput): CalendarEvent | null {
+    const existing = this.adminGet(id);
+    if (!existing) return null;
+    const fields: string[] = [];
+    const params: (string | number | null)[] = [];
+    const setIf = <K extends keyof UpdateEventInput>(key: K, column: string) => {
+      if (patch[key] !== undefined) {
+        fields.push(`${column} = ?`);
+        params.push(patch[key] as string | number | null);
+      }
+    };
+    setIf('title', 'title');
+    setIf('description', 'description');
+    setIf('start_at', 'start_at');
+    setIf('end_at', 'end_at');
+    setIf('location', 'location');
+    setIf('recurrence_freq', 'recurrence_freq');
+    setIf('recurrence_until', 'recurrence_until');
+    if (fields.length === 0) return existing;
+    fields.push('updated_at = ?');
+    params.push(Date.now());
+    params.push(id);
+    this.db
+      .prepare(`UPDATE calendar_events SET ${fields.join(', ')} WHERE id = ?`)
+      .run(...params);
+    return this.adminGet(id);
+  }
 }
 
 function expandAndMerge(
