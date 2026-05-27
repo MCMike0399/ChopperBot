@@ -177,6 +177,16 @@ export class InstagramMonitorScheduler {
     let newPostsNewestFirst: RecentPost[];
     if (anchorIdx >= 0) {
       newPostsNewestFirst = ordered.slice(0, anchorIdx);
+      // Defence-in-depth: even with the anchor present, never resurrect a post
+      // at or older than the recorded anchor *time*. This matters when
+      // last_post_id points at a post OLDER than last_post_at — an
+      // inconsistency the v3 migration backfill (last_post_at = MAX(seen
+      // posted_at)) can leave on rows that were mid-bug. A no-op for the common
+      // consistent row, where everything above the anchor is already newer.
+      if (acc.last_post_at !== null) {
+        const floor = acc.last_post_at;
+        newPostsNewestFirst = newPostsNewestFirst.filter((p) => p.takenAtMs > floor);
+      }
     } else if (acc.last_post_at !== null) {
       newPostsNewestFirst = ordered.filter((p) => p.takenAtMs > (acc.last_post_at as number));
       log.warn(
