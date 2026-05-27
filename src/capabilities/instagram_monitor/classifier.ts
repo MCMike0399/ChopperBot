@@ -45,7 +45,7 @@ Responde EXCLUSIVAMENTE con un objeto JSON (sin texto antes o después, sin bloq
   "type": "evento"|"convocatoria"|"alerta"|"acuerpamiento"|"actualización"|"noticia"|"otro",
   "title": "una línea breve en español, sin emojis",
   "summary": "2-3 líneas en español resumiendo el qué/cuándo/dónde/por qué importa",
-  "when": "ISO 8601 con offset o null",
+  "when": "fecha/hora del evento en ISO 8601. México usa UTC-06:00 todo el año (ya no hay horario de verano), así que el offset de CDMX es -06:00. Resuelve fechas relativas ('mañana', 'el sábado') usando la fecha del post. Si solo hay fecha sin hora, devuelve solo YYYY-MM-DD. null si el post no menciona ninguna fecha de evento.",
   "where": "lugar/ciudad o null",
   "tags": ["hasta 5 tags cortos en minúscula, p.ej. cdmx, guerrero, desalojo, feminismo"]
 }
