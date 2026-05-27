@@ -153,28 +153,63 @@ export class InstagramMonitorScheduler {
     // so the dedup anchor tracks the genuinely-newest post and pinned-but-old
     // posts can't freeze detection.
     const ordered = [...posts].sort((a, b) => b.takenAtMs - a.takenAtMs);
-
-    // Walk forward to collect everything strictly newer than the dedup anchor.
-    const newPostsNewestFirst: RecentPost[] = [];
-    for (const p of ordered) {
-      if (acc.last_post_id !== null && p.igPostId === acc.last_post_id) break;
-      newPostsNewestFirst.push(p);
-    }
-
-    const newestPostId = ordered[0].igPostId;
+    const newest = ordered[0];
 
     // First-ever poll: no anchor → don't backfill anything, just seed.
     if (acc.last_post_id === null) {
       log.info(
-        { account: acc.username, seeded_to: newestPostId, posts: posts.length },
+        { account: acc.username, seeded_to: newest.igPostId, posts: posts.length },
         'instagram_monitor.first_poll_seed',
       );
-      this.deps.store.markPollSuccess(acc.id, Date.now(), newestPostId);
+      this.deps.store.markPollSuccess(acc.id, Date.now(), newest.igPostId, newest.takenAtMs);
       return;
     }
 
+    // Collect everything newer than the dedup anchor. Normally the anchor post
+    // is still in the returned window, so we walk down to it — this also
+    // correctly handles pinned-but-old posts that IG lists first (they sort to
+    // the bottom and stay below the anchor). But IG sometimes returns a stale
+    // or paginated window that OMITS the anchor post; treating that whole batch
+    // as "new" is exactly what resurrects weeks-old posts. So when the anchor
+    // is absent we fall back to a strict capture-time gate against the anchor's
+    // recorded timestamp (or re-seed without backfill if we never recorded one).
+    const anchorIdx = ordered.findIndex((p) => p.igPostId === acc.last_post_id);
+    let newPostsNewestFirst: RecentPost[];
+    if (anchorIdx >= 0) {
+      newPostsNewestFirst = ordered.slice(0, anchorIdx);
+    } else if (acc.last_post_at !== null) {
+      newPostsNewestFirst = ordered.filter((p) => p.takenAtMs > (acc.last_post_at as number));
+      log.warn(
+        {
+          account: acc.username,
+          anchor: acc.last_post_id,
+          anchor_at: acc.last_post_at,
+          batch_newest_at: newest.takenAtMs,
+          candidates: newPostsNewestFirst.length,
+        },
+        'instagram_monitor.anchor_missing.time_gated',
+      );
+    } else {
+      // Legacy row: anchor id set but no recorded time, and it's not in the
+      // window. Re-seed to the newest without backfilling.
+      log.warn(
+        { account: acc.username, anchor: acc.last_post_id, reseed_to: newest.igPostId },
+        'instagram_monitor.anchor_missing.reseed',
+      );
+      this.deps.store.markPollSuccess(acc.id, Date.now(), newest.igPostId, newest.takenAtMs);
+      return;
+    }
+
+    // Advance the anchor strictly forward in capture time: a stale/older window
+    // must never pull it backward (that re-arms the whole backfill on the next
+    // poll). With no recorded time yet (fresh seed / legacy row) adopt newest.
+    const next =
+      acc.last_post_at === null || newest.takenAtMs >= acc.last_post_at
+        ? { id: newest.igPostId, at: newest.takenAtMs }
+        : { id: acc.last_post_id, at: acc.last_post_at };
+
     if (newPostsNewestFirst.length === 0) {
-      this.deps.store.markPollSuccess(acc.id, Date.now(), newestPostId);
+      this.deps.store.markPollSuccess(acc.id, Date.now(), next.id, next.at);
       return;
     }
 
@@ -183,10 +218,10 @@ export class InstagramMonitorScheduler {
     // binding doesn't get this batch as backfill. Skip the per-post work.
     if (boundChannels.length === 0) {
       log.info(
-        { account: acc.username, new_posts: newPostsNewestFirst.length, advanced_to: newestPostId },
+        { account: acc.username, new_posts: newPostsNewestFirst.length, advanced_to: next.id },
         'instagram_monitor.no_bound_channels.advance_anchor',
       );
-      this.deps.store.markPollSuccess(acc.id, Date.now(), newestPostId);
+      this.deps.store.markPollSuccess(acc.id, Date.now(), next.id, next.at);
       return;
     }
 
@@ -270,6 +305,6 @@ export class InstagramMonitorScheduler {
       }
     }
 
-    this.deps.store.markPollSuccess(acc.id, Date.now(), newestPostId);
+    this.deps.store.markPollSuccess(acc.id, Date.now(), next.id, next.at);
   }
 }
