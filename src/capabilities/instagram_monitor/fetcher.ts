@@ -32,6 +32,12 @@ export interface InstagramFetcher {
   fetchRecentPosts(username: string): Promise<RecentPost[]>;
   /** Where this fetcher gets its data — useful for logs and admin reports. */
   source(): 'lambda' | 'direct';
+  /**
+   * Optional: register a callback invoked once per outbound IG HTTP request
+   * (warmup, pk-resolve, feed). The scheduler uses this to maintain a rolling
+   * 24h request count for the daily-budget guardrail. Safe to leave unset.
+   */
+  observeRequests?(cb: () => void): void;
 }
 
 /** Logged-in Instagram session cookies. When present, direct fetches use them
@@ -50,10 +56,76 @@ export interface InstagramAuth {
  * watcher can alert the operator to refresh the cookies. */
 export class InstagramAuthError extends Error {
   readonly authExpired = true;
-  constructor(message: string) {
+  /**
+   * Short machine-readable cause, used by the scheduler to tell a SESSION-level
+   * failure (the cookies are dead / the account is challenged — affects every
+   * account) from an account-specific rejection (a bare 401/403 on one private
+   * or restricted handle). Session-level: `require_login`, `checkpoint_required`,
+   * `challenge_required`, `consent_required`. Account-specific: `HTTP 401` /
+   * `HTTP 403` with no body marker. Defaults to `unknown`.
+   */
+  readonly reason: string;
+  constructor(message: string, reason = 'unknown') {
     super(message);
     this.name = 'InstagramAuthError';
+    this.reason = reason;
   }
+
+  /** True when the cause implies the SESSION (not just one account) is bad. */
+  get sessionLevel(): boolean {
+    return /checkpoint|challenge|require_login|consent/i.test(this.reason);
+  }
+}
+
+/** Thrown when IG throttles the request (HTTP 429 / "please wait a few minutes").
+ * Distinct from {@link InstagramAuthError}: the session is still valid, IG is
+ * just rate-limiting us. The scheduler treats this as a *soft block* and halts
+ * ALL polling for an escalating cooldown — continuing to poll while throttled
+ * is exactly the pattern that escalates a throttle into a ban, which is
+ * catastrophic on a personal account. */
+export class InstagramRateLimitError extends Error {
+  readonly rateLimited = true;
+  /** Parsed from the `Retry-After` header when present (ms), else undefined. */
+  readonly retryAfterMs?: number;
+  constructor(message: string, retryAfterMs?: number) {
+    super(message);
+    this.name = 'InstagramRateLimitError';
+    this.retryAfterMs = retryAfterMs;
+  }
+}
+
+/**
+ * Body markers IG returns alongside a throttle. The status code (429) is the
+ * primary signal; these catch cases where IG returns 200/400 with a "slow
+ * down" body instead of a clean 429.
+ */
+const RATE_LIMIT_MARKERS = [
+  'please wait a few minutes',
+  'rate limited',
+  'ratelimit',
+  'too many requests',
+];
+
+/**
+ * Returns true if the (status, body) pair indicates IG is throttling us (as
+ * opposed to an auth/session problem — see {@link detectAuthBlock} — or an
+ * ordinary error). 429 always counts; otherwise we look for an explicit
+ * "slow down" marker in the body.
+ */
+export function detectRateLimit(status: number, body: string): boolean {
+  if (status === 429) return true;
+  const lower = body.toLowerCase();
+  return RATE_LIMIT_MARKERS.some((m) => lower.includes(m));
+}
+
+/** Parse a `Retry-After` header (seconds, or an HTTP-date) into ms. Defensive:
+ * test fetch mocks often omit `headers`, so this tolerates a missing getter. */
+function parseRetryAfterMs(res: { headers?: { get?: (k: string) => string | null } }): number | undefined {
+  const raw = res.headers?.get?.('retry-after');
+  if (!raw) return undefined;
+  const secs = Number(raw);
+  if (Number.isFinite(secs) && secs >= 0) return Math.round(secs * 1000);
+  return undefined;
 }
 
 /**
@@ -105,23 +177,40 @@ const IG_URL = (u: string) =>
 const IG_FEED_URL = (pk: string, count = 12) =>
   `https://i.instagram.com/api/v1/feed/user/${encodeURIComponent(pk)}/?count=${count}`;
 
+/** Default desktop-Chrome UA. Overridable via the `IG_USER_AGENT` env so the
+ * value can be made to MATCH the browser the session cookies were extracted
+ * from — a session driven from a UA different than the one that created it is a
+ * fingerprint signal, which matters a lot more on a personal account. */
+export const DEFAULT_IG_USER_AGENT =
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
+
+const ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
+
 // Node's undici fetch auto-sends `sec-fetch-site: cross-site` for requests
 // to i.instagram.com. Instagram rejects that with HTTP 400 "SecFetch Policy
 // violation" — even though curl works fine, because curl doesn't send any
 // sec-fetch-* headers. We override them to look like a same-site XHR fired
-// from www.instagram.com.
-const HEADERS: Record<string, string> = {
-  'x-ig-app-id': '936619743392459',
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  Accept: '*/*',
-  'Accept-Language': 'en-US,en;q=0.9',
-  Referer: 'https://www.instagram.com/',
-  Origin: 'https://www.instagram.com',
-  'sec-fetch-site': 'same-site',
-  'sec-fetch-mode': 'cors',
-  'sec-fetch-dest': 'empty',
-};
+// from www.instagram.com. The User-Agent is injected so every request in a
+// session shares one consistent UA (see {@link DEFAULT_IG_USER_AGENT}).
+function buildHeaders(userAgent: string): Record<string, string> {
+  return {
+    'x-ig-app-id': '936619743392459',
+    'User-Agent': userAgent,
+    Accept: '*/*',
+    'Accept-Language': ACCEPT_LANGUAGE,
+    Referer: 'https://www.instagram.com/',
+    Origin: 'https://www.instagram.com',
+    'sec-fetch-site': 'same-site',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-dest': 'empty',
+  };
+}
+
+/** Sleep a random human-like interval in [minMs, maxMs). */
+function humanDelay(minMs = 400, maxMs = 1500): Promise<void> {
+  const ms = minMs + Math.floor(Math.random() * (maxMs - minMs));
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Wraps an injected LambdaRelay. Production path. */
 export class LambdaInstagramFetcher implements InstagramFetcher {
@@ -153,20 +242,33 @@ export class LambdaInstagramFetcher implements InstagramFetcher {
  */
 export class DirectInstagramFetcher implements InstagramFetcher {
   private readonly pkCache = new Map<string, string>();
+  private readonly headers: Record<string, string>;
+  /** Invoked once per outbound IG HTTP request (see {@link observeRequests}). */
+  private onRequest: () => void = () => {};
 
   /**
    * @param auth Logged-in session cookies, or null for anonymous mode.
    * @param warmupProbability Chance per authed fetch of doing an HTML warmup
    *   first (see {@link maybeWarmup}). Defaults to 0.5 in production; tests
-   *   should pass 0 to make request counts deterministic.
+   *   should pass 0 to make request counts deterministic. Also gates the
+   *   human-like inter-request delay so tests stay fast/deterministic.
+   * @param userAgent UA sent on every request; should match the browser the
+   *   session cookies were extracted from. Defaults to {@link DEFAULT_IG_USER_AGENT}.
    */
   constructor(
     private readonly auth: InstagramAuth | null = null,
     private readonly warmupProbability = 0.5,
-  ) {}
+    private readonly userAgent: string = DEFAULT_IG_USER_AGENT,
+  ) {
+    this.headers = buildHeaders(userAgent);
+  }
 
   source(): 'direct' {
     return 'direct';
+  }
+
+  observeRequests(cb: () => void): void {
+    this.onRequest = cb;
   }
 
   /** Whether this fetcher is sending logged-in session cookies. */
@@ -178,10 +280,21 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     if (this.auth) {
       await this.maybeWarmup(username, this.auth);
       const pk = await this.resolvePk(username, this.auth);
+      // Real browsers don't fire the feed XHR the instant the profile resolves.
+      // A short randomized gap (skipped in tests where warmup is disabled).
+      if (this.warmupProbability > 0) await humanDelay();
       return this.fetchAuthedFeed(pk, this.auth);
     }
-    const res = await fetch(IG_URL(username), withH2({ headers: HEADERS }));
+    this.onRequest();
+    const res = await fetch(IG_URL(username), withH2({ headers: this.headers }));
     if (!res.ok) {
+      const body = await res.text().catch(() => '');
+      if (detectRateLimit(res.status, body)) {
+        throw new InstagramRateLimitError(
+          `Instagram throttled an anonymous request (HTTP ${res.status})`,
+          parseRetryAfterMs(res),
+        );
+      }
       throw new Error(`Instagram returned HTTP ${res.status} (direct)`);
     }
     return parseWebProfileBody(await res.text());
@@ -200,10 +313,10 @@ export class DirectInstagramFetcher implements InstagramFetcher {
   private async maybeWarmup(username: string, auth: InstagramAuth): Promise<void> {
     if (this.warmupProbability <= 0 || Math.random() >= this.warmupProbability) return;
     const headers: Record<string, string> = {
-      'User-Agent': HEADERS['User-Agent'],
+      'User-Agent': this.userAgent,
       Accept:
         'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-      'Accept-Language': HEADERS['Accept-Language'],
+      'Accept-Language': ACCEPT_LANGUAGE,
       'sec-fetch-site': 'none',
       'sec-fetch-mode': 'navigate',
       'sec-fetch-dest': 'document',
@@ -212,6 +325,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
       ...authCookieHeaders(auth),
     };
     try {
+      this.onRequest();
       const res = await fetch(
         `https://www.instagram.com/${encodeURIComponent(username)}/`,
         withH2({ headers }),
@@ -232,14 +346,22 @@ export class DirectInstagramFetcher implements InstagramFetcher {
   private async resolvePk(username: string, auth: InstagramAuth): Promise<string> {
     const cached = this.pkCache.get(username);
     if (cached) return cached;
-    const headers = { ...HEADERS, ...authCookieHeaders(auth) };
+    const headers = { ...this.headers, ...authCookieHeaders(auth) };
+    this.onRequest();
     const res = await fetch(IG_URL(username), withH2({ headers }));
     const body = await res.text();
     if (!res.ok) {
       const authReason = detectAuthBlock(res.status, body);
       if (authReason) {
         throw new InstagramAuthError(
-          `Instagram rejected an authenticated profile lookup (${authReason}) — session likely expired or flagged for a challenge`,
+          `Instagram rejected an authenticated profile lookup (${authReason}) — session/account likely expired or flagged for a challenge`,
+          authReason,
+        );
+      }
+      if (detectRateLimit(res.status, body)) {
+        throw new InstagramRateLimitError(
+          `Instagram throttled an authenticated profile lookup (HTTP ${res.status}) resolving @${username}`,
+          parseRetryAfterMs(res),
         );
       }
       throw new Error(
@@ -253,7 +375,10 @@ export class DirectInstagramFetcher implements InstagramFetcher {
       throw new Error(`web_profile_info returned non-JSON resolving @${username}`);
     }
     if (json.require_login) {
-      throw new InstagramAuthError('web_profile_info returned require_login — session expired');
+      throw new InstagramAuthError(
+        'web_profile_info returned require_login — session expired',
+        'require_login',
+      );
     }
     const pk = json.data?.user?.id;
     if (typeof pk !== 'string' || pk.length === 0) {
@@ -264,14 +389,25 @@ export class DirectInstagramFetcher implements InstagramFetcher {
   }
 
   private async fetchAuthedFeed(pk: string, auth: InstagramAuth): Promise<RecentPost[]> {
-    const headers = { ...HEADERS, ...authCookieHeaders(auth) };
-    const res = await fetch(IG_FEED_URL(pk), withH2({ headers }));
+    const headers = { ...this.headers, ...authCookieHeaders(auth) };
+    // Randomize the page size in [10..16] (was a constant 12) so the request
+    // signature isn't byte-identical every poll.
+    const count = 10 + Math.floor(Math.random() * 7);
+    this.onRequest();
+    const res = await fetch(IG_FEED_URL(pk, count), withH2({ headers }));
     const body = await res.text();
     if (!res.ok) {
       const authReason = detectAuthBlock(res.status, body);
       if (authReason) {
         throw new InstagramAuthError(
-          `Instagram rejected an authenticated feed request (${authReason}) — session likely expired or flagged for a challenge`,
+          `Instagram rejected an authenticated feed request (${authReason}) — session/account likely expired or flagged for a challenge`,
+          authReason,
+        );
+      }
+      if (detectRateLimit(res.status, body)) {
+        throw new InstagramRateLimitError(
+          `Instagram throttled an authenticated feed request (HTTP ${res.status})`,
+          parseRetryAfterMs(res),
         );
       }
       throw new Error(
@@ -296,7 +432,10 @@ export function parseUserFeedBody(body: string): RecentPost[] {
   }
   const obj = json as { require_login?: unknown; items?: unknown };
   if (obj.require_login) {
-    throw new InstagramAuthError('feed/user returned require_login — session expired');
+    throw new InstagramAuthError(
+      'feed/user returned require_login — session expired',
+      'require_login',
+    );
   }
   if (!Array.isArray(obj.items)) return [];
   const out: RecentPost[] = [];

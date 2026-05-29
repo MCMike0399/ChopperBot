@@ -159,3 +159,78 @@ describe('InstagramMonitorStore', () => {
     mem.close();
   });
 });
+
+describe('InstagramMonitorStore — global runtime / circuit breaker (v5)', () => {
+  test('v5 migration seeds a single un-stopped runtime row', async () => {
+    const { store, mem } = await newStore();
+    const r = store.getRuntime();
+    expect(r.global_stop).toBe(0);
+    expect(store.isGlobalStopped()).toBe(false);
+    mem.close();
+  });
+
+  test('tripGlobalStop engages the kill-switch and keeps the first reason', async () => {
+    const { store, mem } = await newStore();
+    store.tripGlobalStop('first reason', 1_000);
+    store.tripGlobalStop('second reason', 2_000);
+    const r = store.getRuntime();
+    expect(store.isGlobalStopped()).toBe(true);
+    expect(r.stop_reason).toBe('first reason');
+    expect(r.stopped_at).toBe(1_000);
+    mem.close();
+  });
+
+  test('clearGlobalStop is the only way back, and clears event windows', async () => {
+    const { store, mem } = await newStore();
+    store.tripGlobalStop('boom', 1_000);
+    store.recordAuthEvent(1_000);
+    store.clearGlobalStop();
+    const r = store.getRuntime();
+    expect(store.isGlobalStopped()).toBe(false);
+    expect(r.stop_reason).toBeNull();
+    expect(r.recent_auth_json).toBeNull();
+    mem.close();
+  });
+
+  test('clearFailureBackoff does NOT clear the persistent global stop', async () => {
+    // The whole point of the separate runtime table: a restart (which calls
+    // clearFailureBackoff) must not silently un-stop a tripped breaker.
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollFailure(a.account.id, 1, { auth: true });
+    store.tripGlobalStop('flagged', 1_000);
+    store.clearFailureBackoff();
+    expect(store.getAccount('foo')?.consecutive_auth_failures).toBe(0); // counters cleared
+    expect(store.isGlobalStopped()).toBe(true); // breaker survives
+    mem.close();
+  });
+
+  test('event windowing counts within the window and prunes older entries', async () => {
+    const { store, mem } = await newStore();
+    const base = 10_000_000_000;
+    expect(store.record429Event(base)).toBe(1);
+    expect(store.record429Event(base + 1_000)).toBe(2);
+    // 7h later: the first two have aged out of the 6h window.
+    const count = store.record429Event(base + 7 * 60 * 60 * 1000);
+    expect(count).toBe(1);
+    mem.close();
+  });
+
+  test('writeHeartbeat is readable via getRuntime', async () => {
+    const { store, mem } = await newStore();
+    store.writeHeartbeat({
+      authCooldownUntil: 111,
+      rateCooldownUntil: 222,
+      budgetPauseUntil: 333,
+      requests24h: 7,
+      nowMs: 444,
+    });
+    const r = store.getRuntime();
+    expect(r.auth_cooldown_until).toBe(111);
+    expect(r.rate_cooldown_until).toBe(222);
+    expect(r.budget_pause_until).toBe(333);
+    expect(r.requests_24h).toBe(7);
+    expect(r.heartbeat_at).toBe(444);
+    mem.close();
+  });
+});
