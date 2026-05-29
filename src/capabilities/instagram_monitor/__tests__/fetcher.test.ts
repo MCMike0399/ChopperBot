@@ -4,7 +4,10 @@ import {
   DirectInstagramFetcher,
   parseUserFeedBody,
   InstagramAuthError,
+  InstagramRateLimitError,
   detectAuthBlock,
+  detectRateLimit,
+  DEFAULT_IG_USER_AGENT,
   type InstagramAuth,
 } from '../fetcher.js';
 import type { LambdaRelay } from '../lambda-relay-client.js';
@@ -332,6 +335,111 @@ describe('DirectInstagramFetcher (authenticated)', () => {
       .catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(InstagramAuthError);
+  });
+});
+
+describe('detectRateLimit', () => {
+  test('429 always counts', () => {
+    expect(detectRateLimit(429, '')).toBe(true);
+    expect(detectRateLimit(429, 'anything')).toBe(true);
+  });
+  test('non-429 status counts only on a throttle marker in the body', () => {
+    expect(detectRateLimit(200, 'Please wait a few minutes before you try again.')).toBe(true);
+    expect(detectRateLimit(400, 'rate limited')).toBe(true);
+    expect(detectRateLimit(200, 'ok')).toBe(false);
+    expect(detectRateLimit(403, 'login_required')).toBe(false);
+  });
+});
+
+describe('DirectInstagramFetcher — rate limit + UA + request observer', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test('429 on the authed feed surfaces InstagramRateLimitError (not auth)', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('web_profile_info')) {
+        return { ok: true, status: 200, async text() {
+          return JSON.stringify({ data: { user: { id: '5005' } } });
+        } };
+      }
+      return {
+        ok: false,
+        status: 429,
+        headers: { get: (k: string) => (k.toLowerCase() === 'retry-after' ? '120' : null) },
+        async text() { return 'Please wait a few minutes'; },
+      };
+    }) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
+    expect(err).toBeInstanceOf(InstagramRateLimitError);
+    expect(err).not.toBeInstanceOf(InstagramAuthError);
+    expect(err.retryAfterMs).toBe(120_000);
+  });
+
+  test('anonymous 429 surfaces InstagramRateLimitError', async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 429,
+      async text() { return 'rate limited'; },
+    })) as unknown as typeof fetch;
+    await expect(new DirectInstagramFetcher().fetchRecentPosts('foo')).rejects.toBeInstanceOf(
+      InstagramRateLimitError,
+    );
+  });
+
+  test('sends the constructor User-Agent on every request', async () => {
+    const seenUAs: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+      const ua = (init.headers as Record<string, string>)['User-Agent'];
+      seenUAs.push(ua);
+      if (url.includes('web_profile_info')) {
+        return { ok: true, status: 200, async text() {
+          return JSON.stringify({ data: { user: { id: '5005' } } });
+        } };
+      }
+      return { ok: true, status: 200, async text() {
+        return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
+      } };
+    }) as unknown as typeof fetch;
+
+    const CUSTOM_UA = 'Mozilla/5.0 (My Personal Browser) Custom/1.0';
+    await new DirectInstagramFetcher(AUTH, 0, CUSTOM_UA).fetchRecentPosts('foo');
+    expect(seenUAs.length).toBeGreaterThan(0);
+    expect(seenUAs.every((ua) => ua === CUSTOM_UA)).toBe(true);
+  });
+
+  test('defaults to DEFAULT_IG_USER_AGENT when no UA is supplied', async () => {
+    let seenUA = '';
+    globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) => {
+      seenUA = (init.headers as Record<string, string>)['User-Agent'];
+      return { ok: true, status: 200, async text() {
+        return buildIgResponse([SAMPLE_NODE]);
+      } };
+    }) as unknown as typeof fetch;
+    await new DirectInstagramFetcher().fetchRecentPosts('foo'); // anonymous
+    expect(seenUA).toBe(DEFAULT_IG_USER_AGENT);
+  });
+
+  test('observeRequests fires once per outbound IG HTTP request', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('web_profile_info')) {
+        return { ok: true, status: 200, async text() {
+          return JSON.stringify({ data: { user: { id: '5005' } } });
+        } };
+      }
+      return { ok: true, status: 200, async text() {
+        return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
+      } };
+    }) as unknown as typeof fetch;
+
+    let count = 0;
+    // warmupProbability=0 → no warmup, no inter-request delay: pk + feed = 2.
+    const f = new DirectInstagramFetcher(AUTH, 0);
+    f.observeRequests(() => { count++; });
+    await f.fetchRecentPosts('foo');
+    expect(count).toBe(2);
   });
 });
 

@@ -53,6 +53,24 @@ export interface SeenPost {
   discord_message_id: string | null;
 }
 
+/**
+ * Global runtime/circuit-breaker state (one row, id=1). Shared between the
+ * scheduler (writes the breaker + heartbeat) and the admin tool (reads for the
+ * `status` action, clears the breaker via `resume_monitor`).
+ */
+export interface RuntimeState {
+  global_stop: number;
+  stop_reason: string | null;
+  stopped_at: number | null;
+  recent_auth_json: string | null;
+  recent_429_json: string | null;
+  auth_cooldown_until: number | null;
+  rate_cooldown_until: number | null;
+  budget_pause_until: number | null;
+  requests_24h: number | null;
+  heartbeat_at: number | null;
+}
+
 export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
   {
     version: 1,
@@ -162,7 +180,44 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
         ADD COLUMN consecutive_auth_failures INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    // v5 — global runtime state, separate from the per-account table.
+    //
+    // A single row (id=1) holding the PERSISTENT circuit-breaker / kill-switch
+    // (`global_stop`). This deliberately lives in its own table because
+    // `clearFailureBackoff()` (run on every scheduler start) zeroes the
+    // per-account failure counters — but a tripped breaker MUST survive a
+    // restart (otherwise restarting the service would silently un-stop a
+    // monitor that IG just flagged). The scheduler reads `global_stop` first
+    // thing each tick and only the admin `resume_monitor` action clears it.
+    //
+    // The `recent_*_json` columns hold windowed event timestamps the breaker
+    // uses to decide when to trip (e.g. ≥2 throttles in 6h). The heartbeat
+    // columns are written by the scheduler each tick so the admin `status`
+    // tool can observe the scheduler's in-memory cooldowns and 24h request
+    // count (which live in a different object it can't reach directly).
+    version: 5,
+    up: `
+      CREATE TABLE IF NOT EXISTS instagram_monitor_runtime (
+        id                   INTEGER PRIMARY KEY CHECK (id = 1),
+        global_stop          INTEGER NOT NULL DEFAULT 0,
+        stop_reason          TEXT,
+        stopped_at           INTEGER,
+        recent_auth_json     TEXT,
+        recent_429_json      TEXT,
+        auth_cooldown_until  INTEGER,
+        rate_cooldown_until  INTEGER,
+        budget_pause_until   INTEGER,
+        requests_24h         INTEGER,
+        heartbeat_at         INTEGER
+      );
+      INSERT OR IGNORE INTO instagram_monitor_runtime (id, global_stop) VALUES (1, 0);
+    `,
+  },
 ];
+
+/** Window over which the circuit breaker counts soft-block events (6h). */
+export const EVENT_WINDOW_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Threshold of consecutive auth-class failures (per account) at which
@@ -435,5 +490,112 @@ export class InstagramMonitorStore {
          LIMIT ?`,
       )
       .all(channelId, limit) as SeenPost[];
+  }
+
+  // ---- Global runtime / circuit breaker (v5) ------------------------------
+
+  /** Read the singleton runtime row. The row is guaranteed to exist (seeded by
+   * the v5 migration), but we coerce defensively for older test DBs. */
+  getRuntime(): RuntimeState {
+    const row = this.db
+      .prepare(`SELECT * FROM instagram_monitor_runtime WHERE id = 1`)
+      .get() as RuntimeState | undefined;
+    return (
+      row ?? {
+        global_stop: 0,
+        stop_reason: null,
+        stopped_at: null,
+        recent_auth_json: null,
+        recent_429_json: null,
+        auth_cooldown_until: null,
+        rate_cooldown_until: null,
+        budget_pause_until: null,
+        requests_24h: null,
+        heartbeat_at: null,
+      }
+    );
+  }
+
+  /** Whether the persistent kill-switch is engaged. */
+  isGlobalStopped(): boolean {
+    return this.getRuntime().global_stop === 1;
+  }
+
+  /** Engage the persistent kill-switch. Idempotent — a second trip keeps the
+   * original reason/timestamp so we don't lose the first cause. */
+  tripGlobalStop(reason: string, nowMs: number): void {
+    this.db
+      .prepare(
+        `UPDATE instagram_monitor_runtime
+         SET global_stop = 1,
+             stop_reason = COALESCE(stop_reason, ?),
+             stopped_at = COALESCE(stopped_at, ?)
+         WHERE id = 1`,
+      )
+      .run(reason, nowMs);
+  }
+
+  /** Clear the kill-switch (the only way back — driven by `resume_monitor`).
+   * Also clears the windowed event arrays so a resumed monitor starts fresh. */
+  clearGlobalStop(): void {
+    this.db
+      .prepare(
+        `UPDATE instagram_monitor_runtime
+         SET global_stop = 0, stop_reason = NULL, stopped_at = NULL,
+             recent_auth_json = NULL, recent_429_json = NULL
+         WHERE id = 1`,
+      )
+      .run();
+  }
+
+  /** Append `nowMs` to the auth-failure window, prune entries older than
+   * {@link EVENT_WINDOW_MS}, and return the resulting count. */
+  recordAuthEvent(nowMs: number): number {
+    return this.appendEvent('recent_auth_json', nowMs);
+  }
+
+  /** Append `nowMs` to the 429 window, prune, and return the resulting count. */
+  record429Event(nowMs: number): number {
+    return this.appendEvent('recent_429_json', nowMs);
+  }
+
+  private appendEvent(column: 'recent_auth_json' | 'recent_429_json', nowMs: number): number {
+    const runtime = this.getRuntime();
+    const raw = column === 'recent_auth_json' ? runtime.recent_auth_json : runtime.recent_429_json;
+    let arr: number[] = [];
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) arr = parsed.filter((n) => typeof n === 'number');
+      } catch {
+        arr = [];
+      }
+    }
+    arr.push(nowMs);
+    const cutoff = nowMs - EVENT_WINDOW_MS;
+    arr = arr.filter((t) => t >= cutoff);
+    this.db
+      .prepare(`UPDATE instagram_monitor_runtime SET ${column} = ? WHERE id = 1`)
+      .run(JSON.stringify(arr));
+    return arr.length;
+  }
+
+  /** Scheduler heartbeat: mirror the in-memory cooldowns + 24h request count
+   * into the runtime row so the admin `status` tool can observe them. */
+  writeHeartbeat(h: {
+    authCooldownUntil: number | null;
+    rateCooldownUntil: number | null;
+    budgetPauseUntil: number | null;
+    requests24h: number;
+    nowMs: number;
+  }): void {
+    this.db
+      .prepare(
+        `UPDATE instagram_monitor_runtime
+         SET auth_cooldown_until = ?, rate_cooldown_until = ?, budget_pause_until = ?,
+             requests_24h = ?, heartbeat_at = ?
+         WHERE id = 1`,
+      )
+      .run(h.authCooldownUntil, h.rateCooldownUntil, h.budgetPauseUntil, h.requests24h, h.nowMs);
   }
 }

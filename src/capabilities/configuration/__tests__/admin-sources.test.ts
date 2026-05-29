@@ -110,6 +110,33 @@ describe('ConfigInstagramAdminSource', () => {
     expect(err(await src.handle('config_instagram', { action: 'frobnicate' }))).toMatch(/must be one of/);
     expect(err(await src.handle('config_instagram', { action: 'add' }))).toMatch(/username/);
   });
+
+  test('resume_monitor requires confirm and clears the persistent kill-switch', async () => {
+    const store = new InstagramMonitorStore(memory.db());
+    store.tripGlobalStop('IG flagged the account', Date.now());
+    expect(store.isGlobalStopped()).toBe(true);
+
+    expect(err(await src.handle('config_instagram', { action: 'resume_monitor' }))).toMatch(/confirm/);
+    const resumed = ok(await src.handle('config_instagram', { action: 'resume_monitor', confirm: true }));
+    expect(resumed.resumed).toBe(true);
+    expect(resumed.was_stopped).toBe(true);
+    expect(store.isGlobalStopped()).toBe(false);
+  });
+
+  test('status reports the kill-switch state and account aggregates', async () => {
+    const store = new InstagramMonitorStore(memory.db());
+    store.upsertAccount({ username: 'nasa', added_by: OPERATOR });
+    store.setPaused('nasa', true);
+    store.tripGlobalStop('repeated throttles', 1_700_000_000_000);
+
+    const status = ok(await src.handle('config_instagram', { action: 'status' }));
+    const killSwitch = status.kill_switch as Payload;
+    expect(killSwitch.engaged).toBe(true);
+    expect(killSwitch.reason).toBe('repeated throttles');
+    expect(killSwitch.resume_with).toMatch(/resume_monitor/);
+    expect((status.accounts as Payload).total).toBe(1);
+    expect((status.accounts as Payload).paused).toBe(1);
+  });
 });
 
 // ── Calendar admin ───────────────────────────────────────────────────────────

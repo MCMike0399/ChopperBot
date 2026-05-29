@@ -1,18 +1,29 @@
 import { AttachmentBuilder, type Client, type Message, type TextChannel } from 'discord.js';
 import { log } from '../../log.js';
 import type { Classification } from './classifier.js';
-import type { RecentPost } from './fetcher.js';
+import { DEFAULT_IG_USER_AGENT, type RecentPost } from './fetcher.js';
 import { formatEventWhen, formatPostedAt } from './format.js';
 
 const DISCORD_FILE_LIMIT_BYTES = 8 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_CAROUSEL_ATTACHMENTS = 4;
 
-const IG_CDN_HEADERS: Record<string, string> = {
-  'User-Agent':
-    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-};
+// CDN image/video fetches share the same UA as the API fetcher so a session
+// doesn't present two different User-Agents to Instagram infra. Overridden once
+// at capability init from `IG_USER_AGENT` via {@link setIgCdnUserAgent}.
+let igCdnUserAgent = DEFAULT_IG_USER_AGENT;
+
+/** Override the UA used for IG CDN media fetches (call once at init). */
+export function setIgCdnUserAgent(userAgent: string): void {
+  igCdnUserAgent = userAgent;
+}
+
+function igCdnHeaders(): Record<string, string> {
+  return {
+    'User-Agent': igCdnUserAgent,
+    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  };
+}
 
 const TYPE_EMOJI: Record<Classification['type'], string> = {
   evento: '📅',
@@ -135,7 +146,7 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: IG_CDN_HEADERS, signal: ctrl.signal });
+    const res = await fetch(url, { headers: igCdnHeaders(), signal: ctrl.signal });
     if (!res.ok) {
       log.warn({ url, status: res.status }, 'IG CDN fetch non-ok');
       return null;

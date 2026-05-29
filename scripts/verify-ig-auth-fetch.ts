@@ -22,9 +22,14 @@ const auth: InstagramAuth | null =
       }
     : null;
 
-console.log(`auth mode: ${auth ? 'AUTHENTICATED' : 'ANONYMOUS'}  account: @${username}`);
+console.log(
+  `auth mode: ${auth ? 'AUTHENTICATED' : 'ANONYMOUS'}  account: @${username}  ` +
+    `UA: ${config.IG_USER_AGENT ? 'custom (.env)' : 'default'}`,
+);
 
-const fetcher = new DirectInstagramFetcher(auth);
+// Mirror production: use the configured IG_USER_AGENT so the fingerprint we
+// verify matches what the running service sends.
+const fetcher = new DirectInstagramFetcher(auth, 0.5, config.IG_USER_AGENT);
 try {
   const posts = await fetcher.fetchRecentPosts(username);
   console.log(`OK: fetched ${posts.length} posts`);

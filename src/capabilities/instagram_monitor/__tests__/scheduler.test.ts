@@ -3,7 +3,12 @@ import type { Client } from 'discord.js';
 import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
 import { InstagramMonitorStore, INSTAGRAM_MONITOR_MIGRATIONS } from '../store.js';
 import { InstagramMonitorScheduler } from '../scheduler.js';
-import { InstagramAuthError, type InstagramFetcher, type RecentPost } from '../fetcher.js';
+import {
+  InstagramAuthError,
+  InstagramRateLimitError,
+  type InstagramFetcher,
+  type RecentPost,
+} from '../fetcher.js';
 import type { Classification } from '../classifier.js';
 import type { PublishResult } from '../publisher.js';
 
@@ -579,6 +584,188 @@ describe('InstagramMonitorScheduler', () => {
     await sch.tickOnce();
     expect(store.getAccount('foo')?.last_post_id).toBe('P2');
     expect(store.getAccount('foo')?.last_post_at).toBe(9_000);
+    mem.close();
+  });
+});
+
+describe('InstagramMonitorScheduler — guardrails', () => {
+  /** A fetcher that counts calls and can throw a chosen error. */
+  function spyFetcher(err?: Error): InstagramFetcher & { calls: () => number } {
+    let n = 0;
+    return {
+      source: () => 'direct',
+      calls: () => n,
+      async fetchRecentPosts() {
+        n++;
+        if (err) throw err;
+        return [];
+      },
+    };
+  }
+
+  test('global_stop halts the tick entirely — nothing is fetched', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'P0');
+    store.tripGlobalStop('flagged earlier', Date.now());
+    const fetcher = spyFetcher();
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher,
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+    expect(fetcher.calls()).toBe(0);
+    mem.close();
+  });
+
+  test('a single 429 sets a cooldown that halts the next tick (other accounts spared)', async () => {
+    const { store, mem } = await newStore();
+    const now = Date.now();
+    const a = store.upsertAccount({ username: 'aaa', added_by: 'U' });
+    const b = store.upsertAccount({ username: 'bbb', added_by: 'U' });
+    // aaa is the oldest poll → picked first (ACCOUNTS_PER_TICK=1).
+    store.markPollSuccess(a.account.id, now - 10 * 60 * 60 * 1000, 'A0');
+    store.markPollSuccess(b.account.id, now - 9 * 60 * 60 * 1000, 'B0');
+
+    const publish = vi.fn();
+    const sch = new InstagramMonitorScheduler({
+      store,
+      // aaa throttles; bbb would return a post if it were ever polled.
+      fetcher: {
+        source: () => 'direct',
+        async fetchRecentPosts(u: string) {
+          if (u === 'aaa') throw new InstagramRateLimitError('throttled (HTTP 429)');
+          return [post('B1')];
+        },
+      },
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => ({ relevant: true, type: 'evento', title: 't', summary: 's', when: null, where: null, tags: [] }),
+      publish: publish as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce(); // polls aaa → 429 → global cooldown
+    await sch.tickOnce(); // skipped by cooldown → bbb never polled
+
+    expect(publish).not.toHaveBeenCalled();
+    expect(store.getAccount('bbb')?.last_post_id).toBe('B0'); // untouched
+    // One throttle isn't enough to trip the persistent breaker.
+    expect(store.isGlobalStopped()).toBe(false);
+    mem.close();
+  });
+
+  test('a second 429 within the window trips the persistent breaker', async () => {
+    const { store, mem } = await newStore();
+    const now = Date.now();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(a.account.id, now - 10 * 60 * 60 * 1000, 'P0');
+    store.record429Event(now - 60_000); // one prior throttle in the window
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: spyFetcher(new InstagramRateLimitError('throttled (HTTP 429)')),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+    expect(store.isGlobalStopped()).toBe(true);
+    mem.close();
+  });
+
+  test('a session-level auth failure (checkpoint) trips the breaker immediately', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'P0');
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: spyFetcher(
+        new InstagramAuthError('Instagram rejected ...', 'HTTP 400 checkpoint_required'),
+      ),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+    expect(store.isGlobalStopped()).toBe(true);
+    mem.close();
+  });
+
+  test('an account-specific 401 does NOT trip the breaker or halt other accounts', async () => {
+    // Regression: a bare 401/403 on one restricted handle must not be treated as
+    // session death — it would stop the whole monitor. It just auto-pauses that
+    // one account via the per-account auth counter.
+    const { store, mem } = await newStore();
+    const now = Date.now();
+    const bad = store.upsertAccount({ username: 'restricted', added_by: 'U' });
+    const good = store.upsertAccount({ username: 'healthy', added_by: 'U' });
+    store.markPollSuccess(bad.account.id, now - 10 * 60 * 60 * 1000, 'R0');
+    // Anchor H0 present in the window (with a recorded time) so the new post
+    // above it publishes normally.
+    store.markPollSuccess(good.account.id, now - 9 * 60 * 60 * 1000, 'H0', 1_000);
+
+    const publish = vi.fn(async () => ({ ok: true, messageId: 'm' } as PublishResult));
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: {
+        source: () => 'direct',
+        async fetchRecentPosts(u: string) {
+          if (u === 'restricted') {
+            throw new InstagramAuthError('rejected feed (HTTP 401)', 'HTTP 401');
+          }
+          return [post('H1', { takenAtMs: 2_000 }), post('H0', { takenAtMs: 1_000 })];
+        },
+      },
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => ({ relevant: true, type: 'evento', title: 't', summary: 's', when: null, where: null, tags: [] }),
+      publish: publish as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce(); // polls 'restricted' (oldest) → bare 401, isolated
+    expect(store.isGlobalStopped()).toBe(false);
+    expect(store.getAccount('restricted')?.consecutive_auth_failures).toBe(1);
+    await sch.tickOnce(); // NOT in an auth cooldown → 'healthy' polls normally
+    expect(publish).toHaveBeenCalled();
+    mem.close();
+  });
+
+  test('the daily request budget soft-pauses the next tick and alerts once', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'P0');
+
+    // Fetcher that reports 2 outbound HTTP requests per poll via the observer.
+    let cb = () => {};
+    const fetcher: InstagramFetcher = {
+      source: () => 'direct',
+      observeRequests(c) { cb = c; },
+      async fetchRecentPosts() { cb(); cb(); return []; },
+    };
+    const notifyBudgetExhausted = vi.fn(async () => {});
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher,
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+      dailyRequestBudget: 2,
+      notifyBudgetExhausted,
+    });
+    await sch.tickOnce(); // polls once → 2 requests recorded
+    await sch.tickOnce(); // 2 >= budget(2) → soft-pause + alert
+    expect(notifyBudgetExhausted).toHaveBeenCalledTimes(1);
+    expect(notifyBudgetExhausted).toHaveBeenCalledWith({ requests24h: 2, budget: 2 });
     mem.close();
   });
 });
