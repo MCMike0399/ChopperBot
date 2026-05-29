@@ -4,6 +4,7 @@ import {
   DirectInstagramFetcher,
   parseUserFeedBody,
   InstagramAuthError,
+  detectAuthBlock,
   type InstagramAuth,
 } from '../fetcher.js';
 import type { LambdaRelay } from '../lambda-relay-client.js';
@@ -219,7 +220,9 @@ describe('DirectInstagramFetcher (authenticated)', () => {
     });
     globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    const f = new DirectInstagramFetcher(AUTH);
+    // warmupProbability=0 keeps the request count deterministic — the prod
+    // default (0.5) would non-deterministically add an extra HTML fetch.
+    const f = new DirectInstagramFetcher(AUTH, 0);
     expect(f.authenticated()).toBe(true);
 
     const posts = await f.fetchRecentPosts('foo');
@@ -243,7 +246,7 @@ describe('DirectInstagramFetcher (authenticated)', () => {
       return { ok: false, status: 401, async text() { return 'login_required'; } };
     }) as unknown as typeof fetch;
 
-    await expect(new DirectInstagramFetcher(AUTH).fetchRecentPosts('foo')).rejects.toBeInstanceOf(
+    await expect(new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo')).rejects.toBeInstanceOf(
       InstagramAuthError,
     );
   });
@@ -257,9 +260,104 @@ describe('DirectInstagramFetcher (authenticated)', () => {
       },
     })) as unknown as typeof fetch;
 
-    await expect(new DirectInstagramFetcher(AUTH).fetchRecentPosts('foo')).rejects.toBeInstanceOf(
+    await expect(new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo')).rejects.toBeInstanceOf(
       InstagramAuthError,
     );
+  });
+
+  // Regression: on 2026-05-29 IG flagged the throwaway session and started
+  // returning HTTP 400 with `{"message":"checkpoint_required",...}`. The prior
+  // code only matched 401/403 + `require_login`, so this fell through to a
+  // generic warning and the bot kept hammering the dead session for hours.
+  test('HTTP 400 + checkpoint_required body surfaces InstagramAuthError', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('web_profile_info')) {
+        return {
+          ok: false,
+          status: 400,
+          async text() {
+            return JSON.stringify({
+              message: 'checkpoint_required',
+              checkpoint_url: 'https://www.instagram.com/challenge/?next=/api/v1/...',
+              lock: true,
+              status: 'fail',
+            });
+          },
+        };
+      }
+      throw new Error('feed should not be reached');
+    }) as unknown as typeof fetch;
+
+    await expect(
+      new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo'),
+    ).rejects.toBeInstanceOf(InstagramAuthError);
+  });
+
+  test('HTTP 400 + challenge_required body on feed/user surfaces InstagramAuthError', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('web_profile_info')) {
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({ data: { user: { id: '5005' } } });
+          },
+        };
+      }
+      return {
+        ok: false,
+        status: 400,
+        async text() {
+          return JSON.stringify({ message: 'challenge_required', status: 'fail' });
+        },
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo'),
+    ).rejects.toBeInstanceOf(InstagramAuthError);
+  });
+
+  test('HTTP 400 with unrelated body is NOT classified as auth (stays a plain error)', async () => {
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      async text() {
+        return JSON.stringify({ message: 'something_else', status: 'fail' });
+      },
+    })) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0)
+      .fetchRecentPosts('foo')
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(InstagramAuthError);
+  });
+});
+
+describe('detectAuthBlock', () => {
+  test('401 and 403 always count, regardless of body', () => {
+    expect(detectAuthBlock(401, '')).toMatch(/HTTP 401/);
+    expect(detectAuthBlock(403, 'anything')).toMatch(/HTTP 403/);
+  });
+
+  test('400 + checkpoint/challenge/require_login body counts', () => {
+    expect(detectAuthBlock(400, '"message":"checkpoint_required"')).toMatch(
+      /checkpoint_required/,
+    );
+    expect(detectAuthBlock(400, '"challenge_required"')).toMatch(/challenge_required/);
+    expect(detectAuthBlock(400, '{"require_login":true}')).toMatch(/require_login/);
+  });
+
+  test('400 with unrelated body returns null (real 400 != auth-block)', () => {
+    expect(detectAuthBlock(400, '{"error":"bad_request"}')).toBeNull();
+    expect(detectAuthBlock(400, '')).toBeNull();
+  });
+
+  test('200/404/500 always return null even if body contains the markers', () => {
+    expect(detectAuthBlock(200, 'checkpoint_required')).toBeNull();
+    expect(detectAuthBlock(404, 'login_required')).toBeNull();
+    expect(detectAuthBlock(500, 'challenge_required')).toBeNull();
   });
 });
 
