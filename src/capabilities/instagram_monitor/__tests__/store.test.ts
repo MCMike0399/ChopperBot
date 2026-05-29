@@ -71,25 +71,24 @@ describe('InstagramMonitorStore', () => {
     mem.close();
   });
 
-  test('pollJitterMs is deterministic, bounded, varies by account, and off-able', () => {
+  test('pollJitterMs is bounded random and off-able', () => {
     const max = 600_000;
     const cycle = 1_700_000_000_000;
     // Bounded to [0, max).
-    for (let id = 1; id <= 50; id++) {
-      const j = pollJitterMs(id, cycle, max);
+    const samples: number[] = [];
+    for (let i = 0; i < 100; i++) {
+      const j = pollJitterMs(1, cycle, max);
       expect(j).toBeGreaterThanOrEqual(0);
       expect(j).toBeLessThan(max);
+      samples.push(j);
     }
-    // Deterministic for the same (id, cycle).
-    expect(pollJitterMs(7, cycle, max)).toBe(pollJitterMs(7, cycle, max));
-    // Reshuffles when last_polled_at (the cycle) changes.
-    expect(pollJitterMs(7, cycle, max)).not.toBe(pollJitterMs(7, cycle + 999_999, max));
-    // Decorrelates accounts: not all 20 ids collapse to the same value.
-    const vals = new Set(
-      Array.from({ length: 20 }, (_, i) => pollJitterMs(i + 1, cycle, max)),
-    );
-    expect(vals.size).toBeGreaterThan(1);
-    // Disabled paths return 0.
+    // Random (not deterministic): 100 draws from a 600_000-wide range with
+    // <2 unique values has astronomically low probability (~1e-300).
+    expect(new Set(samples).size).toBeGreaterThan(1);
+    // Disabled paths return 0 deterministically:
+    // - max <= 0 (caller turned jitter off)
+    // - last_polled_at == null (never-polled accounts skip jitter so their
+    //   first poll fires immediately)
     expect(pollJitterMs(1, cycle, 0)).toBe(0);
     expect(pollJitterMs(1, null, max)).toBe(0);
   });

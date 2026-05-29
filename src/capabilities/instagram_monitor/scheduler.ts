@@ -5,17 +5,40 @@ import { InstagramAuthError, type InstagramFetcher, type RecentPost } from './fe
 import { classifyPost, type Classification } from './classifier.js';
 import { fetchCover as defaultFetchCover, publishPost as defaultPublishPost, type PublishResult } from './publisher.js';
 
-export const DEFAULT_POLL_INTERVAL_MS = 20 * 60 * 1000;
+// Base polling cadence per account. Raised from 20 min → 60 min on 2026-05-29
+// after IG checkpointed the throwaway session: lower request volume + irregular
+// gaps reduce the automation signal. With ACCOUNTS_PER_TICK=1 and a 60s tick we
+// can still keep ~60 accounts on cadence at this interval.
+export const DEFAULT_POLL_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_TICK_MS = 60 * 1000;
 // One account per tick (≤1 outbound IG request per minute) so we never fire a
-// synchronized burst that looks like a bot. With a 60s tick and 20min interval
-// this comfortably keeps up to ~20 accounts on cadence.
+// synchronized burst that looks like a bot.
 const ACCOUNTS_PER_TICK = 1;
 // Up to +50% of the poll interval of random, per-account jitter on each
 // account's next-due time, so the accounts decorrelate and polls scatter
 // irregularly across the window rather than marching in lockstep.
 export const POLL_JITTER_FRACTION = 0.5;
 const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
+
+// Quiet hours: skip polling between these wall-clock hours in America/Mexico_City.
+// Real users don't browse IG at 4 AM — a 24/7 cadence is one of the loudest
+// automation signals. Cuts ~21% of daily request volume per account at zero
+// product impact (any posts published overnight surface naturally on the
+// 07:00 resume).
+const QUIET_HOURS_TZ = 'America/Mexico_City';
+const QUIET_HOURS_START_HOUR = 2;
+const QUIET_HOURS_END_HOUR = 7;
+
+// After an auth-class failure we suspend ALL IG polling for this long, even
+// for accounts that haven't yet hit AUTH_PAUSE_THRESHOLD individually. Stops
+// the bot from working through the account list one-by-one while IG is already
+// flagging the session — that pattern is itself an automation signal.
+const AUTH_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
+
+// Don't spam the admin channel: at most one auth-expired alert every 6h. The
+// operator only needs one message to know to act; later failures just stack
+// silently until the operator fixes it.
+const AUTH_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /** Function signatures injected by the capability; tests can swap them. */
 export type ClassifyFn = (
@@ -33,6 +56,19 @@ export type PublishFn = (
 ) => Promise<PublishResult>;
 export type FetchCoverFn = (url: string) => Promise<Uint8Array | null>;
 
+/**
+ * Called when the bot detects an IG auth failure (`InstagramAuthError` thrown
+ * by the fetcher). Used to surface a message in the admin/config Discord
+ * channel so the operator knows to refresh cookies — the prior watcher that
+ * did this from launchd does not exist on the Pi. The scheduler rate-limits
+ * its own calls (one alert per 6 h) so this can be a thin Discord-send closure
+ * that doesn't worry about deduplication.
+ */
+export type NotifyAuthExpiredFn = (info: {
+  account: string;
+  reason: string;
+}) => Promise<void>;
+
 export interface SchedulerDeps {
   store: InstagramMonitorStore;
   fetcher: InstagramFetcher;
@@ -49,6 +85,23 @@ export interface SchedulerDeps {
   publish?: PublishFn;
   /** Override for tests. Defaults to the real fetchCover. */
   fetchCover?: FetchCoverFn;
+  /** Posted to the admin Discord channel on auth failures. Optional in tests. */
+  notifyAuthExpired?: NotifyAuthExpiredFn;
+}
+
+/**
+ * Returns true when the current local time in `America/Mexico_City` falls
+ * inside the quiet-hours window. Exported for tests.
+ */
+export function inQuietHours(nowMs: number, tz = QUIET_HOURS_TZ): boolean {
+  const hourStr = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: '2-digit',
+    hour12: false,
+  }).format(new Date(nowMs));
+  // Intl can render midnight as "24" depending on engine; normalise to 0–23.
+  const hour = parseInt(hourStr, 10) % 24;
+  return hour >= QUIET_HOURS_START_HOUR && hour < QUIET_HOURS_END_HOUR;
 }
 
 export class InstagramMonitorScheduler {
@@ -58,6 +111,14 @@ export class InstagramMonitorScheduler {
   private readonly classify: ClassifyFn;
   private readonly publish: PublishFn;
   private readonly fetchCover: FetchCoverFn;
+  /** Set to `nowMs + AUTH_FAILURE_COOLDOWN_MS` on any auth-class failure.
+   * `tickOnce()` skips polling while this is in the future. Cleared on
+   * successful poll (via the auth counter reset cascading through). In-memory
+   * only — a restart resets it, which is the desired flow after the operator
+   * refreshes cookies. */
+  private authCooldownUntilMs = 0;
+  /** Rate-limit for the admin-channel alert: at most one per 6 h. */
+  private lastAuthAlertAtMs = 0;
 
   constructor(
     private readonly deps: SchedulerDeps,
@@ -71,8 +132,18 @@ export class InstagramMonitorScheduler {
 
   start(): void {
     if (this.intervalHandle) return;
+    // Zero out backoff counters so any leftover post-outage state (e.g. accounts
+    // that hit AUTH_PAUSE_THRESHOLD before this restart, or sat at 8-hour
+    // exponential backoff) gets a clean slate. Operator-set `paused=1` is left
+    // intact — that's intentional, not a side effect of the prior failure.
+    const cleared = this.deps.store.clearFailureBackoff();
     log.info(
-      { source: this.deps.fetcher.source(), tickMs: this.tickMs, pollIntervalMs: this.pollIntervalMs },
+      {
+        source: this.deps.fetcher.source(),
+        tickMs: this.tickMs,
+        pollIntervalMs: this.pollIntervalMs,
+        cleared_backoff_rows: cleared.cleared,
+      },
       'instagram_monitor.scheduler.start',
     );
     setImmediate(() => void this.tickOnce().catch(() => {}));
@@ -97,9 +168,21 @@ export class InstagramMonitorScheduler {
     this.tickInFlight = true;
     const t0 = Date.now();
     try {
+      const now = Date.now();
+      if (inQuietHours(now)) {
+        log.debug({}, 'instagram_monitor.tick.quiet_hours');
+        return;
+      }
+      if (now < this.authCooldownUntilMs) {
+        log.debug(
+          { until: this.authCooldownUntilMs },
+          'instagram_monitor.tick.auth_cooldown',
+        );
+        return;
+      }
       const jitterMaxMs = Math.floor(this.pollIntervalMs * POLL_JITTER_FRACTION);
       const due = this.deps.store.dueAccounts(
-        Date.now(),
+        now,
         this.pollIntervalMs,
         ACCOUNTS_PER_TICK,
         jitterMaxMs,
@@ -126,14 +209,37 @@ export class InstagramMonitorScheduler {
         'instagram_monitor.fetch.ok',
       );
     } catch (err) {
-      this.deps.store.markPollFailure(acc.id, Date.now());
-      if (err instanceof InstagramAuthError) {
-        // Distinct from ordinary throttling: the IG session cookies are dead.
-        // The log-watcher alerts on this msg so the operator can refresh them.
+      const now = Date.now();
+      const isAuth = err instanceof InstagramAuthError;
+      this.deps.store.markPollFailure(acc.id, now, { auth: isAuth });
+      if (isAuth) {
+        // IG session is dead (401/403, checkpoint_required, challenge_required,
+        // require_login). Halt polling for AUTH_FAILURE_COOLDOWN_MS so we
+        // don't continue working through the account list on a flagged
+        // session — that pattern itself is automation signal.
+        this.authCooldownUntilMs = now + AUTH_FAILURE_COOLDOWN_MS;
         log.error(
           { account: acc.username, err: String(err) },
           'instagram_monitor.auth.expired',
         );
+        // Tell the operator via Discord, rate-limited to once per 6 h.
+        if (
+          this.deps.notifyAuthExpired &&
+          now - this.lastAuthAlertAtMs >= AUTH_ALERT_COOLDOWN_MS
+        ) {
+          this.lastAuthAlertAtMs = now;
+          try {
+            await this.deps.notifyAuthExpired({
+              account: acc.username,
+              reason: String(err),
+            });
+          } catch (notifyErr) {
+            log.warn(
+              { err: notifyErr },
+              'instagram_monitor.auth_notify_failed',
+            );
+          }
+        }
       } else {
         log.warn(
           { account: acc.username, err, failures: acc.consecutive_failures + 1 },

@@ -1,3 +1,4 @@
+import { ChannelType, type Client } from 'discord.js';
 import { config } from '../../config.js';
 import { log } from '../../log.js';
 import { composeToolSources } from '../../tools/source.js';
@@ -8,6 +9,7 @@ import type {
   CapabilityTurnBundle,
   CapabilityTurnContext,
 } from '../capability.js';
+import { CONFIGURATION_CHANNEL_ID } from '../configuration/constants.js';
 import { INSTAGRAM_MONITOR_MIGRATIONS, InstagramMonitorStore } from './store.js';
 import {
   DirectInstagramFetcher,
@@ -87,6 +89,8 @@ export class InstagramMonitorCapability implements Capability {
         }
         return out;
       },
+      notifyAuthExpired: ({ account, reason }) =>
+        postAuthExpiredAlert(client, account, reason),
     });
     this.scheduler.start();
     log.info({ capability: this.id }, 'InstagramMonitorCapability scheduler started');
@@ -114,5 +118,53 @@ export class InstagramMonitorCapability implements Capability {
       await this.scheduler.dispose();
       this.scheduler = null;
     }
+  }
+}
+
+/**
+ * Sends an alert to the admin/config Discord channel when IG flags the session.
+ * The scheduler already rate-limits these calls to one per 6 h, so this helper
+ * just sends; it doesn't need its own dedup. Any send error is logged and
+ * swallowed (it must not bubble up into the polling loop).
+ *
+ * Exported so verification scripts (e.g. `scripts/verify-auth-alert.ts`) can
+ * drive this exact code path without faking an IG auth failure.
+ */
+export async function postAuthExpiredAlert(
+  client: Client,
+  account: string,
+  reason: string,
+): Promise<void> {
+  try {
+    const channel = await client.channels.fetch(CONFIGURATION_CHANNEL_ID);
+    if (
+      !channel ||
+      (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.DM)
+    ) {
+      log.warn(
+        { channel: CONFIGURATION_CHANNEL_ID },
+        'instagram_monitor.auth_alert.channel_unavailable',
+      );
+      return;
+    }
+    const lines = [
+      '⚠️ **Instagram monitor: sesión bloqueada**',
+      `Cuenta probada: \`${account}\``,
+      `Detalle: ${reason}`,
+      '',
+      'Acción:',
+      '1. Abre `instagram.com` en el navegador con la cuenta throwaway y completa el reto / "¿Fuiste tú?".',
+      '2. Saca cookies nuevas (`sessionid`, `csrftoken`, `ds_user_id`, `mid`, `ig_did`) y reemplázalas en `.env`.',
+      '3. `pnpm run build && systemctl --user restart chopperbot.service`.',
+      '',
+      `Mientras tanto el sondeo está suspendido 1 h y se reanudará automáticamente si la sesión recupera. ` +
+        `Cuentas con ≥5 fallos de auth seguidos quedan fuera de la cola hasta el próximo reinicio.`,
+    ];
+    await channel.send(lines.join('\n'));
+  } catch (err) {
+    log.warn(
+      { err, channel: CONFIGURATION_CHANNEL_ID },
+      'instagram_monitor.auth_alert.send_failed',
+    );
   }
 }

@@ -239,6 +239,7 @@ function serializeAccount(a: MonitoredAccount) {
     last_polled_at_iso: a.last_polled_at !== null ? new Date(a.last_polled_at).toISOString() : null,
     last_post_id: a.last_post_id,
     consecutive_failures: a.consecutive_failures,
+    consecutive_auth_failures: a.consecutive_auth_failures,
   };
 }
 
