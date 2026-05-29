@@ -56,6 +56,39 @@ export class InstagramAuthError extends Error {
   }
 }
 
+/**
+ * Body markers IG returns when an authenticated request is rejected for
+ * auth/lockout/challenge reasons. The interesting non-obvious case is
+ * HTTP **400** with `"message":"checkpoint_required"` — IG's "your account
+ * was flagged, complete a challenge in the web UI" wall. Before we matched
+ * this, those 400s fell through to the generic "HTTP 400" branch and the
+ * scheduler kept hammering the dead session.
+ */
+const AUTH_BLOCK_MARKERS = [
+  'checkpoint_required',
+  'challenge_required',
+  'login_required',
+  'require_login',
+  'consent_required',
+];
+
+/**
+ * Returns a short reason if the (status, body) pair indicates the IG session
+ * is bad (auth-class failure), null for ordinary errors / throttling. 401/403
+ * always count; 400 only counts when the body explicitly says so — IG
+ * legitimately returns 400 for malformed requests too, so we don't want to
+ * treat every 400 as session-dead.
+ */
+export function detectAuthBlock(status: number, body: string): string | null {
+  if (status === 401 || status === 403) return `HTTP ${status}`;
+  if (status === 400) {
+    for (const marker of AUTH_BLOCK_MARKERS) {
+      if (body.includes(marker)) return `HTTP 400 ${marker}`;
+    }
+  }
+  return null;
+}
+
 function authCookieHeaders(auth: InstagramAuth): Record<string, string> {
   const parts = [
     `sessionid=${auth.sessionid}`,
@@ -121,7 +154,16 @@ export class LambdaInstagramFetcher implements InstagramFetcher {
 export class DirectInstagramFetcher implements InstagramFetcher {
   private readonly pkCache = new Map<string, string>();
 
-  constructor(private readonly auth: InstagramAuth | null = null) {}
+  /**
+   * @param auth Logged-in session cookies, or null for anonymous mode.
+   * @param warmupProbability Chance per authed fetch of doing an HTML warmup
+   *   first (see {@link maybeWarmup}). Defaults to 0.5 in production; tests
+   *   should pass 0 to make request counts deterministic.
+   */
+  constructor(
+    private readonly auth: InstagramAuth | null = null,
+    private readonly warmupProbability = 0.5,
+  ) {}
 
   source(): 'direct' {
     return 'direct';
@@ -134,6 +176,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
 
   async fetchRecentPosts(username: string): Promise<RecentPost[]> {
     if (this.auth) {
+      await this.maybeWarmup(username, this.auth);
       const pk = await this.resolvePk(username, this.auth);
       return this.fetchAuthedFeed(pk, this.auth);
     }
@@ -144,6 +187,45 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     return parseWebProfileBody(await res.text());
   }
 
+  /**
+   * Roughly half the time, "warm up" by fetching the public HTML profile page
+   * (`instagram.com/<handle>/`) with the session cookies and a navigate
+   * sec-fetch profile, then pause 1–3 s before the API call. This mimics how a
+   * real browser session opens the profile page first (HTML, document
+   * destination, sec-fetch-site=none) and only then fires the XHR/feed
+   * requests — IG's automation heuristics flag clients that only ever hit
+   * `api/v1/...` with no preceding page load. The added request volume is
+   * trivial vs. the visibility win.
+   */
+  private async maybeWarmup(username: string, auth: InstagramAuth): Promise<void> {
+    if (this.warmupProbability <= 0 || Math.random() >= this.warmupProbability) return;
+    const headers: Record<string, string> = {
+      'User-Agent': HEADERS['User-Agent'],
+      Accept:
+        'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+      'Accept-Language': HEADERS['Accept-Language'],
+      'sec-fetch-site': 'none',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-dest': 'document',
+      'sec-fetch-user': '?1',
+      'upgrade-insecure-requests': '1',
+      ...authCookieHeaders(auth),
+    };
+    try {
+      const res = await fetch(
+        `https://www.instagram.com/${encodeURIComponent(username)}/`,
+        withH2({ headers }),
+      );
+      // Drain to release the connection back to the keep-alive pool.
+      await res.text().catch(() => '');
+    } catch {
+      // Warmup is best-effort — the real fetch will surface any real error.
+    }
+    await new Promise((resolve) =>
+      setTimeout(resolve, 1000 + Math.floor(Math.random() * 2000)),
+    );
+  }
+
   /** username → numeric pk, cached (pk is stable for the lifetime of a handle).
    * Uses the authed web_profile_info, which returns the profile (incl. id)
    * even though it omits timeline media. */
@@ -152,17 +234,21 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     if (cached) return cached;
     const headers = { ...HEADERS, ...authCookieHeaders(auth) };
     const res = await fetch(IG_URL(username), withH2({ headers }));
+    const body = await res.text();
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) {
+      const authReason = detectAuthBlock(res.status, body);
+      if (authReason) {
         throw new InstagramAuthError(
-          `Instagram rejected an authenticated profile lookup (HTTP ${res.status}) — session likely expired`,
+          `Instagram rejected an authenticated profile lookup (${authReason}) — session likely expired or flagged for a challenge`,
         );
       }
-      throw new Error(`Instagram returned HTTP ${res.status} resolving @${username} (direct)`);
+      throw new Error(
+        `Instagram returned HTTP ${res.status} resolving @${username} (direct)${body ? `: ${body.slice(0, 200)}` : ''}`,
+      );
     }
     let json: { data?: { user?: { id?: unknown } }; require_login?: unknown };
     try {
-      json = JSON.parse(await res.text());
+      json = JSON.parse(body);
     } catch {
       throw new Error(`web_profile_info returned non-JSON resolving @${username}`);
     }
@@ -180,15 +266,19 @@ export class DirectInstagramFetcher implements InstagramFetcher {
   private async fetchAuthedFeed(pk: string, auth: InstagramAuth): Promise<RecentPost[]> {
     const headers = { ...HEADERS, ...authCookieHeaders(auth) };
     const res = await fetch(IG_FEED_URL(pk), withH2({ headers }));
+    const body = await res.text();
     if (!res.ok) {
-      if (res.status === 401 || res.status === 403) {
+      const authReason = detectAuthBlock(res.status, body);
+      if (authReason) {
         throw new InstagramAuthError(
-          `Instagram rejected an authenticated feed request (HTTP ${res.status}) — session likely expired`,
+          `Instagram rejected an authenticated feed request (${authReason}) — session likely expired or flagged for a challenge`,
         );
       }
-      throw new Error(`Instagram returned HTTP ${res.status} on feed/user (direct)`);
+      throw new Error(
+        `Instagram returned HTTP ${res.status} on feed/user (direct)${body ? `: ${body.slice(0, 200)}` : ''}`,
+      );
     }
-    return parseUserFeedBody(await res.text());
+    return parseUserFeedBody(body);
   }
 }
 

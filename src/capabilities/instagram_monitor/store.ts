@@ -27,6 +27,17 @@ export interface MonitoredAccount {
    */
   last_post_at: number | null;
   consecutive_failures: number;
+  /**
+   * Auth-class failures (IG session bad / checkpoint / challenge) in a row.
+   * Reset on any successful poll, and also on `clearFailureBackoff()` at
+   * scheduler start so a freshly-restarted bot retries immediately after the
+   * operator refreshes cookies. Used by {@link InstagramMonitorStore.dueAccounts}
+   * as a hard gate — accounts with ≥ {@link AUTH_PAUSE_THRESHOLD} are skipped
+   * entirely (no more "marching into a wall" once IG has flagged the session).
+   * Separate from `consecutive_failures` so a transient DNS hiccup doesn't
+   * trip the auto-pause.
+   */
+  consecutive_auth_failures: number;
 }
 
 export interface SeenPost {
@@ -140,29 +151,55 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
         );
     `,
   },
+  {
+    // v4 — auth-class failure counter, separate from general `consecutive_failures`.
+    // Lets the scheduler distinguish "the IG session is dead" from "the network
+    // burped" so we can auto-stop polling a checkpointed session without also
+    // shutting things down on a transient DNS hiccup.
+    version: 4,
+    up: `
+      ALTER TABLE instagram_monitor_accounts
+        ADD COLUMN consecutive_auth_failures INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
+
+/**
+ * Threshold of consecutive auth-class failures (per account) at which
+ * {@link InstagramMonitorStore.dueAccounts} stops returning the account. Reset
+ * on any successful poll, and zeroed by `clearFailureBackoff()` on scheduler
+ * start, so the operator's "refresh cookies + restart" flow re-enables polling
+ * with zero per-account toggling.
+ */
+export const AUTH_PAUSE_THRESHOLD = 5;
 
 /** Backoff: next allowed poll is min(POLL_INTERVAL * 2^failures, MAX_BACKOFF). */
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Deterministic per-(account, poll-cycle) jitter in [0, maxJitterMs). Added to
- * an account's next-due time so accounts decorrelate and polls scatter
- * irregularly across the interval instead of firing in a synchronized burst.
+ * Per-account jitter in [0, maxJitterMs). Added to an account's next-due time
+ * so polls scatter irregularly across the interval instead of marching in
+ * lockstep — anti-bot signal vs. IG's pattern detectors.
  *
- * It's stable within a cycle (depends only on id + last_polled_at, both fixed
- * until the next poll) so an account never flickers in/out of "due" between
- * ticks, and it reshuffles after each poll because last_polled_at changes.
+ * Truly random (Math.random) rather than seeded: from IG's side the gap
+ * between consecutive polls is what matters, not whether our internal seed
+ * was deterministic. A fresh draw per tick widens the effective distribution
+ * (a tick can defer or surface an account based on the roll), at the price of
+ * a small amount of tick-level flicker that's harmless — once `dueAccounts`
+ * picks an account, `last_polled_at` advances and it's not due again for
+ * roughly another interval anyway.
+ *
+ * The id/lastPolledAt args are kept on the signature for API stability; only
+ * `lastPolledAt === null` is meaningful (a never-polled account skips jitter
+ * so its first poll fires immediately).
  */
 export function pollJitterMs(
-  id: number,
+  _id: number,
   lastPolledAt: number | null,
   maxJitterMs: number,
 ): number {
   if (maxJitterMs <= 0 || lastPolledAt === null) return 0;
-  let seed = Math.imul(id ^ 0x9e3779b9, 2654435761) ^ Math.imul(lastPolledAt | 0, 40503);
-  seed = (seed >>> 0) % 1_000_000;
-  return Math.floor((seed / 1_000_000) * maxJitterMs);
+  return Math.floor(Math.random() * maxJitterMs);
 }
 
 export interface AddAccountInput {
@@ -222,9 +259,10 @@ export class InstagramMonitorStore {
   }
 
   /**
-   * Accounts due for polling: paused=0 AND (never polled OR enough time has
-   * elapsed accounting for exponential backoff on consecutive_failures).
-   * Ordered oldest-first so naturally-staggered polls don't burst.
+   * Accounts due for polling: paused=0 AND consecutive_auth_failures below the
+   * auto-stop threshold AND (never polled OR enough time has elapsed accounting
+   * for exponential backoff on consecutive_failures). Ordered oldest-first so
+   * naturally-staggered polls don't burst.
    */
   dueAccounts(
     nowMs: number,
@@ -236,9 +274,10 @@ export class InstagramMonitorStore {
       .prepare(
         `SELECT * FROM instagram_monitor_accounts
          WHERE paused = 0
+           AND consecutive_auth_failures < ?
          ORDER BY COALESCE(last_polled_at, 0) ASC`,
       )
-      .all() as MonitoredAccount[];
+      .all(AUTH_PAUSE_THRESHOLD) as MonitoredAccount[];
     const out: MonitoredAccount[] = [];
     for (const r of rows) {
       const dueAt =
@@ -263,7 +302,9 @@ export class InstagramMonitorStore {
       this.db
         .prepare(
           `UPDATE instagram_monitor_accounts
-           SET last_polled_at = ?, consecutive_failures = 0
+           SET last_polled_at = ?,
+               consecutive_failures = 0,
+               consecutive_auth_failures = 0
            WHERE id = ?`,
         )
         .run(nowMs, id);
@@ -271,21 +312,62 @@ export class InstagramMonitorStore {
       this.db
         .prepare(
           `UPDATE instagram_monitor_accounts
-           SET last_polled_at = ?, last_post_id = ?, last_post_at = ?, consecutive_failures = 0
+           SET last_polled_at = ?, last_post_id = ?, last_post_at = ?,
+               consecutive_failures = 0,
+               consecutive_auth_failures = 0
            WHERE id = ?`,
         )
         .run(nowMs, newLastPostId, newLastPostAt, id);
     }
   }
 
-  markPollFailure(id: number, nowMs: number): void {
-    this.db
+  /**
+   * Record a poll failure. Pass `{ auth: true }` for auth-class failures (the
+   * IG session is bad: 401/403, checkpoint_required, challenge_required,
+   * require_login). Auth failures also increment {@link MonitoredAccount.consecutive_auth_failures}
+   * and, at the {@link AUTH_PAUSE_THRESHOLD}, cause `dueAccounts` to skip the
+   * account until a successful poll resets the counter (or `clearFailureBackoff`
+   * is called at restart).
+   */
+  markPollFailure(id: number, nowMs: number, opts: { auth?: boolean } = {}): void {
+    if (opts.auth) {
+      this.db
+        .prepare(
+          `UPDATE instagram_monitor_accounts
+           SET last_polled_at = ?,
+               consecutive_failures = consecutive_failures + 1,
+               consecutive_auth_failures = consecutive_auth_failures + 1
+           WHERE id = ?`,
+        )
+        .run(nowMs, id);
+    } else {
+      this.db
+        .prepare(
+          `UPDATE instagram_monitor_accounts
+           SET last_polled_at = ?,
+               consecutive_failures = consecutive_failures + 1
+           WHERE id = ?`,
+        )
+        .run(nowMs, id);
+    }
+  }
+
+  /**
+   * Zero out both failure counters across every account. Called by the
+   * scheduler on `start()` so that the operator's "refresh cookies and restart"
+   * flow re-enables polling immediately — no per-account unpause needed, no
+   * waiting for an 8-hour exponential backoff window to elapse.
+   */
+  clearFailureBackoff(): { cleared: number } {
+    const info = this.db
       .prepare(
         `UPDATE instagram_monitor_accounts
-         SET last_polled_at = ?, consecutive_failures = consecutive_failures + 1
-         WHERE id = ?`,
+         SET consecutive_failures = 0,
+             consecutive_auth_failures = 0
+         WHERE consecutive_failures > 0 OR consecutive_auth_failures > 0`,
       )
-      .run(nowMs, id);
+      .run();
+    return { cleared: info.changes };
   }
 
   /** Reset the dedup anchor so the next poll re-classifies the most recent posts. */
