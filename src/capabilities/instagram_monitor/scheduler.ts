@@ -1,7 +1,12 @@
 import type { Client } from 'discord.js';
 import { log } from '../../log.js';
-import type { InstagramMonitorStore, MonitoredAccount } from './store.js';
-import { InstagramAuthError, type InstagramFetcher, type RecentPost } from './fetcher.js';
+import { EVENT_WINDOW_MS, type InstagramMonitorStore, type MonitoredAccount } from './store.js';
+import {
+  InstagramAuthError,
+  InstagramRateLimitError,
+  type InstagramFetcher,
+  type RecentPost,
+} from './fetcher.js';
 import { classifyPost, type Classification } from './classifier.js';
 import { fetchCover as defaultFetchCover, publishPost as defaultPublishPost, type PublishResult } from './publisher.js';
 
@@ -28,6 +33,11 @@ const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
 const QUIET_HOURS_TZ = 'America/Mexico_City';
 const QUIET_HOURS_START_HOUR = 2;
 const QUIET_HOURS_END_HOUR = 7;
+// Per-day deterministic jitter (± minutes) applied to the quiet-hour
+// boundaries, so the monitor doesn't resume at exactly 07:00 every single day
+// (a perfectly fixed daily edge is itself a weak automation tell). Stable
+// within a local date, reshuffles the next day.
+const QUIET_BOUNDARY_JITTER_MIN = 20;
 
 // After an auth-class failure we suspend ALL IG polling for this long, even
 // for accounts that haven't yet hit AUTH_PAUSE_THRESHOLD individually. Stops
@@ -35,9 +45,25 @@ const QUIET_HOURS_END_HOUR = 7;
 // flagging the session — that pattern is itself an automation signal.
 const AUTH_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
 
-// Don't spam the admin channel: at most one auth-expired alert every 6h. The
-// operator only needs one message to know to act; later failures just stack
-// silently until the operator fixes it.
+// A 429/throttle is worse than a one-off auth blip: IG is actively rate-limiting
+// us and continuing to poll escalates toward a ban. On a throttle we suspend ALL
+// polling for an escalating cooldown (base 2h, ×2 per throttle in the window,
+// capped at 12h) — longer than the auth cooldown.
+const RATE_LIMIT_COOLDOWN_BASE_MS = 2 * 60 * 60 * 1000;
+const RATE_LIMIT_COOLDOWN_MAX_MS = 12 * 60 * 60 * 1000;
+
+// Circuit-breaker trip threshold for throttles (counted within EVENT_WINDOW_MS,
+// 6h): a 429 is IP/session-wide, so ≥2 in the window trips the PERSISTENT global
+// stop (manual resume only). Session-level auth failures (require_login /
+// checkpoint / challenge) trip immediately; account-specific 401/403 never trip
+// the global stop (they auto-pause the single offending account instead).
+const RATE_LIMIT_TRIP_COUNT = 2;
+
+// Rolling window for the daily request budget.
+const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// Don't spam the admin channel: at most one alert (auth / circuit / budget)
+// every 6h per category. The operator only needs one message to know to act.
 const AUTH_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
 /** Function signatures injected by the capability; tests can swap them. */
@@ -69,6 +95,15 @@ export type NotifyAuthExpiredFn = (info: {
   reason: string;
 }) => Promise<void>;
 
+/** Posted to the admin channel when the PERSISTENT circuit breaker trips. */
+export type NotifyCircuitBrokenFn = (reason: string) => Promise<void>;
+
+/** Posted to the admin channel when the daily request budget is exhausted. */
+export type NotifyBudgetExhaustedFn = (info: {
+  requests24h: number;
+  budget: number;
+}) => Promise<void>;
+
 export interface SchedulerDeps {
   store: InstagramMonitorStore;
   fetcher: InstagramFetcher;
@@ -87,21 +122,58 @@ export interface SchedulerDeps {
   fetchCover?: FetchCoverFn;
   /** Posted to the admin Discord channel on auth failures. Optional in tests. */
   notifyAuthExpired?: NotifyAuthExpiredFn;
+  /** Posted when the persistent circuit breaker trips. Optional in tests. */
+  notifyCircuitBroken?: NotifyCircuitBrokenFn;
+  /** Posted when the daily request budget is hit. Optional in tests. */
+  notifyBudgetExhausted?: NotifyBudgetExhaustedFn;
+  /**
+   * Hard ceiling on outbound IG HTTP requests in a rolling 24h window. When
+   * hit, polling soft-pauses (auto-recovers as the window drains) and the
+   * operator is alerted. `0`/unset disables the budget (tests leave it off).
+   */
+  dailyRequestBudget?: number;
+  /**
+   * Probability in [0,1) of skipping an entire tick at random, so polling
+   * isn't a perfect metronome. `0`/unset disables it — tests leave it off to
+   * stay deterministic; production sets a small value (~0.08).
+   */
+  tickSkipProbability?: number;
+}
+
+/** Deterministic per-local-date jitter in [-QUIET_BOUNDARY_JITTER_MIN,
+ * +QUIET_BOUNDARY_JITTER_MIN] minutes, salted so the start and end edges move
+ * independently. Stable within a day (no flicker), reshuffles the next day. */
+function quietBoundaryJitterMin(nowMs: number, tz: string, salt: string): number {
+  const date = new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(nowMs));
+  const seed = `${date}:${salt}`;
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (h * 31 + seed.charCodeAt(i)) >>> 0;
+  return (h % (2 * QUIET_BOUNDARY_JITTER_MIN + 1)) - QUIET_BOUNDARY_JITTER_MIN;
 }
 
 /**
  * Returns true when the current local time in `America/Mexico_City` falls
- * inside the quiet-hours window. Exported for tests.
+ * inside the quiet-hours window, whose start/end edges carry a small
+ * deterministic per-day jitter. Exported for tests.
  */
 export function inQuietHours(nowMs: number, tz = QUIET_HOURS_TZ): boolean {
-  const hourStr = new Intl.DateTimeFormat('en-US', {
+  const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: tz,
     hour: '2-digit',
+    minute: '2-digit',
     hour12: false,
-  }).format(new Date(nowMs));
-  // Intl can render midnight as "24" depending on engine; normalise to 0–23.
-  const hour = parseInt(hourStr, 10) % 24;
-  return hour >= QUIET_HOURS_START_HOUR && hour < QUIET_HOURS_END_HOUR;
+  }).formatToParts(new Date(nowMs));
+  const hour = parseInt(parts.find((p) => p.type === 'hour')?.value ?? '0', 10) % 24;
+  const minute = parseInt(parts.find((p) => p.type === 'minute')?.value ?? '0', 10);
+  const minutesOfDay = hour * 60 + minute;
+  const start = QUIET_HOURS_START_HOUR * 60 + quietBoundaryJitterMin(nowMs, tz, 'start');
+  const end = QUIET_HOURS_END_HOUR * 60 + quietBoundaryJitterMin(nowMs, tz, 'end');
+  return minutesOfDay >= start && minutesOfDay < end;
 }
 
 export class InstagramMonitorScheduler {
@@ -117,8 +189,18 @@ export class InstagramMonitorScheduler {
    * only — a restart resets it, which is the desired flow after the operator
    * refreshes cookies. */
   private authCooldownUntilMs = 0;
-  /** Rate-limit for the admin-channel alert: at most one per 6 h. */
+  /** Set to `nowMs + escalating` on a 429/throttle. `tickOnce()` skips polling
+   * while in the future. In-memory only — a restart resumes (the persistent
+   * breaker is the thing that survives restart). */
+  private rateLimitCooldownUntilMs = 0;
+  /** Rate-limits for the admin-channel alerts: at most one per 6 h, per kind. */
   private lastAuthAlertAtMs = 0;
+  private lastCircuitAlertAtMs = 0;
+  private lastBudgetAlertAtMs = 0;
+  /** Timestamps of outbound IG HTTP requests in the rolling 24h window. */
+  private requestTimestamps: number[] = [];
+  private readonly dailyRequestBudget: number;
+  private readonly tickSkipProbability: number;
 
   constructor(
     private readonly deps: SchedulerDeps,
@@ -128,6 +210,12 @@ export class InstagramMonitorScheduler {
     this.classify = deps.classify ?? classifyPost;
     this.publish = deps.publish ?? defaultPublishPost;
     this.fetchCover = deps.fetchCover ?? defaultFetchCover;
+    this.dailyRequestBudget = deps.dailyRequestBudget ?? 0;
+    this.tickSkipProbability = deps.tickSkipProbability ?? 0;
+    // Wire the fetcher's per-request observer into our rolling 24h counter (for
+    // the daily-budget guardrail). Done here (not in start()) so it's active
+    // even when tests drive tickOnce() directly.
+    this.deps.fetcher.observeRequests?.(() => this.recordRequest());
   }
 
   start(): void {
@@ -136,15 +224,24 @@ export class InstagramMonitorScheduler {
     // that hit AUTH_PAUSE_THRESHOLD before this restart, or sat at 8-hour
     // exponential backoff) gets a clean slate. Operator-set `paused=1` is left
     // intact — that's intentional, not a side effect of the prior failure.
+    // NOTE: clearFailureBackoff() deliberately does NOT touch the persistent
+    // global-stop row, so a circuit breaker tripped before the restart stays
+    // tripped (resume is manual-only via the admin tool).
     const cleared = this.deps.store.clearFailureBackoff();
+    const runtime = this.deps.store.getRuntime();
     log.info(
       {
         source: this.deps.fetcher.source(),
         tickMs: this.tickMs,
         pollIntervalMs: this.pollIntervalMs,
         cleared_backoff_rows: cleared.cleared,
+        daily_request_budget: this.dailyRequestBudget || null,
+        global_stop: runtime.global_stop === 1,
+        stop_reason: runtime.stop_reason,
       },
-      'instagram_monitor.scheduler.start',
+      runtime.global_stop === 1
+        ? 'instagram_monitor.scheduler.start.global_stopped'
+        : 'instagram_monitor.scheduler.start',
     );
     setImmediate(() => void this.tickOnce().catch(() => {}));
     this.intervalHandle = setInterval(() => {
@@ -152,6 +249,68 @@ export class InstagramMonitorScheduler {
         log.error({ err }, 'instagram_monitor.tick_failed');
       });
     }, this.tickMs);
+  }
+
+  /** Record one outbound IG request and prune the rolling 24h window. */
+  private recordRequest(): void {
+    const now = Date.now();
+    this.requestTimestamps.push(now);
+    const cutoff = now - REQUEST_WINDOW_MS;
+    if (this.requestTimestamps[0] < cutoff) {
+      this.requestTimestamps = this.requestTimestamps.filter((t) => t >= cutoff);
+    }
+  }
+
+  /** Count of outbound IG requests in the last 24h (prunes as a side effect). */
+  private requests24h(now: number): number {
+    const cutoff = now - REQUEST_WINDOW_MS;
+    this.requestTimestamps = this.requestTimestamps.filter((t) => t >= cutoff);
+    return this.requestTimestamps.length;
+  }
+
+  /** Trip the PERSISTENT circuit breaker (manual resume only) and alert the
+   * operator once per 6h. Idempotent — re-tripping keeps the first reason. */
+  private async tripBreaker(reason: string, now: number): Promise<void> {
+    const already = this.deps.store.isGlobalStopped();
+    this.deps.store.tripGlobalStop(reason, now);
+    log.error({ reason }, 'instagram_monitor.circuit_broken');
+    if (
+      !already &&
+      this.deps.notifyCircuitBroken &&
+      now - this.lastCircuitAlertAtMs >= AUTH_ALERT_COOLDOWN_MS
+    ) {
+      this.lastCircuitAlertAtMs = now;
+      try {
+        await this.deps.notifyCircuitBroken(reason);
+      } catch (err) {
+        log.warn({ err }, 'instagram_monitor.circuit_notify_failed');
+      }
+    }
+  }
+
+  /** Mirror in-memory cooldowns + 24h request count into the runtime row so
+   * the admin `status` tool can observe them. Best-effort. */
+  private heartbeat(now: number): void {
+    try {
+      const used = this.requests24h(now);
+      let budgetPauseUntil: number | null = null;
+      if (
+        this.dailyRequestBudget > 0 &&
+        used >= this.dailyRequestBudget &&
+        this.requestTimestamps.length > 0
+      ) {
+        budgetPauseUntil = this.requestTimestamps[0] + REQUEST_WINDOW_MS;
+      }
+      this.deps.store.writeHeartbeat({
+        authCooldownUntil: this.authCooldownUntilMs || null,
+        rateCooldownUntil: this.rateLimitCooldownUntilMs || null,
+        budgetPauseUntil,
+        requests24h: used,
+        nowMs: now,
+      });
+    } catch (err) {
+      log.debug({ err }, 'instagram_monitor.heartbeat_failed');
+    }
   }
 
   async dispose(): Promise<void> {
@@ -169,8 +328,23 @@ export class InstagramMonitorScheduler {
     const t0 = Date.now();
     try {
       const now = Date.now();
+      // 1. Persistent kill-switch (survives restart): nothing polls until the
+      // operator runs `config_instagram action:resume_monitor`.
+      const runtime = this.deps.store.getRuntime();
+      if (runtime.global_stop === 1) {
+        log.warn(
+          { reason: runtime.stop_reason },
+          'instagram_monitor.tick.global_stop',
+        );
+        return;
+      }
       if (inQuietHours(now)) {
         log.debug({}, 'instagram_monitor.tick.quiet_hours');
+        return;
+      }
+      // 2. Occasionally skip a whole tick so polling isn't a perfect metronome.
+      if (this.tickSkipProbability > 0 && Math.random() < this.tickSkipProbability) {
+        log.debug({}, 'instagram_monitor.tick.random_skip');
         return;
       }
       if (now < this.authCooldownUntilMs) {
@@ -179,6 +353,38 @@ export class InstagramMonitorScheduler {
           'instagram_monitor.tick.auth_cooldown',
         );
         return;
+      }
+      if (now < this.rateLimitCooldownUntilMs) {
+        log.debug(
+          { until: this.rateLimitCooldownUntilMs },
+          'instagram_monitor.tick.rate_limit_cooldown',
+        );
+        return;
+      }
+      // 3. Daily request budget (soft, auto-recovering as the window drains).
+      if (this.dailyRequestBudget > 0) {
+        const used = this.requests24h(now);
+        if (used >= this.dailyRequestBudget) {
+          log.warn(
+            { used, budget: this.dailyRequestBudget },
+            'instagram_monitor.budget_exhausted',
+          );
+          if (
+            this.deps.notifyBudgetExhausted &&
+            now - this.lastBudgetAlertAtMs >= AUTH_ALERT_COOLDOWN_MS
+          ) {
+            this.lastBudgetAlertAtMs = now;
+            try {
+              await this.deps.notifyBudgetExhausted({
+                requests24h: used,
+                budget: this.dailyRequestBudget,
+              });
+            } catch (err) {
+              log.warn({ err }, 'instagram_monitor.budget_notify_failed');
+            }
+          }
+          return;
+        }
       }
       const jitterMaxMs = Math.floor(this.pollIntervalMs * POLL_JITTER_FRACTION);
       const due = this.deps.store.dueAccounts(
@@ -195,6 +401,7 @@ export class InstagramMonitorScheduler {
       }
     } finally {
       this.tickInFlight = false;
+      this.heartbeat(Date.now());
       log.debug({ ms: Date.now() - t0 }, 'instagram_monitor.tick.done');
     }
   }
@@ -210,35 +417,85 @@ export class InstagramMonitorScheduler {
       );
     } catch (err) {
       const now = Date.now();
+
+      // 429 / throttle: IG is rate-limiting us. Treat as a global SOFT block —
+      // halt ALL polling for an escalating cooldown, and trip the persistent
+      // breaker if it recurs. Continuing to poll while throttled is exactly
+      // what turns a throttle into a ban.
+      if (err instanceof InstagramRateLimitError) {
+        this.deps.store.markPollFailure(acc.id, now, { auth: false });
+        const count = this.deps.store.record429Event(now);
+        const escalated = Math.min(
+          RATE_LIMIT_COOLDOWN_BASE_MS * 2 ** Math.min(count - 1, 3),
+          RATE_LIMIT_COOLDOWN_MAX_MS,
+        );
+        const cooldown = Math.max(err.retryAfterMs ?? 0, escalated);
+        this.rateLimitCooldownUntilMs = Math.max(
+          this.rateLimitCooldownUntilMs,
+          now + cooldown,
+        );
+        log.warn(
+          { account: acc.username, count, cooldownMs: cooldown, err: String(err) },
+          'instagram_monitor.rate_limited',
+        );
+        if (count >= RATE_LIMIT_TRIP_COUNT) {
+          await this.tripBreaker(
+            `IG throttled ${count}× within ${Math.round(EVENT_WINDOW_MS / 3_600_000)}h — polling stopped to avoid a ban`,
+            now,
+          );
+        }
+        return;
+      }
+
       const isAuth = err instanceof InstagramAuthError;
       this.deps.store.markPollFailure(acc.id, now, { auth: isAuth });
       if (isAuth) {
-        // IG session is dead (401/403, checkpoint_required, challenge_required,
-        // require_login). Halt polling for AUTH_FAILURE_COOLDOWN_MS so we
-        // don't continue working through the account list on a flagged
-        // session — that pattern itself is automation signal.
-        this.authCooldownUntilMs = now + AUTH_FAILURE_COOLDOWN_MS;
-        log.error(
-          { account: acc.username, err: String(err) },
-          'instagram_monitor.auth.expired',
-        );
-        // Tell the operator via Discord, rate-limited to once per 6 h.
-        if (
-          this.deps.notifyAuthExpired &&
-          now - this.lastAuthAlertAtMs >= AUTH_ALERT_COOLDOWN_MS
-        ) {
-          this.lastAuthAlertAtMs = now;
-          try {
-            await this.deps.notifyAuthExpired({
-              account: acc.username,
-              reason: String(err),
-            });
-          } catch (notifyErr) {
-            log.warn(
-              { err: notifyErr },
-              'instagram_monitor.auth_notify_failed',
-            );
+        // Distinguish a SESSION-level failure (cookies dead / account
+        // challenged — affects every account) from an account-specific 401/403
+        // (a private/restricted/blocked single handle). Treating an
+        // account-specific 401 as session death would halt ALL polling and trip
+        // the kill-switch over one bad handle — observed in practice with two
+        // restricted accounts among a dozen healthy ones.
+        if (err.sessionLevel) {
+          this.authCooldownUntilMs = now + AUTH_FAILURE_COOLDOWN_MS;
+          const count = this.deps.store.recordAuthEvent(now);
+          log.error(
+            { account: acc.username, reason: err.reason, count, err: String(err) },
+            'instagram_monitor.auth.expired',
+          );
+          // Tell the operator via Discord, rate-limited to once per 6 h.
+          if (
+            this.deps.notifyAuthExpired &&
+            now - this.lastAuthAlertAtMs >= AUTH_ALERT_COOLDOWN_MS
+          ) {
+            this.lastAuthAlertAtMs = now;
+            try {
+              await this.deps.notifyAuthExpired({
+                account: acc.username,
+                reason: String(err),
+              });
+            } catch (notifyErr) {
+              log.warn({ err: notifyErr }, 'instagram_monitor.auth_notify_failed');
+            }
           }
+          // A session flag/death is the catastrophic case → engage the
+          // persistent kill-switch (manual resume only), per the "safest" choice.
+          await this.tripBreaker(
+            `IG flagged the session (${err.reason}) while polling @${acc.username} — polling stopped`,
+            now,
+          );
+        } else {
+          // Account-specific 401/403: don't halt the whole monitor. The
+          // per-account auth counter still climbs, so dueAccounts() auto-pauses
+          // this handle at AUTH_PAUSE_THRESHOLD while everyone else keeps polling.
+          log.warn(
+            {
+              account: acc.username,
+              reason: err.reason,
+              auth_failures: acc.consecutive_auth_failures + 1,
+            },
+            'instagram_monitor.account_auth_failed',
+          );
         }
       } else {
         log.warn(

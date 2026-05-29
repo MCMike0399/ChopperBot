@@ -70,6 +70,16 @@ const ConfigSchema = z.object({
   IG_DS_USER_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   IG_MID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   IG_DID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // User-Agent sent on every IG request. SHOULD match the browser the session
+  // cookies were extracted from — a session driven from a UA different than the
+  // one that created it is a fingerprint signal. Critical on a personal account.
+  // Unset = the built-in desktop-Chrome default (DEFAULT_IG_USER_AGENT).
+  IG_USER_AGENT: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // Hard ceiling on outbound IG HTTP requests in a rolling 24h window (one poll
+  // ≈ 2–3 calls: optional warmup + pk-resolve + feed). On hit, polling
+  // soft-pauses (auto-recovers as the window drains) and the operator is
+  // alerted. A backstop against runaway request volume.
+  IG_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(120),
 });
 
 const parsed = ConfigSchema.safeParse(process.env);

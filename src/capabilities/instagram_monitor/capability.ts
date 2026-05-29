@@ -20,14 +20,18 @@ import {
 import { AwsLambdaRelay } from './lambda-relay-client.js';
 import { InstagramMonitorScheduler } from './scheduler.js';
 import { InstagramMonitorToolSource } from './source.js';
+import { setIgCdnUserAgent } from './publisher.js';
 import { renderInstagramMonitorPrompt } from './preamble.js';
+
+/** Probability of skipping a whole scheduler tick (anti-metronome). */
+const TICK_SKIP_PROBABILITY = 0.08;
 
 export const INSTAGRAM_MONITOR_CAPABILITY_ID = 'instagram_monitor';
 
 export class InstagramMonitorCapability implements Capability {
   readonly id = INSTAGRAM_MONITOR_CAPABILITY_ID;
   readonly description =
-    'Monitorea cuentas públicas de Instagram y publica eventos/alertas/convocatorias en el canal de Discord vinculado. Sondeo en segundo plano cada ~20 minutos.';
+    'Monitorea cuentas públicas de Instagram y publica eventos/alertas/convocatorias en el canal de Discord vinculado. Sondeo en segundo plano cada ~60 minutos.';
 
   private store: InstagramMonitorStore | null = null;
   private fetcher: InstagramFetcher | null = null;
@@ -63,9 +67,13 @@ export class InstagramMonitorCapability implements Capability {
               igDid: config.IG_DID,
             }
           : null;
-      this.fetcher = new DirectInstagramFetcher(auth);
+      // Use one UA across the API fetcher AND the CDN media fetches so a session
+      // presents a single consistent fingerprint. IG_USER_AGENT should match the
+      // browser the cookies came from; unset falls back to the built-in default.
+      if (config.IG_USER_AGENT) setIgCdnUserAgent(config.IG_USER_AGENT);
+      this.fetcher = new DirectInstagramFetcher(auth, 0.5, config.IG_USER_AGENT);
       log.warn(
-        { capability: this.id, source: 'direct', authed: auth !== null },
+        { capability: this.id, source: 'direct', authed: auth !== null, custom_ua: !!config.IG_USER_AGENT },
         auth
           ? 'InstagramMonitorCapability initialized in DIRECT+AUTH mode (logged-in IG session cookies). Higher rate limits; session can expire (watch for instagram_monitor.auth.expired).'
           : 'InstagramMonitorCapability initialized in DIRECT mode (no auth). OK for local dev; in prod this risks IP throttling.',
@@ -91,6 +99,11 @@ export class InstagramMonitorCapability implements Capability {
       },
       notifyAuthExpired: ({ account, reason }) =>
         postAuthExpiredAlert(client, account, reason),
+      notifyCircuitBroken: (reason) => postCircuitBrokenAlert(client, reason),
+      notifyBudgetExhausted: ({ requests24h, budget }) =>
+        postBudgetExhaustedAlert(client, requests24h, budget),
+      dailyRequestBudget: config.IG_DAILY_REQUEST_BUDGET,
+      tickSkipProbability: TICK_SKIP_PROBABILITY,
     });
     this.scheduler.start();
     log.info({ capability: this.id }, 'InstagramMonitorCapability scheduler started');
@@ -135,6 +148,62 @@ export async function postAuthExpiredAlert(
   account: string,
   reason: string,
 ): Promise<void> {
+  await sendAdminAlert(client, [
+    '⚠️ **Instagram monitor: sesión bloqueada**',
+    `Cuenta probada: \`${account}\``,
+    `Detalle: ${reason}`,
+    '',
+    'Acción:',
+    '1. Abre `instagram.com` en el navegador con la cuenta y completa el reto / "¿Fuiste tú?".',
+    '2. Saca cookies nuevas (`sessionid`, `csrftoken`, `ds_user_id`, `mid`, `ig_did`) y reemplázalas en `.env` (con el mismo navegador que `IG_USER_AGENT`).',
+    '3. `pnpm run build && systemctl --user restart chopperbot.service`.',
+    '',
+    'Mientras tanto el sondeo está suspendido 1 h y se reanudará automáticamente si la sesión recupera.',
+  ]);
+}
+
+/**
+ * Posted when the PERSISTENT circuit breaker trips (repeated throttles or an
+ * account flag). Unlike the auth cooldown, this does NOT auto-resume — the
+ * operator must explicitly run `config_instagram action:resume_monitor` after
+ * confirming the account is healthy. Wired as the scheduler's
+ * `notifyCircuitBroken` dep.
+ */
+export async function postCircuitBrokenAlert(client: Client, reason: string): Promise<void> {
+  await sendAdminAlert(client, [
+    '🛑 **Instagram monitor: DETENIDO (interruptor de seguridad)**',
+    `Motivo: ${reason}`,
+    '',
+    'El sondeo de TODAS las cuentas está detenido y **no se reanudará solo** (protección de tu cuenta personal contra baneos).',
+    '',
+    'Antes de reanudar:',
+    '1. Abre `instagram.com` con tu cuenta y revisa que no haya retos/avisos pendientes.',
+    '2. Si IG pidió verificación, complétala y refresca las cookies en `.env`.',
+    '3. Para reanudar el monitor escríbeme en este canal: `config_instagram action:resume_monitor` (confirma).',
+  ]);
+}
+
+/**
+ * Posted when the rolling-24h request budget is exhausted. This is a SOFT pause
+ * that auto-recovers as the window drains — informational, no action required.
+ */
+export async function postBudgetExhaustedAlert(
+  client: Client,
+  requests24h: number,
+  budget: number,
+): Promise<void> {
+  await sendAdminAlert(client, [
+    'ℹ️ **Instagram monitor: presupuesto diario alcanzado**',
+    `Peticiones en 24 h: ${requests24h} / ${budget}.`,
+    '',
+    'El sondeo se pausó temporalmente y se reanudará automáticamente conforme la ventana de 24 h se vacíe. ' +
+      'Si pasa seguido, sube `IG_DAILY_REQUEST_BUDGET` o reduce el número de cuentas monitoreadas.',
+  ]);
+}
+
+/** Shared admin-channel sender. Errors are logged and swallowed — an alert must
+ * never bubble up into the polling loop. */
+async function sendAdminAlert(client: Client, lines: string[]): Promise<void> {
   try {
     const channel = await client.channels.fetch(CONFIGURATION_CHANNEL_ID);
     if (
@@ -147,19 +216,6 @@ export async function postAuthExpiredAlert(
       );
       return;
     }
-    const lines = [
-      '⚠️ **Instagram monitor: sesión bloqueada**',
-      `Cuenta probada: \`${account}\``,
-      `Detalle: ${reason}`,
-      '',
-      'Acción:',
-      '1. Abre `instagram.com` en el navegador con la cuenta throwaway y completa el reto / "¿Fuiste tú?".',
-      '2. Saca cookies nuevas (`sessionid`, `csrftoken`, `ds_user_id`, `mid`, `ig_did`) y reemplázalas en `.env`.',
-      '3. `pnpm run build && systemctl --user restart chopperbot.service`.',
-      '',
-      `Mientras tanto el sondeo está suspendido 1 h y se reanudará automáticamente si la sesión recupera. ` +
-        `Cuentas con ≥5 fallos de auth seguidos quedan fuera de la cola hasta el próximo reinicio.`,
-    ];
     await channel.send(lines.join('\n'));
   } catch (err) {
     log.warn(
