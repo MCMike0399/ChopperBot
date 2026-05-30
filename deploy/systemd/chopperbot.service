@@ -1,7 +1,8 @@
 # ChopperBot Discord bot — systemd user unit (template).
 #
 # This is the Raspberry Pi analogue of deploy/launchd/com.user.chopperbot.plist.
-# Two placeholders are substituted at install time (see RASPBERRY_PI_MIGRATION.md §8):
+# Two placeholders are substituted at install time (see the Install steps below,
+# and CLAUDE.md → "Deployment context"):
 #   __REPO__ -> absolute repo root (becomes WorkingDirectory; dotenv reads .env from here)
 #   __NODE__ -> absolute path to the node binary (e.g. /usr/bin/node)
 #
