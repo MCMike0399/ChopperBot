@@ -53,12 +53,6 @@ const ConfigSchema = z.object({
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   MAX_ATTACHMENT_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   MAX_ATTACHMENT_COUNT: z.coerce.number().int().positive().default(5),
-  // Instagram monitor capability: when set, IG fetches are routed through this
-  // Lambda (whose outbound IP rotates from the Lambda public IP pool) instead
-  // of being made from this Node process. Unset = direct fetch (intended for
-  // local dev on a residential IP). The Lambda is in us-west-2 by default.
-  INSTAGRAM_RELAY_LAMBDA_ARN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  AWS_REGION_LAMBDA_RELAY: z.string().min(1).default('us-west-2'),
   // Instagram session auth (optional). When IG_SESSIONID + IG_CSRFTOKEN +
   // IG_DS_USER_ID are all present, direct fetches attach the logged-in cookies
   // and x-csrftoken header, which gets far higher rate limits than anonymous
