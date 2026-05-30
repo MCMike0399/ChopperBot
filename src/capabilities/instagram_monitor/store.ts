@@ -272,16 +272,26 @@ export const EVENT_WINDOW_MS = 6 * 60 * 60 * 1000;
  */
 export const AUTH_PAUSE_THRESHOLD = 5;
 
-/** Backoff: next allowed poll is min(base * 2^failures, max(MAX_BACKOFF, base)). */
+/**
+ * Failure backoff ceiling: next allowed poll is min(base * 2^failures, max(MAX_BACKOFF, base)).
+ * This is the cap on the *exponential* backoff for a flapping account, NOT the
+ * cadence ceiling — they used to be equal (both 6h) but were decoupled when
+ * {@link CADENCE_MAX_INTERVAL_MS} was raised to 12h (a rare account legitimately
+ * polls slower than the backoff ceiling). The `max(MAX_BACKOFF, base)` guard
+ * keeps a base interval > 6h from being silently capped here.
+ */
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 // ---- Adaptive cadence (per-account poll interval learned from posted_at) ----
 // Balanced profile: active accounts poll ~hourly or faster, rare accounts stretch
-// toward a 6h ceiling. Longer intervals raise detection LATENCY, not coverage —
+// toward a 12h ceiling. Longer intervals raise detection LATENCY, not coverage —
 // the feed returns 10–16 posts, so we only ever risk a miss if an account posts
 // faster than the floor allows, which the coverage clamp + MIN floor bound.
+// The per-account interval is purely a budget-allocation lever: IG rate-limits on
+// the SESSION's aggregate request rate (governed by IG_DAILY_REQUEST_BUDGET), not
+// per-account, so stretching a rare account's interval is free of extra ban risk.
 /** Trailing window of post history considered when estimating cadence. */
 export const CADENCE_WINDOW_MS = 60 * DAY_MS;
 /** Cap on most-recent distinct posts sampled (bounds work for hyperactive accounts). */
@@ -297,13 +307,32 @@ export const CADENCE_MIN_SPAN_MS = 1 * DAY_MS;
 export const CADENCE_INTERVAL_FACTOR = 0.5;
 /** Hard floor — never poll one account faster than this (anti-detection). */
 export const CADENCE_MIN_INTERVAL_MS = 45 * 60 * 1000;
-/** Ceiling — even a dormant account is polled at least this often. Kept == MAX_BACKOFF_MS. */
-export const CADENCE_MAX_INTERVAL_MS = 6 * 60 * 60 * 1000;
-/** Fallback interval for accounts whose cadence isn't known yet (too few posts /
- * too little history). Conservative on purpose: an account with little data is
- * empirically a rare poster, so polling it slowly frees the request budget for
- * the accounts we KNOW are active. New accounts speed up automatically once they
- * accrue enough history for {@link computeCadenceInterval} to trust a cadence. */
+/**
+ * Ceiling — even a dormant account is polled at least this often (twice a day).
+ *
+ * Raised 6h → 12h (2026-05-30) after the live data showed the 6h cap was the
+ * binding constraint on genuinely-rare accounts and was wasting the request
+ * budget: e.g. `semillasderebeldia` (median inter-post gap ~20h) wants a ~10h
+ * interval and `revueltasperiodico` (~26h gap) wants ~13h, yet both were pinned
+ * at 6h — polled ~2× more often than their cadence warrants. Those wasted polls
+ * starved the budget the *active* accounts need, and the surplus of MAX-clamped
+ * accounts forced the budget governor to over-stretch everyone else (see
+ * {@link computeGovernorStretch}). Decoupled from {@link MAX_BACKOFF_MS} (still
+ * 6h) — `dueAccounts`' backoff cap already used `max(MAX_BACKOFF, base)` so a
+ * base interval above 6h was never silently capped. Coverage is unaffected: the
+ * feed returns 10–16 items and {@link CADENCE_MAX_POSTS_PER_INTERVAL} bounds how
+ * many a rare account can accumulate in one interval, so a longer ceiling only
+ * adds latency, never a miss.
+ */
+export const CADENCE_MAX_INTERVAL_MS = 12 * 60 * 60 * 1000;
+/** Fallback interval (now 12h, kept == {@link CADENCE_MAX_INTERVAL_MS}) for
+ * accounts whose cadence isn't known yet (too few posts / too little history).
+ * Conservative on purpose: an account with little data is empirically a rare
+ * poster, so polling it slowly frees the request budget for the accounts we KNOW
+ * are active. Polling slowly does NOT slow learning — cadence is learned from
+ * detected POSTS, and a long interval can't miss a rare account's posts (the
+ * feed window holds 10–16). New accounts speed up automatically once they accrue
+ * enough history for {@link computeCadenceInterval} to trust a cadence. */
 export const CADENCE_COLD_START_INTERVAL_MS = CADENCE_MAX_INTERVAL_MS;
 /** Recency decay: start stretching once silence exceeds this multiple of the median gap. */
 export const CADENCE_DECAY_START = 2;
@@ -315,9 +344,11 @@ export const CADENCE_MAX_POSTS_PER_INTERVAL = 6;
 export const CADENCE_TTL_MS = 24 * 60 * 60 * 1000;
 /** Budget governor targets this fraction of IG_DAILY_REQUEST_BUDGET as the
  * steady-state ceiling. Leaves ~25% headroom to absorb (a) the one-time
- * pk-resolve burst on restart (~1 extra call/account, in-window for 24h),
- * (b) the ~50% warmup variance, and (c) the governor's under-correction when
- * several accounts sit at the MAX clamp and can't stretch further. */
+ * pk-resolve burst on restart (~1 extra call/account, in-window for 24h) and
+ * (b) the ~50% warmup variance. (The governor's old MAX-clamp under-correction
+ * — formerly absorbed here too — is gone: {@link computeGovernorStretch} is now
+ * clamp-aware and solves for a stretch whose *realized* projection hits this
+ * ceiling.) */
 export const CADENCE_BUDGET_HEADROOM = 0.75;
 
 /**
@@ -427,12 +458,22 @@ export function nextDueAtMs(
 }
 
 /**
- * Budget governor: estimate projected daily IG requests from the per-account
- * intervals and return a global `stretch` (≥1) that, applied to every interval,
- * keeps the projection at or below `dailyRequestBudget × headroom`. A single
- * multiplier preserves the active-vs-rare allocation. The hard budget gate in
- * the scheduler remains the authoritative backstop; this just makes hitting it
- * rare. `dailyRequestBudget ≤ 0` (tests) disables the governor (stretch 1).
+ * Budget governor: return a global `stretch` (≥1) that, applied to every
+ * account's interval (then clamped to {@link CADENCE_MAX_INTERVAL_MS} by
+ * {@link effectiveBaseIntervalMs}), keeps the *realized* projected daily IG
+ * request count at or below `dailyRequestBudget × headroom`. A single multiplier
+ * preserves the active-vs-rare allocation; the hard budget gate in the scheduler
+ * stays the authoritative backstop, this just makes hitting it rare.
+ * `dailyRequestBudget ≤ 0` (tests) disables the governor (stretch 1).
+ *
+ * **Clamp-aware** (changed 2026-05-30): the projection accounts for the fact
+ * that `interval × stretch` saturates at the cadence ceiling. An account already
+ * at (or stretched to) MAX contributes a FIXED request rate the stretch can't
+ * reduce — so the old `projected / ceiling` closed form under-corrected whenever
+ * accounts sat at the clamp (it assumed every interval scaled with stretch),
+ * letting realized spend overshoot the ceiling. We instead binary-search the
+ * smallest stretch whose realized (post-clamp) projection meets the ceiling.
+ * `projected` is that realized figure — the requests we actually expect to make.
  */
 export function computeGovernorStretch(
   accounts: MonitoredAccount[],
@@ -445,16 +486,42 @@ export function computeGovernorStretch(
   },
 ): { stretch: number; projected: number } {
   if (opts.dailyRequestBudget <= 0) return { stretch: 1, projected: 0 };
-  let projected = 0;
-  for (const a of accounts) {
-    if (a.paused === 1 || a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) continue;
-    const interval = a.poll_interval_ms ?? opts.defaultIntervalMs;
-    if (interval <= 0) continue;
-    projected += ((opts.activeFraction * DAY_MS) / interval) * opts.callsPerPoll;
-  }
+  const intervals = accounts
+    .filter((a) => a.paused !== 1 && a.consecutive_auth_failures < AUTH_PAUSE_THRESHOLD)
+    .map((a) => a.poll_interval_ms ?? opts.defaultIntervalMs)
+    .filter((iv) => iv > 0);
+
+  // Realized daily requests if every interval is stretched by `s`, then clamped
+  // to the cadence ceiling (mirrors effectiveBaseIntervalMs).
+  const callsPerDay = opts.activeFraction * DAY_MS * opts.callsPerPoll;
+  const projectedAt = (s: number): number =>
+    intervals.reduce(
+      (sum, iv) => sum + callsPerDay / Math.min(iv * s, CADENCE_MAX_INTERVAL_MS),
+      0,
+    );
+
   const ceiling = opts.dailyRequestBudget * opts.headroom;
-  const stretch = ceiling > 0 && projected > ceiling ? projected / ceiling : 1;
-  return { stretch, projected };
+  const base = projectedAt(1);
+  if (ceiling <= 0 || intervals.length === 0 || base <= ceiling) {
+    return { stretch: 1, projected: base };
+  }
+
+  // Beyond this stretch the fastest account is already pinned at MAX, so
+  // `projectedAt` is flat — no point searching further (and it bounds the loop).
+  const hi = CADENCE_MAX_INTERVAL_MS / Math.min(...intervals);
+  if (projectedAt(hi) >= ceiling) {
+    // Even fully clamped we can't reach the ceiling (too many accounts for the
+    // budget). Stretch as far as it still helps; the hard budget gate backstops.
+    return { stretch: hi, projected: projectedAt(hi) };
+  }
+  let lo = 1;
+  let high = hi;
+  for (let i = 0; i < 40; i++) {
+    const mid = (lo + high) / 2;
+    if (projectedAt(mid) > ceiling) lo = mid;
+    else high = mid;
+  }
+  return { stretch: high, projected: projectedAt(high) };
 }
 
 /**
@@ -574,8 +641,10 @@ export class InstagramMonitorStore {
     const out: MonitoredAccount[] = [];
     for (const r of rows) {
       const base = effectiveBaseIntervalMs(r, defaultIntervalMs, stretch);
-      // Backoff cap is max(MAX_BACKOFF, base) so a base interval above the legacy
-      // 6h backoff ceiling isn't silently capped (no-op while MAX_INTERVAL == MAX_BACKOFF).
+      // Backoff cap is max(MAX_BACKOFF, base) so a base interval above the 6h
+      // backoff ceiling isn't silently capped — now that the cadence ceiling is
+      // 12h (> MAX_BACKOFF), this guard binds for rare accounts: a 12h-cadence
+      // account with failures still polls every ~12h, not exponentially slower.
       const dueAt =
         (r.last_polled_at ?? 0) +
         Math.min(base * 2 ** Math.min(r.consecutive_failures, 10), Math.max(MAX_BACKOFF_MS, base)) +
