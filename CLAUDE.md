@@ -79,6 +79,10 @@ Moonshot Kimi Code via the OpenAI SDK. Two non-obvious behaviors:
 - **User-Agent gating.** Requests with the default `openai-node` UA get a 403 ("Kimi For Coding is currently only available for Coding Agents…"). `KIMI_USER_AGENT` defaults to `claude-cli/1.0.0`, which passes. If the allowlist changes, override via env.
 - **Reasoning content.** When thinking mode is on, every assistant turn (including tool_call turns) returns `reasoning_content`. The gateway rejects follow-ups that don't echo it back, so the loop re-attaches it to the assistant message before the next request.
 
+### Image attachments (vision input, `src/attachments/`)
+
+The bot accepts **images only** — the Kimi Code API rejects documents (PDF/csv/docx), so `resolveAttachments()` drops anything that isn't `png`/`jpeg`/`gif`/`webp` (detected by content-type first, then file extension) with a `Unsupported attachment type, skipping` warning. It is called in `handlers.ts` *before* `buildTurn()` and attaches the resolved images to the user `Turn`. Caps (config): `MAX_ATTACHMENT_COUNT` (5 — extras silently ignored) and `MAX_ATTACHMENT_BYTES` (10 MB — oversize skipped); downloads have a 30 s abort timeout and a failed download is logged, not fatal. In `llm/client.ts`, `buildUserOrAssistantMessage()` only emits OpenAI multi-part `content` (a `text` part + one `image_url` part per image, base64 `data:` URI via `ImageAttachable.toContentPart()`) **when attachments are present** — a plain-text turn stays a plain string. Attachments ride only the *current* user turn; history turns reconstructed by `buildHistory()` carry text only.
+
 ### Capabilities and tools
 
 Each Capability composes one or more `ToolSource`s via `composeToolSources()` (`src/tools/source.ts`). Tool specs are **provider-neutral** (`{ name, description, inputSchema }`); the LLM client is the only place that knows how to wrap them into OpenAI's `{ type: 'function', function: {...} }` shape. Tool name collisions across sources fail at boot — fix the duplicate, don't suppress.
