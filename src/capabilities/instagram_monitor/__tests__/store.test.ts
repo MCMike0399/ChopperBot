@@ -323,6 +323,14 @@ describe('adaptive cadence — computeCadenceInterval', () => {
     expect(computeCadenceInterval(ts, newest + 5 * DAY).intervalMs).toBe(CADENCE_MAX_INTERVAL_MS);
   });
 
+  test('a rare cadence between 6h and the 12h ceiling is honored, not clamped', () => {
+    // Mirrors live `semillasderebeldia` (~20h median gap → wants ~10h). Under the
+    // old 6h ceiling this clamped to 6h (over-polling); now it passes through.
+    const newest = 2_000_000_000_000;
+    const ts = gapSeries(newest, 8, 20 * HOUR); // median gap 20h, span 140h
+    expect(computeCadenceInterval(ts, newest).intervalMs).toBe(10 * HOUR); // 20h × 0.5
+  });
+
   test('non-positive / degenerate inputs → null', () => {
     expect(computeCadenceInterval([], 0).intervalMs).toBeNull();
     const t = 1_000_000_000;
@@ -335,7 +343,10 @@ describe('adaptive cadence — effectiveBaseIntervalMs / nextDueAtMs', () => {
   test('effective interval applies default + stretch, clamped to MAX', () => {
     expect(effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 1)).toBe(60 * 60_000);
     expect(effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 2)).toBe(120 * 60_000);
-    expect(effectiveBaseIntervalMs({ poll_interval_ms: 3 * HOUR }, 60 * 60_000, 3)).toBe(
+    // 3h × 3 = 9h is under the 12h ceiling → not clamped.
+    expect(effectiveBaseIntervalMs({ poll_interval_ms: 3 * HOUR }, 60 * 60_000, 3)).toBe(9 * HOUR);
+    // 3h × 5 = 15h exceeds the ceiling → clamped to MAX.
+    expect(effectiveBaseIntervalMs({ poll_interval_ms: 3 * HOUR }, 60 * 60_000, 5)).toBe(
       CADENCE_MAX_INTERVAL_MS,
     );
     // invalid stretch falls back to 1
@@ -360,8 +371,56 @@ describe('adaptive cadence — budget governor', () => {
       activeFraction: 1,
       headroom: 1,
     });
-    expect(projected).toBeCloseTo(48, 5); // 2 × 24 polls/day × 1 call
-    expect(stretch).toBeCloseTo(4.8, 5); // 48 / 10
+    // No account clamps at this stretch (1h × 4.8 = 4.8h < 12h MAX), so the
+    // clamp-aware solve matches the old closed form: stretch = 48/10 = 4.8, and
+    // `projected` is now the REALIZED spend at that stretch == the ceiling.
+    expect(stretch).toBeCloseTo(4.8, 5);
+    expect(projected).toBeCloseTo(10, 5);
+  });
+
+  test('clamp-aware: realized spend respects the ceiling when accounts pin at MAX', () => {
+    // 2 fast (1h) + 4 pinned at the 12h ceiling. The pinned accounts contribute a
+    // FIXED rate the stretch can't reduce, so the old `projected/ceiling` closed
+    // form under-corrected (stretch 56/20 = 2.8 → realized ~25 > 20). The
+    // clamp-aware solve pushes stretch until realized actually meets the ceiling.
+    const accounts = [
+      acct({ poll_interval_ms: HOUR }),
+      acct({ poll_interval_ms: HOUR }),
+      ...Array.from({ length: 4 }, () => acct({ poll_interval_ms: CADENCE_MAX_INTERVAL_MS })),
+    ];
+    const { stretch, projected } = computeGovernorStretch(accounts, {
+      callsPerPoll: 1,
+      dailyRequestBudget: 20,
+      defaultIntervalMs: HOUR,
+      activeFraction: 1,
+      headroom: 1,
+    });
+    // Independently recompute realized spend with the same clamp the scheduler applies.
+    const realized = accounts.reduce(
+      (s, a) => s + DAY / Math.min((a.poll_interval_ms as number) * stretch, CADENCE_MAX_INTERVAL_MS),
+      0,
+    );
+    expect(realized).toBeLessThanOrEqual(20 + 1e-6);
+    expect(projected).toBeCloseTo(realized, 4);
+    expect(projected).toBeCloseTo(20, 4); // solved to the ceiling, not under it
+    expect(stretch).toBeGreaterThan(2.8); // strictly more than the clamp-blind value
+    expect(stretch).toBeCloseTo(4, 4); // 48/s + 8 = 20 → s = 4
+  });
+
+  test('clamp-aware: caps stretch at the all-pinned point when the ceiling is unreachable', () => {
+    // 10 fast accounts, a tiny budget: even with every interval clamped to MAX the
+    // floor (10 × DAY/12h = 20) exceeds the ceiling (2). Stretch maxes out where
+    // the fastest account first hits MAX (12h/1h = 12); going further is a no-op.
+    const accounts = Array.from({ length: 10 }, () => acct({ poll_interval_ms: HOUR }));
+    const { stretch, projected } = computeGovernorStretch(accounts, {
+      callsPerPoll: 1,
+      dailyRequestBudget: 2,
+      defaultIntervalMs: HOUR,
+      activeFraction: 1,
+      headroom: 1,
+    });
+    expect(stretch).toBeCloseTo(12, 4);
+    expect(projected).toBeCloseTo(20, 4); // all clamped to 12h → 10 × 2
   });
 
   test('disabled when budget ≤ 0; excludes paused / auth-blocked', () => {
