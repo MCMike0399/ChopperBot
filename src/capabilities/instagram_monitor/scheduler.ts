@@ -1,6 +1,12 @@
 import type { Client } from 'discord.js';
 import { log } from '../../log.js';
-import { EVENT_WINDOW_MS, type InstagramMonitorStore, type MonitoredAccount } from './store.js';
+import {
+  CADENCE_COLD_START_INTERVAL_MS,
+  CADENCE_TTL_MS,
+  EVENT_WINDOW_MS,
+  type InstagramMonitorStore,
+  type MonitoredAccount,
+} from './store.js';
 import {
   InstagramAuthError,
   InstagramRateLimitError,
@@ -19,10 +25,9 @@ export const DEFAULT_TICK_MS = 60 * 1000;
 // One account per tick (≤1 outbound IG request per minute) so we never fire a
 // synchronized burst that looks like a bot.
 const ACCOUNTS_PER_TICK = 1;
-// Up to +50% of the poll interval of random, per-account jitter on each
-// account's next-due time, so the accounts decorrelate and polls scatter
-// irregularly across the window rather than marching in lockstep.
-export const POLL_JITTER_FRACTION = 0.5;
+// Per-account next-due jitter (anti-burst) now lives in store.ts as
+// POLL_JITTER_FRACTION, sized to each account's *adaptive* interval inside
+// dueAccounts (so a 6h-interval account jitters proportionally, not by a global).
 const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
 
 // Quiet hours: skip polling between these wall-clock hours in America/Mexico_City.
@@ -66,6 +71,16 @@ const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000;
 // every 6h per category. The operator only needs one message to know to act.
 const AUTH_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
+// A budget/rate pause shorter than this is treated as flapping and earns no
+// "resumed" alert when it clears (the budget can hover at the threshold).
+const MIN_PAUSE_FOR_RESUME_MS = 10 * 60 * 1000;
+// Never emit more than one "resumed" alert within this window, whatever the cause.
+const RESUME_ALERT_COOLDOWN_MS = 30 * 60 * 1000;
+// Wall-clock hour (America/Mexico_City) for the daily status digest — revives
+// the old 21:00 Mac summary that wasn't ported to the Pi. Fired from the tick's
+// finally block so it runs regardless of quiet-hours / cooldown / kill-switch.
+const STATUS_DIGEST_HOUR = 21;
+
 /** Function signatures injected by the capability; tests can swap them. */
 export type ClassifyFn = (
   account: string,
@@ -104,6 +119,20 @@ export type NotifyBudgetExhaustedFn = (info: {
   budget: number;
 }) => Promise<void>;
 
+/**
+ * Posted when polling RESUMES after an ABNORMAL pause (kill-switch cleared,
+ * rate-limit cooldown elapsed, or the budget window drained). NOT called for
+ * quiet-hours / random-skip. The scheduler debounces + rate-limits its own
+ * calls, so this can be a thin Discord-send closure.
+ */
+export type NotifyResumedFn = (info: {
+  reason: 'killswitch' | 'auth' | 'rate' | 'budget';
+  pausedForMs: number;
+}) => Promise<void>;
+
+/** Posted once per day at STATUS_DIGEST_HOUR with the monitor health summary. */
+export type NotifyStatusDigestFn = () => Promise<void>;
+
 export interface SchedulerDeps {
   store: InstagramMonitorStore;
   fetcher: InstagramFetcher;
@@ -126,6 +155,10 @@ export interface SchedulerDeps {
   notifyCircuitBroken?: NotifyCircuitBrokenFn;
   /** Posted when the daily request budget is hit. Optional in tests. */
   notifyBudgetExhausted?: NotifyBudgetExhaustedFn;
+  /** Posted when polling resumes after an abnormal pause. Optional in tests. */
+  notifyResumed?: NotifyResumedFn;
+  /** Posted once per day with the status digest. Optional in tests. */
+  notifyStatusDigest?: NotifyStatusDigestFn;
   /**
    * Hard ceiling on outbound IG HTTP requests in a rolling 24h window. When
    * hit, polling soft-pauses (auto-recovers as the window drains) and the
@@ -138,6 +171,10 @@ export interface SchedulerDeps {
    * stay deterministic; production sets a small value (~0.08).
    */
   tickSkipProbability?: number;
+  /** Override the min-pause-before-resume-alert debounce (ms). Tests set 0. Defaults to MIN_PAUSE_FOR_RESUME_MS. */
+  resumeDebounceMs?: number;
+  /** Override the resume-alert cooldown (ms). Tests set 0. Defaults to RESUME_ALERT_COOLDOWN_MS. */
+  resumeCooldownMs?: number;
 }
 
 /** Deterministic per-local-date jitter in [-QUIET_BOUNDARY_JITTER_MIN,
@@ -176,6 +213,26 @@ export function inQuietHours(nowMs: number, tz = QUIET_HOURS_TZ): boolean {
   return minutesOfDay >= start && minutesOfDay < end;
 }
 
+/** Current wall-clock hour [0,23] in the given tz (mirrors inQuietHours parsing). */
+function hourInTz(nowMs: number, tz: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: '2-digit',
+    hour12: false,
+  }).formatToParts(new Date(nowMs));
+  return parseInt(parts.find((p) => p.type === 'hour')?.value ?? '0', 10) % 24;
+}
+
+/** Local calendar date `YYYY-MM-DD` in the given tz (once-per-day digest gate). */
+function localDateKey(nowMs: number, tz: string): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: tz,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(nowMs));
+}
+
 export class InstagramMonitorScheduler {
   private intervalHandle: NodeJS.Timeout | null = null;
   private tickInFlight = false;
@@ -197,10 +254,23 @@ export class InstagramMonitorScheduler {
   private lastAuthAlertAtMs = 0;
   private lastCircuitAlertAtMs = 0;
   private lastBudgetAlertAtMs = 0;
+  /** Why the previous tick stopped before polling, for resume detection.
+   * 'none' = the last tick reached the polling section. Quiet-hours/random-skip
+   * are NOT tracked here (normal — no resume alert). Seeded from getRuntime() in
+   * start() so a kill-switch cleared after a restart still yields one resume alert. */
+  private lastBlockReason: 'none' | 'killswitch' | 'auth' | 'rate' | 'budget' = 'none';
+  /** When lastBlockReason was first set to its current value (pause-duration anchor). */
+  private blockedSinceMs = 0;
+  /** Rate-limit anchor for resume alerts. */
+  private lastResumeAlertAtMs = 0;
+  /** TTL anchor for the daily cadence sweep (in-memory; a restart re-sweeps, which is fine). */
+  private lastCadenceSweepAtMs = 0;
   /** Timestamps of outbound IG HTTP requests in the rolling 24h window. */
   private requestTimestamps: number[] = [];
   private readonly dailyRequestBudget: number;
   private readonly tickSkipProbability: number;
+  private readonly resumeDebounceMs: number;
+  private readonly resumeCooldownMs: number;
 
   constructor(
     private readonly deps: SchedulerDeps,
@@ -212,6 +282,8 @@ export class InstagramMonitorScheduler {
     this.fetchCover = deps.fetchCover ?? defaultFetchCover;
     this.dailyRequestBudget = deps.dailyRequestBudget ?? 0;
     this.tickSkipProbability = deps.tickSkipProbability ?? 0;
+    this.resumeDebounceMs = deps.resumeDebounceMs ?? MIN_PAUSE_FOR_RESUME_MS;
+    this.resumeCooldownMs = deps.resumeCooldownMs ?? RESUME_ALERT_COOLDOWN_MS;
     // Wire the fetcher's per-request observer into our rolling 24h counter (for
     // the daily-budget guardrail). Done here (not in start()) so it's active
     // even when tests drive tickOnce() directly.
@@ -229,6 +301,13 @@ export class InstagramMonitorScheduler {
     // tripped (resume is manual-only via the admin tool).
     const cleared = this.deps.store.clearFailureBackoff();
     const runtime = this.deps.store.getRuntime();
+    // Seed resume-detection so a kill-switch cleared after this restart still
+    // produces exactly one "resumed" alert. (Auth/rate/budget pauses are
+    // in-memory and intentionally reset to a clean slate on restart.)
+    if (runtime.global_stop === 1) {
+      this.lastBlockReason = 'killswitch';
+      this.blockedSinceMs = runtime.stopped_at ?? Date.now();
+    }
     log.info(
       {
         source: this.deps.fetcher.source(),
@@ -313,6 +392,92 @@ export class InstagramMonitorScheduler {
     }
   }
 
+  /** Record why this tick stopped before polling (for resume detection). Stamps
+   * the pause-start only on a NEW reason, so the measured pause duration runs
+   * from the real start, not every tick. */
+  private markBlocked(reason: 'killswitch' | 'auth' | 'rate' | 'budget', now: number): void {
+    if (this.lastBlockReason !== reason) {
+      this.lastBlockReason = reason;
+      this.blockedSinceMs = now;
+    }
+  }
+
+  /** At the proceed-point: if the previous tick was blocked for an abnormal
+   * reason, announce the resume (debounced + rate-limited). Always clears the
+   * block state so a suppressed resume can't re-fire later. */
+  private async maybeAnnounceResume(now: number): Promise<void> {
+    if (this.lastBlockReason === 'none') return;
+    const reason = this.lastBlockReason;
+    const pausedForMs = now - this.blockedSinceMs;
+    this.lastBlockReason = 'none';
+    this.blockedSinceMs = 0;
+    if (
+      this.deps.notifyResumed &&
+      pausedForMs >= this.resumeDebounceMs &&
+      now - this.lastResumeAlertAtMs >= this.resumeCooldownMs
+    ) {
+      this.lastResumeAlertAtMs = now;
+      log.info({ reason, pausedForMs }, 'instagram_monitor.tick.resumed');
+      try {
+        await this.deps.notifyResumed({ reason, pausedForMs });
+      } catch (err) {
+        log.warn({ err }, 'instagram_monitor.resume_notify_failed');
+      }
+    } else {
+      log.debug({ reason, pausedForMs }, 'instagram_monitor.tick.resumed_silent');
+    }
+  }
+
+  /** Daily adaptive-cadence sweep + budget-governor recompute. Pure SQLite (no
+   * IG requests), TTL-gated, run from the tick's finally so it executes even
+   * while polling is paused — recomputing cadence is exactly what lets a
+   * budget-pinned monitor shrink its intervals and recover. Best-effort. */
+  private maybeSweepCadence(now: number): void {
+    if (now - this.lastCadenceSweepAtMs < CADENCE_TTL_MS) return;
+    this.lastCadenceSweepAtMs = now;
+    try {
+      // Lambda relay = 1 request/poll; direct+auth ≈ 1.5 (feed + ~50% warmup, pk cached).
+      const callsPerPoll = this.deps.fetcher.source() === 'lambda' ? 1.0 : 1.5;
+      const activeHoursFraction = (24 - (QUIET_HOURS_END_HOUR - QUIET_HOURS_START_HOUR)) / 24;
+      const activeFraction = activeHoursFraction * (1 - this.tickSkipProbability);
+      const r = this.deps.store.recomputeAllCadence(now, {
+        callsPerPoll,
+        dailyRequestBudget: this.dailyRequestBudget,
+        defaultIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
+        activeFraction,
+      });
+      log.info(
+        { swept: r.swept, stretch: Number(r.stretch.toFixed(3)), projected: Math.round(r.projected) },
+        'instagram_monitor.cadence_sweep',
+      );
+    } catch (err) {
+      log.warn({ err }, 'instagram_monitor.cadence_sweep_failed');
+    }
+  }
+
+  /** Post the daily status digest once per local day at STATUS_DIGEST_HOUR.
+   * Claims the slot (writeLastDigestAt) BEFORE sending so a send failure or an
+   * overlapping tick can't double-post. Runs from finally → fires regardless of
+   * the gates above. */
+  private async maybePostDigest(now: number): Promise<void> {
+    if (!this.deps.notifyStatusDigest) return;
+    if (hourInTz(now, QUIET_HOURS_TZ) !== STATUS_DIGEST_HOUR) return;
+    const today = localDateKey(now, QUIET_HOURS_TZ);
+    const last = this.deps.store.getRuntime().last_digest_at;
+    if (last !== null && localDateKey(last, QUIET_HOURS_TZ) === today) return;
+    log.info({}, 'instagram_monitor.digest.posting');
+    try {
+      await this.deps.notifyStatusDigest();
+      // Stamp only AFTER a successful send so a failure (e.g. a restart that
+      // lands in the digest hour before Discord is reachable) retries on the
+      // next tick instead of silently skipping today. Ticks are 60s apart and
+      // a send takes <1s, so this can't double-post.
+      this.deps.store.writeLastDigestAt(now);
+    } catch (err) {
+      log.warn({ err }, 'instagram_monitor.digest_notify_failed');
+    }
+  }
+
   async dispose(): Promise<void> {
     this.disposed = true;
     if (this.intervalHandle) {
@@ -332,12 +497,15 @@ export class InstagramMonitorScheduler {
       // operator runs `config_instagram action:resume_monitor`.
       const runtime = this.deps.store.getRuntime();
       if (runtime.global_stop === 1) {
+        this.markBlocked('killswitch', now);
         log.warn(
           { reason: runtime.stop_reason },
           'instagram_monitor.tick.global_stop',
         );
         return;
       }
+      // Quiet-hours and random-skip are NORMAL pauses: they deliberately leave
+      // lastBlockReason untouched, so resuming from them never alerts.
       if (inQuietHours(now)) {
         log.debug({}, 'instagram_monitor.tick.quiet_hours');
         return;
@@ -348,6 +516,7 @@ export class InstagramMonitorScheduler {
         return;
       }
       if (now < this.authCooldownUntilMs) {
+        this.markBlocked('auth', now);
         log.debug(
           { until: this.authCooldownUntilMs },
           'instagram_monitor.tick.auth_cooldown',
@@ -355,6 +524,7 @@ export class InstagramMonitorScheduler {
         return;
       }
       if (now < this.rateLimitCooldownUntilMs) {
+        this.markBlocked('rate', now);
         log.debug(
           { until: this.rateLimitCooldownUntilMs },
           'instagram_monitor.tick.rate_limit_cooldown',
@@ -369,6 +539,7 @@ export class InstagramMonitorScheduler {
             { used, budget: this.dailyRequestBudget },
             'instagram_monitor.budget_exhausted',
           );
+          this.markBlocked('budget', now);
           if (
             this.deps.notifyBudgetExhausted &&
             now - this.lastBudgetAlertAtMs >= AUTH_ALERT_COOLDOWN_MS
@@ -386,13 +557,12 @@ export class InstagramMonitorScheduler {
           return;
         }
       }
-      const jitterMaxMs = Math.floor(this.pollIntervalMs * POLL_JITTER_FRACTION);
-      const due = this.deps.store.dueAccounts(
-        now,
-        this.pollIntervalMs,
-        ACCOUNTS_PER_TICK,
-        jitterMaxMs,
-      );
+      // Reached the polling section: all abnormal gates passed. If the previous
+      // tick was blocked for an abnormal reason, announce the resume (debounced).
+      // Placed before dueAccounts so recovery is announced even when nothing's due.
+      await this.maybeAnnounceResume(now);
+
+      const due = this.deps.store.dueAccounts(now, CADENCE_COLD_START_INTERVAL_MS, ACCOUNTS_PER_TICK);
       if (due.length === 0) return;
       log.info({ due: due.length }, 'instagram_monitor.tick');
       for (const acc of due) {
@@ -400,9 +570,15 @@ export class InstagramMonitorScheduler {
         await this.processAccount(acc);
       }
     } finally {
+      // tickInFlight cleared first so these bookkeeping steps (which can await a
+      // Discord send) don't block the next interval tick. All run regardless of
+      // any early return above.
       this.tickInFlight = false;
-      this.heartbeat(Date.now());
-      log.debug({ ms: Date.now() - t0 }, 'instagram_monitor.tick.done');
+      const end = Date.now();
+      this.maybeSweepCadence(end);
+      this.heartbeat(end);
+      await this.maybePostDigest(end);
+      log.debug({ ms: end - t0 }, 'instagram_monitor.tick.done');
     }
   }
 
@@ -679,5 +855,13 @@ export class InstagramMonitorScheduler {
     }
 
     this.deps.store.markPollSuccess(acc.id, Date.now(), next.id, next.at);
+    // New posts were just recorded for this account → its cadence estimate
+    // changed. Refresh it now (cheap, single-account) so the interval adapts
+    // without waiting for the daily sweep. Best-effort.
+    try {
+      this.deps.store.recomputeCadence(acc.id, Date.now());
+    } catch (err) {
+      log.debug({ err, account: acc.username }, 'instagram_monitor.cadence_recompute_failed');
+    }
   }
 }

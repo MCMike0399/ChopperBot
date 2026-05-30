@@ -14,6 +14,14 @@
  *   IG API), so it *can* be safely converted — we show it in Mexico City time.
  */
 
+import {
+  AUTH_PAUSE_THRESHOLD,
+  effectiveBaseIntervalMs,
+  nextDueAtMs,
+  type MonitoredAccount,
+  type RuntimeState,
+} from './store.js';
+
 const WEEKDAYS = [
   'domingo',
   'lunes',
@@ -108,4 +116,187 @@ export function formatPostedAt(ms: number): string {
   const day = Number(pick('day'));
   const month = Number(pick('month'));
   return `${day} ${MONTHS_ABBR[month - 1]} ${pick('year')}, ${pick('hour')}:${pick('minute')}`;
+}
+
+// ---- Status digest (admin channel) --------------------------------------
+
+/**
+ * Human Spanish duration, up to two units: "2 h 14 min", "3 d 5 h", "45 min".
+ * Used by the "polling resumed" alert ("estuvo pausado ~X").
+ */
+export function formatDurationEs(ms: number): string {
+  const totalMin = Math.round(ms / 60000);
+  if (totalMin < 1) return 'menos de 1 min';
+  const d = Math.floor(totalMin / 1440);
+  const h = Math.floor((totalMin % 1440) / 60);
+  const m = totalMin % 60;
+  const parts: string[] = [];
+  if (d) parts.push(`${d} d`);
+  if (h) parts.push(`${h} h`);
+  if (m) parts.push(`${m} min`);
+  return parts.slice(0, 2).join(' ');
+}
+
+/** Compact age/interval for the digest table: "45m", "6h", "2d", "<1m". */
+export function formatAgeEs(ms: number): string {
+  const m = Math.round(ms / 60000);
+  if (m < 1) return '<1m';
+  if (m < 120) return `${m}m`;
+  const h = Math.round(ms / 3_600_000);
+  if (h < 48) return `${h}h`;
+  return `${Math.round(ms / 86_400_000)}d`;
+}
+
+export interface StatusDigestInput {
+  runtime: RuntimeState;
+  accounts: MonitoredAccount[];
+  /** IG_DAILY_REQUEST_BUDGET (0 = no limit configured). */
+  dailyRequestBudget: number;
+  /** DEFAULT_POLL_INTERVAL_MS — the fallback for accounts without a learned cadence. */
+  defaultPollIntervalMs: number;
+  nowMs: number;
+}
+
+const DIGEST_MAX_LEN = 1900;
+/** Room reserved (chars) for the closing fence + footer + truncation note. */
+const DIGEST_RESERVE = 110;
+
+/**
+ * Build the daily status digest as Discord-ready lines (joined with `\n`).
+ * Shared by the scheduler's 21:00 digest and the admin `digest_now` / `status`
+ * preview so the two never drift. Reads the adaptive cadence columns
+ * defensively (they may be null until the first sweep) — never throws on
+ * missing data, and stays under Discord's 2000-char limit (truncates the
+ * least-interesting accounts with a "+N más" tail).
+ */
+export function formatStatusDigest(input: StatusDigestInput): string[] {
+  const { runtime, accounts, dailyRequestBudget, defaultPollIntervalMs, nowMs } = input;
+  const stretch =
+    Number.isFinite(runtime.poll_stretch) && runtime.poll_stretch > 0 ? runtime.poll_stretch : 1;
+
+  const head: string[] = ['📊 **Instagram monitor — resumen diario**'];
+  head.push(`Estado: ${describeState(runtime, nowMs)}`);
+
+  const used = runtime.requests_24h ?? 0;
+  if (dailyRequestBudget > 0) {
+    const margin = dailyRequestBudget - used;
+    head.push(
+      `Peticiones 24 h: ${used} / ${dailyRequestBudget} · ${
+        margin > 0 ? `margen ${margin}` : 'sin margen (en pausa)'
+      }`,
+    );
+  } else {
+    head.push(`Peticiones 24 h: ${used} (sin límite)`);
+  }
+  if (stretch > 1.001) {
+    head.push(
+      `Ajuste de presupuesto: ×${stretch.toFixed(2)} (intervalos estirados para respetar el presupuesto)`,
+    );
+  }
+
+  const pausedCount = accounts.filter((a) => a.paused === 1).length;
+  const blockedCount = accounts.filter(
+    (a) => a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD,
+  ).length;
+  head.push(`Cuentas: ${accounts.length} (pausadas ${pausedCount} · bloqueadas ${blockedCount})`);
+
+  // Interesting-first so truncation drops healthy accounts, not problem ones.
+  const sorted = [...accounts].sort((a, b) => {
+    const r = interestRank(a) - interestRank(b);
+    return r !== 0 ? r : (a.last_polled_at ?? 0) - (b.last_polled_at ?? 0);
+  });
+
+  const widths = [20, 6, 5, 6, 6, 3];
+  const lines = [
+    ...head,
+    '```',
+    digestRow(['cuenta', 'cad', 'int', 'últ', 'próx', 'st'], widths),
+    digestRow(widths.map((w) => '─'.repeat(w)), widths),
+  ];
+
+  let shown = 0;
+  for (const a of sorted) {
+    const r = digestRow(
+      [
+        a.username,
+        cadenceCell(a),
+        formatAgeEs(effectiveBaseIntervalMs(a, defaultPollIntervalMs, stretch)),
+        a.last_post_at ? formatAgeEs(Math.max(0, nowMs - a.last_post_at)) : '—',
+        nextCell(a, defaultPollIntervalMs, stretch, nowMs),
+        stCell(a),
+      ],
+      widths,
+    );
+    if (shown > 0 && [...lines, r].join('\n').length > DIGEST_MAX_LEN - DIGEST_RESERVE) {
+      const remaining = sorted.length - shown;
+      lines.push(`… y ${remaining} cuenta${remaining === 1 ? '' : 's'} más`);
+      break;
+    }
+    lines.push(r);
+    shown++;
+  }
+
+  lines.push('```');
+  lines.push('Detalle: `config_instagram action:list` · `action:status`');
+  return lines;
+}
+
+/** 0 = most interesting (kept under truncation), higher = dropped first. */
+function interestRank(a: MonitoredAccount): number {
+  if (a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) return 0;
+  if (a.paused === 1) return 1;
+  if (a.consecutive_failures > 0) return 2;
+  return 3;
+}
+
+function describeState(r: RuntimeState, now: number): string {
+  if (r.global_stop === 1) {
+    return `🔴 DETENIDO (interruptor de seguridad)${r.stop_reason ? `: ${r.stop_reason}` : ''}`;
+  }
+  const future = (ms: number | null) => (ms && ms > now ? ms : null);
+  const rate = future(r.rate_cooldown_until);
+  const budget = future(r.budget_pause_until);
+  const auth = future(r.auth_cooldown_until);
+  if (rate) return `🟡 pausado — límite de peticiones (429), reanuda en ${formatAgeEs(rate - now)}`;
+  if (budget) return `🟡 pausado — presupuesto diario, reanuda en ${formatAgeEs(budget - now)}`;
+  if (auth) return `🟡 pausado — sesión, reanuda en ${formatAgeEs(auth - now)}`;
+  return '🟢 sondeando con normalidad';
+}
+
+/** Cadence cell from posts/day; `?` when not yet learned or absent. */
+function cadenceCell(a: MonitoredAccount): string {
+  const ppd = a.posts_per_day;
+  if (ppd == null || !Number.isFinite(ppd) || ppd <= 0) return '?';
+  if (ppd >= 1) return `${ppd < 10 ? ppd.toFixed(1) : String(Math.round(ppd))}/d`;
+  const days = 1 / ppd;
+  return `~${days < 10 ? days.toFixed(1) : String(Math.round(days))}d`;
+}
+
+function nextCell(
+  a: MonitoredAccount,
+  defaultMs: number,
+  stretch: number,
+  now: number,
+): string {
+  if (a.paused === 1 || a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) return '—';
+  const nd = nextDueAtMs(a, defaultMs, stretch);
+  if (nd === null || nd <= now) return 'due';
+  return formatAgeEs(nd - now);
+}
+
+function stCell(a: MonitoredAccount): string {
+  if (a.paused === 1) return 'P';
+  if (a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) return 'A';
+  if (a.consecutive_failures > 0) return `!${Math.min(a.consecutive_failures, 9)}`;
+  return '·';
+}
+
+/** Pad/truncate cells to fixed widths and join (monospace inside a code fence). */
+function digestRow(cells: string[], widths: number[]): string {
+  return cells
+    .map((c, i) => {
+      const w = widths[i];
+      return c.length > w ? `${c.slice(0, w - 1)}…` : c.padEnd(w);
+    })
+    .join('  ');
 }
