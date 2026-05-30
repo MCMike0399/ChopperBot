@@ -1,6 +1,5 @@
 import { Agent } from 'undici';
 import { log } from '../../log.js';
-import type { LambdaRelay } from './lambda-relay-client.js';
 
 // Instagram serves `i.instagram.com` over HTTP/2 and returns 429 to plain
 // HTTP/1.1 requests from some egress IPs (observed on the Raspberry Pi's
@@ -30,8 +29,6 @@ export interface RecentPost {
 
 export interface InstagramFetcher {
   fetchRecentPosts(username: string): Promise<RecentPost[]>;
-  /** Where this fetcher gets its data — useful for logs and admin reports. */
-  source(): 'lambda' | 'direct';
   /**
    * Optional: register a callback invoked once per outbound IG HTTP request
    * (warmup, pk-resolve, feed). The scheduler uses this to maintain a rolling
@@ -212,24 +209,7 @@ function humanDelay(minMs = 400, maxMs = 1500): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Wraps an injected LambdaRelay. Production path. */
-export class LambdaInstagramFetcher implements InstagramFetcher {
-  constructor(private readonly relay: LambdaRelay) {}
-
-  source(): 'lambda' {
-    return 'lambda';
-  }
-
-  async fetchRecentPosts(username: string): Promise<RecentPost[]> {
-    const res = await this.relay.fetchWebProfile(username);
-    if (res.statusCode !== 200) {
-      throw new Error(`Instagram returned HTTP ${res.statusCode} (via Lambda)`);
-    }
-    return parseWebProfileBody(res.body);
-  }
-}
-
-/** Direct fetch from the Node process. Used when LAMBDA_ARN is unset.
+/** Direct fetch from the Node process — the only fetch path.
  *
  * Two modes:
  *  - **Anonymous** (no auth): hits the public `web_profile_info` GraphQL
@@ -261,10 +241,6 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     private readonly userAgent: string = DEFAULT_IG_USER_AGENT,
   ) {
     this.headers = buildHeaders(userAgent);
-  }
-
-  source(): 'direct' {
-    return 'direct';
   }
 
   observeRequests(cb: () => void): void {
@@ -515,7 +491,7 @@ function normalizeFeedItem(it: Record<string, unknown>): RecentPost {
   };
 }
 
-function parseWebProfileBody(body: string): RecentPost[] {
+export function parseWebProfileBody(body: string): RecentPost[] {
   let json: unknown;
   try {
     json = JSON.parse(body);

@@ -17,11 +17,9 @@ import {
 } from './store.js';
 import {
   DirectInstagramFetcher,
-  LambdaInstagramFetcher,
   type InstagramAuth,
   type InstagramFetcher,
 } from './fetcher.js';
-import { AwsLambdaRelay } from './lambda-relay-client.js';
 import { InstagramMonitorScheduler } from './scheduler.js';
 import { InstagramMonitorToolSource } from './source.js';
 import { setIgCdnUserAgent } from './publisher.js';
@@ -46,44 +44,27 @@ export class InstagramMonitorCapability implements Capability {
     await memory.migrate(this.id, INSTAGRAM_MONITOR_MIGRATIONS);
     this.store = new InstagramMonitorStore(memory.db());
 
-    if (config.INSTAGRAM_RELAY_LAMBDA_ARN) {
-      const relay = new AwsLambdaRelay(
-        config.INSTAGRAM_RELAY_LAMBDA_ARN,
-        config.AWS_REGION_LAMBDA_RELAY,
-      );
-      this.fetcher = new LambdaInstagramFetcher(relay);
-      log.info(
-        {
-          capability: this.id,
-          source: 'lambda',
-          arn: config.INSTAGRAM_RELAY_LAMBDA_ARN,
-          region: config.AWS_REGION_LAMBDA_RELAY,
-        },
-        'InstagramMonitorCapability initialized (production: Lambda relay)',
-      );
-    } else {
-      const auth: InstagramAuth | null =
-        config.IG_SESSIONID && config.IG_CSRFTOKEN && config.IG_DS_USER_ID
-          ? {
-              sessionid: config.IG_SESSIONID,
-              csrftoken: config.IG_CSRFTOKEN,
-              dsUserId: config.IG_DS_USER_ID,
-              mid: config.IG_MID,
-              igDid: config.IG_DID,
-            }
-          : null;
-      // Use one UA across the API fetcher AND the CDN media fetches so a session
-      // presents a single consistent fingerprint. IG_USER_AGENT should match the
-      // browser the cookies came from; unset falls back to the built-in default.
-      if (config.IG_USER_AGENT) setIgCdnUserAgent(config.IG_USER_AGENT);
-      this.fetcher = new DirectInstagramFetcher(auth, 0.5, config.IG_USER_AGENT);
-      log.warn(
-        { capability: this.id, source: 'direct', authed: auth !== null, custom_ua: !!config.IG_USER_AGENT },
-        auth
-          ? 'InstagramMonitorCapability initialized in DIRECT+AUTH mode (logged-in IG session cookies). Higher rate limits; session can expire (watch for instagram_monitor.auth.expired).'
-          : 'InstagramMonitorCapability initialized in DIRECT mode (no auth). OK for local dev; in prod this risks IP throttling.',
-      );
-    }
+    const auth: InstagramAuth | null =
+      config.IG_SESSIONID && config.IG_CSRFTOKEN && config.IG_DS_USER_ID
+        ? {
+            sessionid: config.IG_SESSIONID,
+            csrftoken: config.IG_CSRFTOKEN,
+            dsUserId: config.IG_DS_USER_ID,
+            mid: config.IG_MID,
+            igDid: config.IG_DID,
+          }
+        : null;
+    // Use one UA across the API fetcher AND the CDN media fetches so a session
+    // presents a single consistent fingerprint. IG_USER_AGENT should match the
+    // browser the cookies came from; unset falls back to the built-in default.
+    if (config.IG_USER_AGENT) setIgCdnUserAgent(config.IG_USER_AGENT);
+    this.fetcher = new DirectInstagramFetcher(auth, 0.5, config.IG_USER_AGENT);
+    log.warn(
+      { capability: this.id, authed: auth !== null, custom_ua: !!config.IG_USER_AGENT },
+      auth
+        ? 'InstagramMonitorCapability initialized in DIRECT+AUTH mode (logged-in IG session cookies). Higher rate limits; session can expire (watch for instagram_monitor.auth.expired).'
+        : 'InstagramMonitorCapability initialized in DIRECT mode (no auth). OK for local dev; in prod this risks IP throttling.',
+    );
   }
 
   async start({ client, router }: CapabilityStartDeps): Promise<void> {
@@ -133,10 +114,9 @@ export class InstagramMonitorCapability implements Capability {
       channelId: ctx.channelId,
       userId: ctx.userId,
       nowMs: ctx.now.getTime(),
-      fetcherSource: this.fetcher.source(),
     });
     return {
-      system: renderInstagramMonitorPrompt(ctx.now, this.fetcher.source()),
+      system: renderInstagramMonitorPrompt(ctx.now),
       tools: composeToolSources([source]),
     };
   }
