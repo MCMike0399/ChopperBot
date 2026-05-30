@@ -10,3 +10,6 @@ logs/
 coverage/
 *.tsbuildinfo
 db-export/
+
+# Local-only deployment/migration notes — kept on disk, never tracked
+RASPBERRY_PI_MIGRATION.md
