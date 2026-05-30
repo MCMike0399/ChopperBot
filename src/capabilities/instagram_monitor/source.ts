@@ -240,6 +240,10 @@ function serializeAccount(a: MonitoredAccount) {
     last_post_id: a.last_post_id,
     consecutive_failures: a.consecutive_failures,
     consecutive_auth_failures: a.consecutive_auth_failures,
+    poll_interval_min: a.poll_interval_ms !== null ? Math.round(a.poll_interval_ms / 60000) : null,
+    posts_per_day: a.posts_per_day !== null ? Number(a.posts_per_day.toFixed(2)) : null,
+    cadence_updated_at_iso:
+      a.cadence_updated_at !== null ? new Date(a.cadence_updated_at).toISOString() : null,
   };
 }
 

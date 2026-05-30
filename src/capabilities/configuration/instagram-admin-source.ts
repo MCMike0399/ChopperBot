@@ -1,7 +1,13 @@
 import type Database from 'better-sqlite3';
+import { config } from '../../config.js';
 import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
-import { InstagramMonitorStore, type MonitoredAccount } from '../instagram_monitor/store.js';
+import {
+  CADENCE_COLD_START_INTERVAL_MS,
+  InstagramMonitorStore,
+  type MonitoredAccount,
+} from '../instagram_monitor/store.js';
+import { formatStatusDigest } from '../instagram_monitor/format.js';
 
 export interface ConfigInstagramAdminDeps {
   db: Database.Database;
@@ -43,6 +49,7 @@ export class ConfigInstagramAdminSource implements ToolSource {
           'Admin the GLOBAL Instagram monitor account list + global runtime (works from the config channel). Accounts are global — changes affect EVERY channel bound to instagram_monitor on EVERY server. `action`:\n' +
           '• "list" — every monitored account with paused flag, last poll time, failure count, dedup anchor, and who added it.\n' +
           '• "status" — GLOBAL monitor health: whether the safety kill-switch is engaged (and why), current auth/rate-limit/budget cooldowns, requests in the last 24h, and counts of paused / auth-blocked accounts.\n' +
+          '• "digest_now" — returns the daily status-digest text (overall state, 24h budget/headroom, per-account cadence + effective interval + next-poll ETA) ready to post to this channel on demand.\n' +
           '• "add" {username} — start monitoring an account (idempotent; reports created vs already-present).\n' +
           '• "remove" {username, confirm} — DESTRUCTIVE. Stop monitoring and drop the account row. Requires confirm:true.\n' +
           '• "pause" {username} / "resume" {username} — temporarily stop / restart polling of ONE account without losing the dedup anchor.\n' +
@@ -56,6 +63,7 @@ export class ConfigInstagramAdminSource implements ToolSource {
               enum: [
                 'list',
                 'status',
+                'digest_now',
                 'add',
                 'remove',
                 'pause',
@@ -90,6 +98,7 @@ export class ConfigInstagramAdminSource implements ToolSource {
       const action = asAction(obj.action, [
         'list',
         'status',
+        'digest_now',
         'add',
         'remove',
         'pause',
@@ -105,6 +114,17 @@ export class ConfigInstagramAdminSource implements ToolSource {
 
       if (action === 'status') {
         return { status: 'success', payload: this.buildStatus() };
+      }
+
+      if (action === 'digest_now') {
+        const lines = formatStatusDigest({
+          runtime: this.store.getRuntime(),
+          accounts: this.store.listAccounts(),
+          dailyRequestBudget: config.IG_DAILY_REQUEST_BUDGET,
+          defaultPollIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
+          nowMs: Date.now(),
+        });
+        return { status: 'success', payload: { digest: lines.join('\n') } };
       }
 
       if (action === 'resume_monitor') {
@@ -200,6 +220,18 @@ export class ConfigInstagramAdminSource implements ToolSource {
         auth_blocked: accounts.filter((a) => a.consecutive_auth_failures >= 5).length,
         with_failures: accounts.filter((a) => a.consecutive_failures > 0).length,
       },
+      adaptive: {
+        with_cadence: accounts.filter((a) => a.poll_interval_ms !== null).length,
+        poll_stretch: Number((r.poll_stretch ?? 1).toFixed(3)),
+      },
+      // The exact text the daily digest would post, so the operator can eyeball it.
+      digest_preview: formatStatusDigest({
+        runtime: r,
+        accounts,
+        dailyRequestBudget: config.IG_DAILY_REQUEST_BUDGET,
+        defaultPollIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
+        nowMs: Date.now(),
+      }).join('\n'),
     };
   }
 }
@@ -212,6 +244,10 @@ function serializeAccount(a: MonitoredAccount) {
     last_post_id: a.last_post_id,
     consecutive_failures: a.consecutive_failures,
     consecutive_auth_failures: a.consecutive_auth_failures,
+    poll_interval_min: a.poll_interval_ms !== null ? Math.round(a.poll_interval_ms / 60000) : null,
+    posts_per_day: a.posts_per_day !== null ? Number(a.posts_per_day.toFixed(2)) : null,
+    cadence_updated_at_iso:
+      a.cadence_updated_at !== null ? new Date(a.cadence_updated_at).toISOString() : null,
     added_by: a.added_by,
     added_at_iso: new Date(a.added_at).toISOString(),
   };
