@@ -25,7 +25,7 @@ KIMI_API_KEY=sk-kimi-... tsx scripts/live-kimi-smoke.ts
 
 ## Deployment context — IMPORTANT
 
-As of 2026-05-27 the live deployment runs on a **Raspberry Pi** (`raspberrypi`, `aarch64`, Node 22 at `/usr/bin/node`), supervised by a **systemd user service**. This repo directory at `/home/burbujamc/Documentos/ChopperBot` **IS** that live deployment. The former macOS/launchd host was decommissioned; see `RASPBERRY_PI_MIGRATION.md` for the full migration record.
+As of 2026-05-27 the live deployment runs on a **Raspberry Pi** (`raspberrypi`, `aarch64`, Node 22 at `/usr/bin/node`), supervised by a **systemd user service**. This repo directory at `/home/burbujamc/Documentos/ChopperBot` **IS** that live deployment. The former macOS/launchd host was decommissioned; the full migration record is kept in a **local-only, gitignored** `RASPBERRY_PI_MIGRATION.md` on this host (it was scrubbed from the repo's git history, so it exists on disk here but not in the repository).
 
 **Edits here affect the running bot — but only after `pnpm run build`**, since systemd runs `node dist/index.js` directly (not `pnpm`, not `tsx watch`). To pick up changes:
 
