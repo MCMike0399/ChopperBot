@@ -38,6 +38,17 @@ export interface MonitoredAccount {
    * trip the auto-pause.
    */
   consecutive_auth_failures: number;
+  /**
+   * Cached adaptive poll interval (ms), learned from this account's posting
+   * cadence (see {@link computeCadenceInterval}). NULL = not enough history yet
+   * → {@link InstagramMonitorStore.dueAccounts} falls back to the global default.
+   * Refreshed opportunistically when new posts are detected and by a daily sweep.
+   */
+  poll_interval_ms: number | null;
+  /** Observed posts/day over the cadence window (for the status digest + governor). NULL until computed. */
+  posts_per_day: number | null;
+  /** When the cadence columns above were last recomputed (ms). NULL = never. */
+  cadence_updated_at: number | null;
 }
 
 export interface SeenPost {
@@ -69,6 +80,10 @@ export interface RuntimeState {
   budget_pause_until: number | null;
   requests_24h: number | null;
   heartbeat_at: number | null;
+  /** Global budget-governor multiplier on every account's poll interval (≥1). 1.0 = inactive. */
+  poll_stretch: number;
+  /** When the daily status digest was last posted (ms). NULL = never. */
+  last_digest_at: number | null;
 }
 
 export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
@@ -214,6 +229,35 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
       INSERT OR IGNORE INTO instagram_monitor_runtime (id, global_stop) VALUES (1, 0);
     `,
   },
+  {
+    // v6 — adaptive per-account polling cadence. The flat 60-min cadence wastes
+    // the daily request budget polling rare accounts as often as hyperactive
+    // ones. These columns cache an interval LEARNED from each account's
+    // `posted_at` history (see computeCadenceInterval) so polling concentrates
+    // where posts actually happen. NULL poll_interval_ms => dueAccounts uses the
+    // global default, so existing rows behave exactly as before until the first
+    // sweep populates them (no backfill needed — the history is already in
+    // seen_posts).
+    version: 6,
+    up: `
+      ALTER TABLE instagram_monitor_accounts ADD COLUMN poll_interval_ms   INTEGER;
+      ALTER TABLE instagram_monitor_accounts ADD COLUMN posts_per_day      REAL;
+      ALTER TABLE instagram_monitor_accounts ADD COLUMN cadence_updated_at INTEGER;
+    `,
+  },
+  {
+    // v7 — global runtime fields for the budget governor + status digest.
+    // `poll_stretch` is a single multiplier the governor raises above 1.0 to
+    // keep projected daily requests under budget as accounts are added (applied
+    // by dueAccounts on top of each account's cadence interval). `last_digest_at`
+    // gates the once-per-day status digest. Both live on the singleton runtime
+    // row next to the heartbeat columns the scheduler already writes.
+    version: 7,
+    up: `
+      ALTER TABLE instagram_monitor_runtime ADD COLUMN poll_stretch   REAL NOT NULL DEFAULT 1.0;
+      ALTER TABLE instagram_monitor_runtime ADD COLUMN last_digest_at INTEGER;
+    `,
+  },
 ];
 
 /** Window over which the circuit breaker counts soft-block events (6h). */
@@ -228,8 +272,199 @@ export const EVENT_WINDOW_MS = 6 * 60 * 60 * 1000;
  */
 export const AUTH_PAUSE_THRESHOLD = 5;
 
-/** Backoff: next allowed poll is min(POLL_INTERVAL * 2^failures, MAX_BACKOFF). */
+/** Backoff: next allowed poll is min(base * 2^failures, max(MAX_BACKOFF, base)). */
 const MAX_BACKOFF_MS = 6 * 60 * 60 * 1000;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// ---- Adaptive cadence (per-account poll interval learned from posted_at) ----
+// Balanced profile: active accounts poll ~hourly or faster, rare accounts stretch
+// toward a 6h ceiling. Longer intervals raise detection LATENCY, not coverage —
+// the feed returns 10–16 posts, so we only ever risk a miss if an account posts
+// faster than the floor allows, which the coverage clamp + MIN floor bound.
+/** Trailing window of post history considered when estimating cadence. */
+export const CADENCE_WINDOW_MS = 60 * DAY_MS;
+/** Cap on most-recent distinct posts sampled (bounds work for hyperactive accounts). */
+export const CADENCE_MAX_SAMPLES = 50;
+/** Need at least this many distinct posts before trusting a cadence (burst guard #1). */
+export const CADENCE_MIN_SAMPLES = 5;
+/** …spanning at least this long, so a sub-day burst isn't read as a sustained
+ * cadence (burst guard #2). 24h accepts real multi-day cadences (e.g. an account
+ * with 26 posts over ~2.9d) while still rejecting a 5-posts-in-an-afternoon flurry;
+ * the MIN_SAMPLES gate already rejects the tiny (<5-post) bursts. */
+export const CADENCE_MIN_SPAN_MS = 1 * DAY_MS;
+/** Poll at this fraction of the median inter-post gap (≈ Nyquist: sample faster than the event rate). */
+export const CADENCE_INTERVAL_FACTOR = 0.5;
+/** Hard floor — never poll one account faster than this (anti-detection). */
+export const CADENCE_MIN_INTERVAL_MS = 45 * 60 * 1000;
+/** Ceiling — even a dormant account is polled at least this often. Kept == MAX_BACKOFF_MS. */
+export const CADENCE_MAX_INTERVAL_MS = 6 * 60 * 60 * 1000;
+/** Fallback interval for accounts whose cadence isn't known yet (too few posts /
+ * too little history). Conservative on purpose: an account with little data is
+ * empirically a rare poster, so polling it slowly frees the request budget for
+ * the accounts we KNOW are active. New accounts speed up automatically once they
+ * accrue enough history for {@link computeCadenceInterval} to trust a cadence. */
+export const CADENCE_COLD_START_INTERVAL_MS = CADENCE_MAX_INTERVAL_MS;
+/** Recency decay: start stretching once silence exceeds this multiple of the median gap. */
+export const CADENCE_DECAY_START = 2;
+/** …capping the stretch multiplier here so a quieted account drifts to MAX, not beyond. */
+export const CADENCE_DECAY_MAX_MULT = 4;
+/** Coverage safety: keep interval ≤ this × median gap so we can't accumulate more posts than the feed returns. */
+export const CADENCE_MAX_POSTS_PER_INTERVAL = 6;
+/** Recompute an account's cadence at most this often in the daily sweep. */
+export const CADENCE_TTL_MS = 24 * 60 * 60 * 1000;
+/** Budget governor targets this fraction of IG_DAILY_REQUEST_BUDGET as the
+ * steady-state ceiling. Leaves ~25% headroom to absorb (a) the one-time
+ * pk-resolve burst on restart (~1 extra call/account, in-window for 24h),
+ * (b) the ~50% warmup variance, and (c) the governor's under-correction when
+ * several accounts sit at the MAX clamp and can't stretch further. */
+export const CADENCE_BUDGET_HEADROOM = 0.75;
+
+/**
+ * Median of a non-empty numeric array (does not mutate the input). Used for the
+ * robust inter-post gap — resistant to a single burst or one huge gap that
+ * would skew a mean.
+ */
+function median(xs: number[]): number {
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return s.length % 2 === 1 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+}
+
+/**
+ * Derive an adaptive poll interval from an account's recent post times.
+ *
+ * @param sortedDescPostedAt Distinct post capture times (`takenAtMs`), NEWEST
+ *   first. Must already be deduped across channels (see
+ *   {@link InstagramMonitorStore.recomputeCadence}).
+ * @returns `{ intervalMs }` clamped to [MIN, MAX], or `intervalMs: null` when
+ *   there isn't enough trustworthy history (caller then uses the global default).
+ *
+ * Pipeline: trust gate (min samples + min span) → median inter-post gap →
+ * `gap × FACTOR` → recency decay (stretch toward MAX when the account has gone
+ * quiet) → coverage clamp → final clamp to [MIN, MAX] (the floor/ceiling win
+ * last, so the anti-detection MIN is never violated).
+ */
+export function computeCadenceInterval(
+  sortedDescPostedAt: number[],
+  nowMs: number,
+): { intervalMs: number | null; postsPerDay: number | null } {
+  const ts = sortedDescPostedAt.filter((n) => Number.isFinite(n));
+  const n = ts.length;
+  if (n < CADENCE_MIN_SAMPLES) return { intervalMs: null, postsPerDay: null };
+
+  const newest = ts[0];
+  const oldest = ts[n - 1];
+  const span = newest - oldest;
+  if (span < CADENCE_MIN_SPAN_MS) return { intervalMs: null, postsPerDay: null };
+
+  const gaps: number[] = [];
+  for (let i = 0; i < n - 1; i++) {
+    const g = ts[i] - ts[i + 1];
+    if (g > 0) gaps.push(g);
+  }
+  if (gaps.length === 0) return { intervalMs: null, postsPerDay: null };
+
+  const medianGap = median(gaps);
+  if (medianGap <= 0) return { intervalMs: null, postsPerDay: null };
+
+  const postsPerDay = (n - 1) / (span / DAY_MS);
+
+  let interval = medianGap * CADENCE_INTERVAL_FACTOR;
+
+  // Recency decay: a healthy median can keep an account on a tight interval long
+  // after it actually went quiet. Once silence exceeds DECAY_START× the median
+  // gap, stretch the interval proportionally (capped) so we stop wasting polls.
+  const silence = nowMs - newest;
+  if (silence > CADENCE_DECAY_START * medianGap) {
+    const mult = Math.min(silence / medianGap / CADENCE_DECAY_START, CADENCE_DECAY_MAX_MULT);
+    interval *= mult;
+  }
+
+  // Coverage safety: don't let the interval grow past what the feed window can
+  // hold (defensive — with FACTOR 0.5 and decay ≤4× this never binds).
+  interval = Math.min(interval, CADENCE_MAX_POSTS_PER_INTERVAL * medianGap);
+
+  // Floor + ceiling win last.
+  interval = Math.min(Math.max(interval, CADENCE_MIN_INTERVAL_MS), CADENCE_MAX_INTERVAL_MS);
+
+  return { intervalMs: Math.round(interval), postsPerDay };
+}
+
+/**
+ * The effective base poll interval for an account: its learned cadence (or the
+ * global default if not yet learned), scaled by the global budget-governor
+ * `stretch`, clamped to the cadence ceiling. Shared by {@link InstagramMonitorStore.dueAccounts}
+ * and the status-digest next-poll estimate so the two never drift.
+ */
+export function effectiveBaseIntervalMs(
+  account: { poll_interval_ms: number | null },
+  defaultMs: number,
+  stretch: number,
+): number {
+  const s = Number.isFinite(stretch) && stretch > 0 ? stretch : 1;
+  const base = (account.poll_interval_ms ?? defaultMs) * s;
+  return Math.min(base, CADENCE_MAX_INTERVAL_MS);
+}
+
+/**
+ * Earliest next-poll time for an account (ms), using the same formula as
+ * {@link InstagramMonitorStore.dueAccounts} but WITHOUT the random jitter — an
+ * honest "no sooner than" estimate for the status digest. `null` = never polled
+ * (due immediately).
+ */
+export function nextDueAtMs(
+  account: MonitoredAccount,
+  defaultMs: number,
+  stretch: number,
+): number | null {
+  if (account.last_polled_at === null) return null;
+  const base = effectiveBaseIntervalMs(account, defaultMs, stretch);
+  return (
+    account.last_polled_at +
+    Math.min(base * 2 ** Math.min(account.consecutive_failures, 10), Math.max(MAX_BACKOFF_MS, base))
+  );
+}
+
+/**
+ * Budget governor: estimate projected daily IG requests from the per-account
+ * intervals and return a global `stretch` (≥1) that, applied to every interval,
+ * keeps the projection at or below `dailyRequestBudget × headroom`. A single
+ * multiplier preserves the active-vs-rare allocation. The hard budget gate in
+ * the scheduler remains the authoritative backstop; this just makes hitting it
+ * rare. `dailyRequestBudget ≤ 0` (tests) disables the governor (stretch 1).
+ */
+export function computeGovernorStretch(
+  accounts: MonitoredAccount[],
+  opts: {
+    callsPerPoll: number;
+    dailyRequestBudget: number;
+    defaultIntervalMs: number;
+    activeFraction: number;
+    headroom: number;
+  },
+): { stretch: number; projected: number } {
+  if (opts.dailyRequestBudget <= 0) return { stretch: 1, projected: 0 };
+  let projected = 0;
+  for (const a of accounts) {
+    if (a.paused === 1 || a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) continue;
+    const interval = a.poll_interval_ms ?? opts.defaultIntervalMs;
+    if (interval <= 0) continue;
+    projected += ((opts.activeFraction * DAY_MS) / interval) * opts.callsPerPoll;
+  }
+  const ceiling = opts.dailyRequestBudget * opts.headroom;
+  const stretch = ceiling > 0 && projected > ceiling ? projected / ceiling : 1;
+  return { stretch, projected };
+}
+
+/**
+ * Up to +this fraction of an account's own poll interval is added as random,
+ * per-account jitter on each next-due time, so accounts decorrelate and polls
+ * scatter irregularly rather than marching in lockstep. Lives here (next to
+ * {@link pollJitterMs}) so {@link InstagramMonitorStore.dueAccounts} can size
+ * jitter to each account's adaptive interval without importing from scheduler.
+ */
+export const POLL_JITTER_FRACTION = 0.5;
 
 /**
  * Per-account jitter in [0, maxJitterMs). Added to an account's next-due time
@@ -315,16 +550,19 @@ export class InstagramMonitorStore {
 
   /**
    * Accounts due for polling: paused=0 AND consecutive_auth_failures below the
-   * auto-stop threshold AND (never polled OR enough time has elapsed accounting
-   * for exponential backoff on consecutive_failures). Ordered oldest-first so
-   * naturally-staggered polls don't burst.
+   * auto-stop threshold AND (never polled OR enough time has elapsed). Each
+   * account's interval is its LEARNED cadence (`poll_interval_ms`) — or
+   * `defaultIntervalMs` when not yet learned — scaled by the global budget-governor
+   * `poll_stretch`, with exponential backoff on `consecutive_failures` and
+   * per-account jitter on top. Ordered oldest-first so naturally-staggered polls
+   * don't burst.
    */
   dueAccounts(
     nowMs: number,
-    pollIntervalMs: number,
+    defaultIntervalMs: number,
     limit: number,
-    jitterMaxMs = 0,
   ): MonitoredAccount[] {
+    const stretch = this.getRuntime().poll_stretch ?? 1;
     const rows = this.db
       .prepare(
         `SELECT * FROM instagram_monitor_accounts
@@ -335,10 +573,13 @@ export class InstagramMonitorStore {
       .all(AUTH_PAUSE_THRESHOLD) as MonitoredAccount[];
     const out: MonitoredAccount[] = [];
     for (const r of rows) {
+      const base = effectiveBaseIntervalMs(r, defaultIntervalMs, stretch);
+      // Backoff cap is max(MAX_BACKOFF, base) so a base interval above the legacy
+      // 6h backoff ceiling isn't silently capped (no-op while MAX_INTERVAL == MAX_BACKOFF).
       const dueAt =
         (r.last_polled_at ?? 0) +
-        Math.min(pollIntervalMs * 2 ** Math.min(r.consecutive_failures, 10), MAX_BACKOFF_MS) +
-        pollJitterMs(r.id, r.last_polled_at, jitterMaxMs);
+        Math.min(base * 2 ** Math.min(r.consecutive_failures, 10), Math.max(MAX_BACKOFF_MS, base)) +
+        pollJitterMs(r.id, r.last_polled_at, Math.floor(base * POLL_JITTER_FRACTION));
       if (r.last_polled_at === null || nowMs >= dueAt) {
         out.push(r);
         if (out.length >= limit) break;
@@ -492,6 +733,84 @@ export class InstagramMonitorStore {
       .all(channelId, limit) as SeenPost[];
   }
 
+  // ---- Adaptive cadence (v6) ----------------------------------------------
+
+  /**
+   * Recompute and cache one account's adaptive poll interval from its recent
+   * `seen_posts` history. Dedups on `ig_post_id` (seen_posts is per-channel, so
+   * each post appears once per bound channel — without the GROUP BY the gaps
+   * would collapse to zero and halve the cadence). Writes `poll_interval_ms` /
+   * `posts_per_day` / `cadence_updated_at`. Leaves the interval NULL when there
+   * isn't enough trustworthy history (caller falls back to the default).
+   */
+  recomputeCadence(id: number, nowMs: number): void {
+    const row = this.db
+      .prepare(`SELECT username FROM instagram_monitor_accounts WHERE id = ?`)
+      .get(id) as { username: string } | undefined;
+    if (!row) return;
+    const since = nowMs - CADENCE_WINDOW_MS;
+    const posts = this.db
+      .prepare(
+        `SELECT posted_at FROM (
+           SELECT ig_post_id, MAX(posted_at) AS posted_at
+           FROM instagram_monitor_seen_posts
+           WHERE account_username = ? AND posted_at IS NOT NULL AND posted_at >= ?
+           GROUP BY ig_post_id
+         )
+         ORDER BY posted_at DESC
+         LIMIT ?`,
+      )
+      .all(row.username, since, CADENCE_MAX_SAMPLES) as { posted_at: number }[];
+    const { intervalMs, postsPerDay } = computeCadenceInterval(
+      posts.map((p) => p.posted_at),
+      nowMs,
+    );
+    this.db
+      .prepare(
+        `UPDATE instagram_monitor_accounts
+         SET poll_interval_ms = ?, posts_per_day = ?, cadence_updated_at = ?
+         WHERE id = ?`,
+      )
+      .run(intervalMs, postsPerDay, nowMs, id);
+  }
+
+  /**
+   * Daily sweep: recompute cadence for every account whose estimate is stale
+   * (NULL or older than {@link CADENCE_TTL_MS}), then recompute and persist the
+   * global budget-governor {@link RuntimeState.poll_stretch}. One transaction.
+   * Returns a small summary for logging.
+   */
+  recomputeAllCadence(
+    nowMs: number,
+    opts: {
+      callsPerPoll: number;
+      dailyRequestBudget: number;
+      defaultIntervalMs: number;
+      activeFraction: number;
+      headroom?: number;
+    },
+  ): { swept: number; stretch: number; projected: number } {
+    const headroom = opts.headroom ?? CADENCE_BUDGET_HEADROOM;
+    return this.db.transaction(() => {
+      let swept = 0;
+      for (const a of this.listAccounts()) {
+        if (a.cadence_updated_at === null || nowMs - a.cadence_updated_at >= CADENCE_TTL_MS) {
+          this.recomputeCadence(a.id, nowMs);
+          swept++;
+        }
+      }
+      const { stretch, projected } = computeGovernorStretch(this.listAccounts(), {
+        callsPerPoll: opts.callsPerPoll,
+        dailyRequestBudget: opts.dailyRequestBudget,
+        defaultIntervalMs: opts.defaultIntervalMs,
+        activeFraction: opts.activeFraction,
+        headroom,
+      });
+      this.writePollStretch(stretch);
+      return { swept, stretch, projected };
+    })();
+  }
+
   // ---- Global runtime / circuit breaker (v5) ------------------------------
 
   /** Read the singleton runtime row. The row is guaranteed to exist (seeded by
@@ -512,6 +831,8 @@ export class InstagramMonitorStore {
         budget_pause_until: null,
         requests_24h: null,
         heartbeat_at: null,
+        poll_stretch: 1,
+        last_digest_at: null,
       }
     );
   }
@@ -597,5 +918,19 @@ export class InstagramMonitorStore {
          WHERE id = 1`,
       )
       .run(h.authCooldownUntil, h.rateCooldownUntil, h.budgetPauseUntil, h.requests24h, h.nowMs);
+  }
+
+  /** Persist the budget-governor stretch multiplier (read by {@link dueAccounts}). */
+  writePollStretch(stretch: number): void {
+    this.db
+      .prepare(`UPDATE instagram_monitor_runtime SET poll_stretch = ? WHERE id = 1`)
+      .run(stretch);
+  }
+
+  /** Stamp the last-posted time of the daily status digest (once-per-day gate). */
+  writeLastDigestAt(nowMs: number): void {
+    this.db
+      .prepare(`UPDATE instagram_monitor_runtime SET last_digest_at = ? WHERE id = 1`)
+      .run(nowMs);
   }
 }

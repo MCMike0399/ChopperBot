@@ -10,7 +10,11 @@ import type {
   CapabilityTurnContext,
 } from '../capability.js';
 import { CONFIGURATION_CHANNEL_ID } from '../configuration/constants.js';
-import { INSTAGRAM_MONITOR_MIGRATIONS, InstagramMonitorStore } from './store.js';
+import {
+  CADENCE_COLD_START_INTERVAL_MS,
+  INSTAGRAM_MONITOR_MIGRATIONS,
+  InstagramMonitorStore,
+} from './store.js';
 import {
   DirectInstagramFetcher,
   LambdaInstagramFetcher,
@@ -22,6 +26,7 @@ import { InstagramMonitorScheduler } from './scheduler.js';
 import { InstagramMonitorToolSource } from './source.js';
 import { setIgCdnUserAgent } from './publisher.js';
 import { renderInstagramMonitorPrompt } from './preamble.js';
+import { formatDurationEs, formatStatusDigest } from './format.js';
 
 /** Probability of skipping a whole scheduler tick (anti-metronome). */
 const TICK_SKIP_PROBABILITY = 0.08;
@@ -85,8 +90,9 @@ export class InstagramMonitorCapability implements Capability {
     if (!this.store || !this.fetcher) {
       throw new Error('InstagramMonitorCapability.start() called before init()');
     }
+    const store = this.store;
     this.scheduler = new InstagramMonitorScheduler({
-      store: this.store,
+      store,
       fetcher: this.fetcher,
       client,
       // Re-read on every tick so live re-bindings take effect without a restart.
@@ -102,6 +108,15 @@ export class InstagramMonitorCapability implements Capability {
       notifyCircuitBroken: (reason) => postCircuitBrokenAlert(client, reason),
       notifyBudgetExhausted: ({ requests24h, budget }) =>
         postBudgetExhaustedAlert(client, requests24h, budget),
+      notifyResumed: ({ reason, pausedForMs }) =>
+        postResumedAlert(client, reason, pausedForMs),
+      notifyStatusDigest: () =>
+        postStatusDigest(
+          client,
+          store,
+          config.IG_DAILY_REQUEST_BUDGET,
+          CADENCE_COLD_START_INTERVAL_MS,
+        ),
       dailyRequestBudget: config.IG_DAILY_REQUEST_BUDGET,
       tickSkipProbability: TICK_SKIP_PROBABILITY,
     });
@@ -199,6 +214,55 @@ export async function postBudgetExhaustedAlert(
     'El sondeo se pausó temporalmente y se reanudará automáticamente conforme la ventana de 24 h se vacíe. ' +
       'Si pasa seguido, sube `IG_DAILY_REQUEST_BUDGET` o reduce el número de cuentas monitoreadas.',
   ]);
+}
+
+/**
+ * Posted when polling RESUMES after an abnormal pause (budget window drained,
+ * rate-limit cooldown elapsed, or the kill-switch was cleared). The counterpart
+ * to the pause alerts above — the user asked to be told when the monitor comes
+ * back. Wired as the scheduler's `notifyResumed` dep.
+ */
+export async function postResumedAlert(
+  client: Client,
+  reason: 'killswitch' | 'auth' | 'rate' | 'budget',
+  pausedForMs: number,
+): Promise<void> {
+  const why: Record<typeof reason, string> = {
+    killswitch: 'el interruptor de seguridad fue liberado',
+    auth: 'la sesión se recuperó tras el periodo de espera',
+    rate: 'terminó el enfriamiento por límite de peticiones (429) de Instagram',
+    budget: 'la ventana de 24 h se vació por debajo del presupuesto diario',
+  };
+  await sendAdminAlert(client, [
+    '✅ **Instagram monitor: sondeo REANUDADO**',
+    `Motivo: ${why[reason]}.`,
+    `Estuvo pausado ~${formatDurationEs(pausedForMs)}.`,
+    '',
+    'El monitor volvió a sondear las cuentas con normalidad. No se requiere ninguna acción.',
+  ]);
+}
+
+/**
+ * Posts the daily status digest to the admin channel: overall state, 24h
+ * request budget/headroom, and a per-account table (cadence, effective poll
+ * interval, last-post age, next-poll ETA). Reads fresh state each call. Wired as
+ * the scheduler's `notifyStatusDigest` dep, and reused by `config_instagram
+ * action:digest_now` for an on-demand post.
+ */
+export async function postStatusDigest(
+  client: Client,
+  store: InstagramMonitorStore,
+  dailyRequestBudget: number,
+  defaultPollIntervalMs: number,
+): Promise<void> {
+  const lines = formatStatusDigest({
+    runtime: store.getRuntime(),
+    accounts: store.listAccounts(),
+    dailyRequestBudget,
+    defaultPollIntervalMs,
+    nowMs: Date.now(),
+  });
+  await sendAdminAlert(client, lines);
 }
 
 /** Shared admin-channel sender. Errors are logged and swallowed — an alert must

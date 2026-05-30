@@ -769,3 +769,275 @@ describe('InstagramMonitorScheduler — guardrails', () => {
     mem.close();
   });
 });
+
+const REL = {
+  relevant: true,
+  type: 'evento',
+  title: 't',
+  summary: 's',
+  when: null,
+  where: null,
+  tags: [],
+} as const;
+
+describe('InstagramMonitorScheduler — resume alerts', () => {
+  test('fires once when polling resumes after the budget window drains', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'P0');
+    let cb = () => {};
+    const fetcher: InstagramFetcher = {
+      source: () => 'direct',
+      observeRequests(c) {
+        cb = c;
+      },
+      async fetchRecentPosts() {
+        cb();
+        cb();
+        return [];
+      },
+    };
+    const notifyResumed = vi.fn(async () => {});
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher,
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+      dailyRequestBudget: 2,
+      notifyResumed,
+      resumeDebounceMs: 0,
+      resumeCooldownMs: 0,
+    });
+    await sch.tickOnce(); // polls foo → 2 requests
+    await sch.tickOnce(); // budget hit → blocked('budget')
+    expect(notifyResumed).not.toHaveBeenCalled();
+    // Drain the rolling-24h window so the budget recovers.
+    (sch as unknown as { requestTimestamps: number[] }).requestTimestamps = [];
+    await sch.tickOnce(); // budget ok → resume announced
+    expect(notifyResumed).toHaveBeenCalledTimes(1);
+    expect(notifyResumed).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'budget' }),
+    );
+    mem.close();
+  });
+
+  test('fires once when the kill-switch is cleared (running process)', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'P0');
+    store.tripGlobalStop('flagged', Date.now());
+    const notifyResumed = vi.fn(async () => {});
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+      notifyResumed,
+      resumeDebounceMs: 0,
+      resumeCooldownMs: 0,
+    });
+    await sch.tickOnce(); // global_stop → blocked('killswitch')
+    expect(notifyResumed).not.toHaveBeenCalled();
+    store.clearGlobalStop();
+    await sch.tickOnce(); // resume announced
+    await sch.tickOnce(); // already 'none' → not announced again
+    expect(notifyResumed).toHaveBeenCalledTimes(1);
+    expect(notifyResumed).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: 'killswitch' }),
+    );
+    mem.close();
+  });
+
+  test('quiet hours do NOT trigger a resume alert', async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, mem } = await newStore();
+      const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+      store.markPollSuccess(a.account.id, 0, 'P0');
+      const notifyResumed = vi.fn(async () => {});
+      const sch = new InstagramMonitorScheduler({
+        store,
+        fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+        client: fakeClient,
+        getBoundChannels: ONE_CHANNEL,
+        classify: vi.fn(),
+        publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+        fetchCover: async () => null,
+        notifyResumed,
+        resumeDebounceMs: 0,
+        resumeCooldownMs: 0,
+      });
+      // 04:00 in Mexico City (10:00 UTC) — inside quiet hours.
+      vi.setSystemTime(new Date(Date.UTC(2026, 4, 30, 10, 0, 0)));
+      await sch.tickOnce(); // returns at the quiet-hours gate, no block recorded
+      // 12:00 in Mexico City (18:00 UTC) — active again.
+      vi.setSystemTime(new Date(Date.UTC(2026, 4, 30, 18, 0, 0)));
+      await sch.tickOnce(); // proceeds, but was never abnormally blocked
+      expect(notifyResumed).not.toHaveBeenCalled();
+      mem.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('InstagramMonitorScheduler — adaptive cadence wiring', () => {
+  /** Pre-seed `count` already-seen posts spanning > 3 days so cadence is trustable. */
+  function seedHistory(
+    store: InstagramMonitorStore,
+    username: string,
+    baseT: number,
+    count: number,
+    gapMs: number,
+  ): void {
+    for (let i = 0; i < count; i++) {
+      store.recordSeen({
+        channel_id: CHAN,
+        ig_post_id: `H${i}`,
+        account_username: username,
+        caption: null,
+        media_type: 'image',
+        posted_at: baseT - i * gapMs,
+        classification_json: null,
+        pushed: true,
+        discord_message_id: null,
+      });
+    }
+  }
+
+  test('opportunistic recompute fires when new posts are detected', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const T = Date.now() - 60 * 60 * 1000;
+    seedHistory(store, 'foo', T, 14, 7 * 60 * 60 * 1000); // 14 posts, ~91h span
+    store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'H0', T);
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: {
+        source: () => 'direct',
+        async fetchRecentPosts() {
+          return [post('NEW', { takenAtMs: T + 3_600_000 }), post('H0', { takenAtMs: T })];
+        },
+      },
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => REL,
+      publish: (async () => ({ ok: true, messageId: 'm' })) as unknown as (
+        ...args: unknown[]
+      ) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    // Suppress the daily sweep so we're observing ONLY the opportunistic recompute.
+    (sch as unknown as { lastCadenceSweepAtMs: number }).lastCadenceSweepAtMs = Date.now();
+    await sch.tickOnce();
+    const acc = store.getAccount('foo')!;
+    expect(acc.poll_interval_ms).not.toBeNull();
+    expect(acc.cadence_updated_at).not.toBeNull();
+    mem.close();
+  });
+
+  test('no opportunistic recompute when a poll finds nothing new', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const T = Date.now() - 60 * 60 * 1000;
+    seedHistory(store, 'foo', T, 14, 7 * 60 * 60 * 1000);
+    store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'H0', T);
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: {
+        source: () => 'direct',
+        async fetchRecentPosts() {
+          return [post('H0', { takenAtMs: T })]; // only the anchor → nothing newer
+        },
+      },
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    (sch as unknown as { lastCadenceSweepAtMs: number }).lastCadenceSweepAtMs = Date.now();
+    await sch.tickOnce();
+    expect(store.getAccount('foo')!.cadence_updated_at).toBeNull();
+    mem.close();
+  });
+
+  test('daily sweep runs once per TTL (from the finally block)', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    // Not due (just polled) → no polling/opportunistic work; only the sweep can run.
+    store.markPollSuccess(a.account.id, Date.now(), 'P0');
+    const spy = vi.spyOn(store, 'recomputeAllCadence');
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+    await sch.tickOnce(); // immediate → within TTL → must not re-sweep
+    expect(spy).toHaveBeenCalledTimes(1);
+    mem.close();
+  });
+});
+
+describe('InstagramMonitorScheduler — status digest', () => {
+  function digestScheduler(store: InstagramMonitorStore, notifyStatusDigest: () => Promise<void>) {
+    return new InstagramMonitorScheduler({
+      store,
+      fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+      client: fakeClient,
+      getBoundChannels: NO_CHANNELS,
+      classify: vi.fn(),
+      publish: vi.fn() as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+      notifyStatusDigest,
+    });
+  }
+
+  test('posts once per local day at the digest hour, and again the next day', async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, mem } = await newStore();
+      const notifyStatusDigest = vi.fn(async () => {});
+      const sch = digestScheduler(store, notifyStatusDigest);
+      // 21:00 America/Mexico_City = 03:00 UTC the next calendar day.
+      vi.setSystemTime(new Date(Date.UTC(2026, 4, 31, 3, 0, 0)));
+      await sch.tickOnce();
+      await sch.tickOnce(); // same hour, same day → no second post
+      expect(notifyStatusDigest).toHaveBeenCalledTimes(1);
+      // Next day, same hour → posts again.
+      vi.setSystemTime(new Date(Date.UTC(2026, 5, 1, 3, 0, 0)));
+      await sch.tickOnce();
+      expect(notifyStatusDigest).toHaveBeenCalledTimes(2);
+      mem.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('does not post outside the digest hour', async () => {
+    vi.useFakeTimers();
+    try {
+      const { store, mem } = await newStore();
+      const notifyStatusDigest = vi.fn(async () => {});
+      const sch = digestScheduler(store, notifyStatusDigest);
+      // 19:00 Mexico City (01:00 UTC next day) — not the digest hour.
+      vi.setSystemTime(new Date(Date.UTC(2026, 4, 31, 1, 0, 0)));
+      await sch.tickOnce();
+      expect(notifyStatusDigest).not.toHaveBeenCalled();
+      mem.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
