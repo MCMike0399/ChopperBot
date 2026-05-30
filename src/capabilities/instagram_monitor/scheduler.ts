@@ -310,7 +310,6 @@ export class InstagramMonitorScheduler {
     }
     log.info(
       {
-        source: this.deps.fetcher.source(),
         tickMs: this.tickMs,
         pollIntervalMs: this.pollIntervalMs,
         cleared_backoff_rows: cleared.cleared,
@@ -436,8 +435,8 @@ export class InstagramMonitorScheduler {
     if (now - this.lastCadenceSweepAtMs < CADENCE_TTL_MS) return;
     this.lastCadenceSweepAtMs = now;
     try {
-      // Lambda relay = 1 request/poll; direct+auth ≈ 1.5 (feed + ~50% warmup, pk cached).
-      const callsPerPoll = this.deps.fetcher.source() === 'lambda' ? 1.0 : 1.5;
+      // direct+auth ≈ 1.5 requests/poll (feed + ~50% warmup, pk cached).
+      const callsPerPoll = 1.5;
       const activeHoursFraction = (24 - (QUIET_HOURS_END_HOUR - QUIET_HOURS_START_HOUR)) / 24;
       const activeFraction = activeHoursFraction * (1 - this.tickSkipProbability);
       const r = this.deps.store.recomputeAllCadence(now, {

@@ -28,9 +28,7 @@ async function newStore() {
 }
 
 function fakeFetcher(byUsername: Record<string, RecentPost[]>): InstagramFetcher {
-  return {
-    source: () => 'direct',
-    async fetchRecentPosts(u) {
+  return {    async fetchRecentPosts(u) {
       const list = byUsername[u];
       if (!list) throw new Error(`no canned posts for ${u}`);
       return list;
@@ -217,9 +215,7 @@ describe('InstagramMonitorScheduler', () => {
   test('marks failure + advances backoff on fetch error', async () => {
     const { store, mem } = await newStore();
     store.upsertAccount({ username: 'foo', added_by: 'U' });
-    const broken: InstagramFetcher = {
-      source: () => 'direct',
-      async fetchRecentPosts() {
+    const broken: InstagramFetcher = {      async fetchRecentPosts() {
         throw new Error('429 from IG');
       },
     };
@@ -251,9 +247,7 @@ describe('InstagramMonitorScheduler', () => {
     const { store, mem } = await newStore();
     store.upsertAccount({ username: 'foo', added_by: 'U' });
     store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0');
-    const fetcher: InstagramFetcher = {
-      source: () => 'direct',
-      async fetchRecentPosts() {
+    const fetcher: InstagramFetcher = {      async fetchRecentPosts() {
         throw new InstagramAuthError('session expired');
       },
     };
@@ -592,9 +586,7 @@ describe('InstagramMonitorScheduler — guardrails', () => {
   /** A fetcher that counts calls and can throw a chosen error. */
   function spyFetcher(err?: Error): InstagramFetcher & { calls: () => number } {
     let n = 0;
-    return {
-      source: () => 'direct',
-      calls: () => n,
+    return {      calls: () => n,
       async fetchRecentPosts() {
         n++;
         if (err) throw err;
@@ -636,9 +628,7 @@ describe('InstagramMonitorScheduler — guardrails', () => {
     const sch = new InstagramMonitorScheduler({
       store,
       // aaa throttles; bbb would return a post if it were ever polled.
-      fetcher: {
-        source: () => 'direct',
-        async fetchRecentPosts(u: string) {
+      fetcher: {        async fetchRecentPosts(u: string) {
           if (u === 'aaa') throw new InstagramRateLimitError('throttled (HTTP 429)');
           return [post('B1')];
         },
@@ -715,9 +705,7 @@ describe('InstagramMonitorScheduler — guardrails', () => {
     const publish = vi.fn(async () => ({ ok: true, messageId: 'm' } as PublishResult));
     const sch = new InstagramMonitorScheduler({
       store,
-      fetcher: {
-        source: () => 'direct',
-        async fetchRecentPosts(u: string) {
+      fetcher: {        async fetchRecentPosts(u: string) {
           if (u === 'restricted') {
             throw new InstagramAuthError('rejected feed (HTTP 401)', 'HTTP 401');
           }
@@ -745,9 +733,7 @@ describe('InstagramMonitorScheduler — guardrails', () => {
 
     // Fetcher that reports 2 outbound HTTP requests per poll via the observer.
     let cb = () => {};
-    const fetcher: InstagramFetcher = {
-      source: () => 'direct',
-      observeRequests(c) { cb = c; },
+    const fetcher: InstagramFetcher = {      observeRequests(c) { cb = c; },
       async fetchRecentPosts() { cb(); cb(); return []; },
     };
     const notifyBudgetExhausted = vi.fn(async () => {});
@@ -786,9 +772,7 @@ describe('InstagramMonitorScheduler — resume alerts', () => {
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
     store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'P0');
     let cb = () => {};
-    const fetcher: InstagramFetcher = {
-      source: () => 'direct',
-      observeRequests(c) {
+    const fetcher: InstagramFetcher = {      observeRequests(c) {
         cb = c;
       },
       async fetchRecentPosts() {
@@ -832,7 +816,7 @@ describe('InstagramMonitorScheduler — resume alerts', () => {
     const notifyResumed = vi.fn(async () => {});
     const sch = new InstagramMonitorScheduler({
       store,
-      fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+      fetcher: { async fetchRecentPosts() { return []; } },
       client: fakeClient,
       getBoundChannels: ONE_CHANNEL,
       classify: vi.fn(),
@@ -863,7 +847,7 @@ describe('InstagramMonitorScheduler — resume alerts', () => {
       const notifyResumed = vi.fn(async () => {});
       const sch = new InstagramMonitorScheduler({
         store,
-        fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+        fetcher: { async fetchRecentPosts() { return []; } },
         client: fakeClient,
         getBoundChannels: ONE_CHANNEL,
         classify: vi.fn(),
@@ -919,9 +903,7 @@ describe('InstagramMonitorScheduler — adaptive cadence wiring', () => {
     store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'H0', T);
     const sch = new InstagramMonitorScheduler({
       store,
-      fetcher: {
-        source: () => 'direct',
-        async fetchRecentPosts() {
+      fetcher: {        async fetchRecentPosts() {
           return [post('NEW', { takenAtMs: T + 3_600_000 }), post('H0', { takenAtMs: T })];
         },
       },
@@ -950,9 +932,7 @@ describe('InstagramMonitorScheduler — adaptive cadence wiring', () => {
     store.markPollSuccess(a.account.id, Date.now() - 10 * 60 * 60 * 1000, 'H0', T);
     const sch = new InstagramMonitorScheduler({
       store,
-      fetcher: {
-        source: () => 'direct',
-        async fetchRecentPosts() {
+      fetcher: {        async fetchRecentPosts() {
           return [post('H0', { takenAtMs: T })]; // only the anchor → nothing newer
         },
       },
@@ -976,7 +956,7 @@ describe('InstagramMonitorScheduler — adaptive cadence wiring', () => {
     const spy = vi.spyOn(store, 'recomputeAllCadence');
     const sch = new InstagramMonitorScheduler({
       store,
-      fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+      fetcher: { async fetchRecentPosts() { return []; } },
       client: fakeClient,
       getBoundChannels: ONE_CHANNEL,
       classify: vi.fn(),
@@ -994,7 +974,7 @@ describe('InstagramMonitorScheduler — status digest', () => {
   function digestScheduler(store: InstagramMonitorStore, notifyStatusDigest: () => Promise<void>) {
     return new InstagramMonitorScheduler({
       store,
-      fetcher: { source: () => 'direct', async fetchRecentPosts() { return []; } },
+      fetcher: { async fetchRecentPosts() { return []; } },
       client: fakeClient,
       getBoundChannels: NO_CHANNELS,
       classify: vi.fn(),

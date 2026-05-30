@@ -10,8 +10,6 @@ export interface InstagramMonitorToolSourceDeps {
   channelId: string;
   userId: string;
   nowMs: number;
-  /** Polled at tool-call time so admins can see "lambda" vs "direct" in list output. */
-  fetcherSource: 'lambda' | 'direct';
 }
 
 export class InstagramMonitorToolSource implements ToolSource {
@@ -136,7 +134,6 @@ export class InstagramMonitorToolSource implements ToolSource {
           return {
             status: 'success',
             payload: {
-              fetcher_source: this.deps.fetcherSource,
               accounts: rows.map(serializeAccount),
             },
           };

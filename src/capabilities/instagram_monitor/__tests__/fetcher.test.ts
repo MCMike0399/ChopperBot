@@ -1,8 +1,8 @@
 import { describe, test, expect, vi, afterEach } from 'vitest';
 import {
-  LambdaInstagramFetcher,
   DirectInstagramFetcher,
   parseUserFeedBody,
+  parseWebProfileBody,
   InstagramAuthError,
   InstagramRateLimitError,
   detectAuthBlock,
@@ -10,7 +10,6 @@ import {
   DEFAULT_IG_USER_AGENT,
   type InstagramAuth,
 } from '../fetcher.js';
-import type { LambdaRelay } from '../lambda-relay-client.js';
 
 function buildIgResponse(items: Array<Partial<Record<string, unknown>>>): string {
   return JSON.stringify({
@@ -34,15 +33,13 @@ const SAMPLE_NODE = {
   edge_media_to_caption: { edges: [{ node: { text: 'caption text' } }] },
 };
 
-describe('LambdaInstagramFetcher', () => {
-  test('parses normalized RecentPost from a single-image response', async () => {
-    const relay: LambdaRelay = {
-      async fetchWebProfile() {
-        return { statusCode: 200, body: buildIgResponse([SAMPLE_NODE]) };
-      },
-    };
-    const f = new LambdaInstagramFetcher(relay);
-    const posts = await f.fetchRecentPosts('foo');
+// The public/anonymous direct path parses the `web_profile_info` GraphQL shape
+// via parseWebProfileBody. These exercise that parser (image/video/carousel/
+// malformed/non-JSON) directly — they used to run through the now-removed
+// LambdaInstagramFetcher.
+describe('parseWebProfileBody (web_profile_info GraphQL shape)', () => {
+  test('parses a normalized RecentPost from a single-image node', () => {
+    const posts = parseWebProfileBody(buildIgResponse([SAMPLE_NODE]));
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({
       igPostId: '3001',
@@ -52,44 +49,26 @@ describe('LambdaInstagramFetcher', () => {
       takenAtMs: 1_700_000_000_000,
       displayUrl: 'https://cdn.example/image.jpg',
     });
-    expect(f.source()).toBe('lambda');
   });
 
-  test('throws on non-200 Lambda response', async () => {
-    const relay: LambdaRelay = {
-      async fetchWebProfile() {
-        return { statusCode: 401, body: 'rate limited' };
-      },
-    };
-    const f = new LambdaInstagramFetcher(relay);
-    await expect(f.fetchRecentPosts('foo')).rejects.toThrow(/HTTP 401/);
-  });
-
-  test('parses video node with video_url', async () => {
-    const relay: LambdaRelay = {
-      async fetchWebProfile() {
-        return {
-          statusCode: 200,
-          body: buildIgResponse([
-            {
-              ...SAMPLE_NODE,
-              id: 'v1',
-              shortcode: 'VVV',
-              is_video: true,
-              video_url: 'https://cdn.example/v.mp4',
-              __typename: 'GraphVideo',
-            },
-          ]),
-        };
-      },
-    };
-    const f = new LambdaInstagramFetcher(relay);
-    const [p] = await f.fetchRecentPosts('foo');
+  test('parses a video node with video_url', () => {
+    const [p] = parseWebProfileBody(
+      buildIgResponse([
+        {
+          ...SAMPLE_NODE,
+          id: 'v1',
+          shortcode: 'VVV',
+          is_video: true,
+          video_url: 'https://cdn.example/v.mp4',
+          __typename: 'GraphVideo',
+        },
+      ]),
+    );
     expect(p.mediaType).toBe('video');
     expect(p.videoUrl).toBe('https://cdn.example/v.mp4');
   });
 
-  test('parses carousel with multiple image children', async () => {
+  test('parses a carousel with multiple image children', () => {
     const carouselNode = {
       ...SAMPLE_NODE,
       id: 'c1',
@@ -102,12 +81,7 @@ describe('LambdaInstagramFetcher', () => {
         ],
       },
     };
-    const relay: LambdaRelay = {
-      async fetchWebProfile() {
-        return { statusCode: 200, body: buildIgResponse([carouselNode]) };
-      },
-    };
-    const [p] = await new LambdaInstagramFetcher(relay).fetchRecentPosts('foo');
+    const [p] = parseWebProfileBody(buildIgResponse([carouselNode]));
     expect(p.mediaType).toBe('carousel');
     expect(p.carouselUrls).toEqual([
       'https://cdn.example/c1.jpg',
@@ -115,29 +89,14 @@ describe('LambdaInstagramFetcher', () => {
     ]);
   });
 
-  test('skips malformed nodes but returns the rest', async () => {
-    const relay: LambdaRelay = {
-      async fetchWebProfile() {
-        return {
-          statusCode: 200,
-          body: buildIgResponse([SAMPLE_NODE, { id: 'broken' }]),
-        };
-      },
-    };
-    const posts = await new LambdaInstagramFetcher(relay).fetchRecentPosts('foo');
+  test('skips malformed nodes but returns the rest', () => {
+    const posts = parseWebProfileBody(buildIgResponse([SAMPLE_NODE, { id: 'broken' }]));
     expect(posts).toHaveLength(1);
     expect(posts[0].igPostId).toBe('3001');
   });
 
-  test('throws on non-JSON body', async () => {
-    const relay: LambdaRelay = {
-      async fetchWebProfile() {
-        return { statusCode: 200, body: '<html>blocked</html>' };
-      },
-    };
-    await expect(
-      new LambdaInstagramFetcher(relay).fetchRecentPosts('foo'),
-    ).rejects.toThrow(/non-JSON/);
+  test('throws on a non-JSON body', () => {
+    expect(() => parseWebProfileBody('<html>blocked</html>')).toThrow(/non-JSON/);
   });
 });
 
@@ -156,7 +115,6 @@ describe('DirectInstagramFetcher', () => {
       },
     })) as unknown as typeof fetch;
     const f = new DirectInstagramFetcher();
-    expect(f.source()).toBe('direct');
     const posts = await f.fetchRecentPosts('foo');
     expect(posts).toHaveLength(1);
     expect(globalThis.fetch).toHaveBeenCalledTimes(1);

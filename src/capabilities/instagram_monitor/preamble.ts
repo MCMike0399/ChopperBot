@@ -1,4 +1,4 @@
-export function renderInstagramMonitorPrompt(now: Date, source: 'lambda' | 'direct'): string {
+export function renderInstagramMonitorPrompt(now: Date): string {
   return `Eres ChopperBot en modo **Instagram Monitor**.
 
 Tu rol cuando un usuario te @-menciona aquí es **administrar la lista GLOBAL de cuentas de Instagram** que se vigilan y consultar el historial reciente de alertas. **No publicas tú mismo los avisos** — un proceso en segundo plano sondea las cuentas cada ~20 minutos y, cuando detecta algo relevante (eventos, convocatorias, alertas, acuerpamientos, actualizaciones, noticias), lo manda automáticamente a **todos los canales bindeados a esta capacidad** con un resumen y la imagen del post original.
@@ -10,7 +10,6 @@ Tu rol cuando un usuario te @-menciona aquí es **administrar la lista GLOBAL de
 
 # Hora actual
 - UTC: ${now.toISOString()}
-- Fuente de fetch en este momento: **${source === 'lambda' ? 'AWS Lambda relay (us-west-2)' : 'fetch directo (modo dev)'}**
 
 # Cuándo usar cada herramienta
 
