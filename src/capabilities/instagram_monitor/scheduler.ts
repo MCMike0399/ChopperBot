@@ -67,6 +67,26 @@ const RATE_LIMIT_TRIP_COUNT = 2;
 // Rolling window for the daily request budget.
 const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// The budget governor needs to know how many outbound IG HTTP calls one account
+// poll costs, to translate poll intervals into a daily request projection. This
+// was a hardcoded 1.5 (feed + ~50% warmup, pk cached) but the live deployment
+// realized ~1.72 (112 req / 65 polls over 24h on 2026-05-31) — warmup fires a
+// touch more than half the time and pk occasionally re-resolves — so the governor
+// systematically UNDER-projected and let realized spend overshoot the headroom
+// target. We now MEASURE it from the rolling window (requests ÷ polls) and only
+// fall back to this constant until enough polls accrue. 1.7 ≈ the observed
+// steady state, so even the fallback no longer under-projects.
+const CALLS_PER_POLL_FALLBACK = 1.7;
+// Min polls in the 24h window before the measured ratio is trusted over the
+// fallback — a tiny sample (right after a restart) would be noisy and the
+// restart pk-resolve burst would transiently inflate it.
+const CALLS_PER_POLL_MIN_SAMPLES = 20;
+// The measured ratio is clamped to this band: every poll is ≥1 feed request, and
+// warmup (≤1) + at most one pk re-resolve (≤1) caps a single poll's cost, so a
+// sustained ratio above ~3 would be a bug, not a real cost to budget against.
+const CALLS_PER_POLL_MIN = 1;
+const CALLS_PER_POLL_MAX = 3;
+
 // Don't spam the admin channel: at most one alert (auth / circuit / budget)
 // every 6h per category. The operator only needs one message to know to act.
 const AUTH_ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -267,6 +287,10 @@ export class InstagramMonitorScheduler {
   private lastCadenceSweepAtMs = 0;
   /** Timestamps of outbound IG HTTP requests in the rolling 24h window. */
   private requestTimestamps: number[] = [];
+  /** Timestamps of account polls in the rolling 24h window. Paired with
+   * {@link requestTimestamps} to MEASURE realized requests-per-poll for the
+   * budget governor (see {@link measuredCallsPerPoll}) instead of guessing it. */
+  private pollTimestamps: number[] = [];
   private readonly dailyRequestBudget: number;
   private readonly tickSkipProbability: number;
   private readonly resumeDebounceMs: number;
@@ -344,6 +368,30 @@ export class InstagramMonitorScheduler {
     const cutoff = now - REQUEST_WINDOW_MS;
     this.requestTimestamps = this.requestTimestamps.filter((t) => t >= cutoff);
     return this.requestTimestamps.length;
+  }
+
+  /** Record one account poll (each poll costs ≥1 IG request) for the rolling
+   * requests-per-poll measure. Mirrors {@link recordRequest}. */
+  private recordPoll(now: number): void {
+    this.pollTimestamps.push(now);
+    const cutoff = now - REQUEST_WINDOW_MS;
+    if (this.pollTimestamps[0] < cutoff) {
+      this.pollTimestamps = this.pollTimestamps.filter((t) => t >= cutoff);
+    }
+  }
+
+  /** Realized requests-per-poll over the rolling 24h window, fed to the budget
+   * governor so it projects against ACTUAL call cost rather than a stale guess.
+   * Falls back to {@link CALLS_PER_POLL_FALLBACK} until {@link CALLS_PER_POLL_MIN_SAMPLES}
+   * polls accrue (fresh restart → tiny, pk-burst-skewed sample), and clamps the
+   * ratio to [{@link CALLS_PER_POLL_MIN}, {@link CALLS_PER_POLL_MAX}]. */
+  private measuredCallsPerPoll(now: number): number {
+    const cutoff = now - REQUEST_WINDOW_MS;
+    this.pollTimestamps = this.pollTimestamps.filter((t) => t >= cutoff);
+    const polls = this.pollTimestamps.length;
+    if (polls < CALLS_PER_POLL_MIN_SAMPLES) return CALLS_PER_POLL_FALLBACK;
+    const ratio = this.requests24h(now) / polls;
+    return Math.min(Math.max(ratio, CALLS_PER_POLL_MIN), CALLS_PER_POLL_MAX);
   }
 
   /** Trip the PERSISTENT circuit breaker (manual resume only) and alert the
@@ -435,8 +483,10 @@ export class InstagramMonitorScheduler {
     if (now - this.lastCadenceSweepAtMs < CADENCE_TTL_MS) return;
     this.lastCadenceSweepAtMs = now;
     try {
-      // direct+auth ≈ 1.5 requests/poll (feed + ~50% warmup, pk cached).
-      const callsPerPoll = 1.5;
+      // Realized requests/poll, measured from the rolling window (was a hardcoded
+      // 1.5 that under-projected; live is ~1.7). Self-calibrating so the governor
+      // tracks actual call cost as warmup/pk behavior drifts.
+      const callsPerPoll = this.measuredCallsPerPoll(now);
       const activeHoursFraction = (24 - (QUIET_HOURS_END_HOUR - QUIET_HOURS_START_HOUR)) / 24;
       const activeFraction = activeHoursFraction * (1 - this.tickSkipProbability);
       const r = this.deps.store.recomputeAllCadence(now, {
@@ -446,7 +496,12 @@ export class InstagramMonitorScheduler {
         activeFraction,
       });
       log.info(
-        { swept: r.swept, stretch: Number(r.stretch.toFixed(3)), projected: Math.round(r.projected) },
+        {
+          swept: r.swept,
+          stretch: Number(r.stretch.toFixed(3)),
+          projected: Math.round(r.projected),
+          calls_per_poll: Number(callsPerPoll.toFixed(2)),
+        },
         'instagram_monitor.cadence_sweep',
       );
     } catch (err) {
@@ -583,6 +638,9 @@ export class InstagramMonitorScheduler {
 
   private async processAccount(acc: MonitoredAccount): Promise<void> {
     const t0 = Date.now();
+    // Count this as one poll for the realized requests-per-poll measure, whether
+    // the fetch below succeeds or fails — a failed fetch still spent IG requests.
+    this.recordPoll(t0);
     let posts: RecentPost[];
     try {
       posts = await this.deps.fetcher.fetchRecentPosts(acc.username);
