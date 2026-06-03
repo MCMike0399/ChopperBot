@@ -52,7 +52,7 @@ export async function buildHistory(client: Client, message: Message): Promise<Tu
       // Intentional v1 limitation: historical turns are text-only.
       // Re-downloading old Discord CDN attachments on every reply adds
       // latency and complexity. Only the current message's attachments
-      // are resolved and sent to Bedrock.
+      // are resolved and sent to the model.
       turns.push({ role, content });
       chars += content.length;
       if (chars > MAX_TOTAL_CHARS) break;
@@ -64,7 +64,7 @@ export async function buildHistory(client: Client, message: Message): Promise<Tu
 }
 
 /**
- * Coerce a sequence of turns into Bedrock Converse's required shape:
+ * Coerce a sequence of turns into the canonical chat shape the model expects:
  *   - alternating user/assistant
  *   - starts with user
  * Strategy: merge consecutive same-role turns (concatenate content),

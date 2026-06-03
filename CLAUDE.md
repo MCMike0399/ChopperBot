@@ -169,7 +169,7 @@ The bot fetches **direct** from the host's residential IP — there is no longer
 
 - **dotenv `override: false`.** A stale `export KIMI_API_KEY=...` (or any other config var) in `~/.zshrc` shadows `.env`. The fix is `unset` in your shell, not flipping override — legitimate dev workflows depend on shell-var overrides.
 - **Required** at boot: `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, `KIMI_API_KEY`. Anything else has a default in the Zod schema.
-- **`SECRETS_MANAGER_ID`** (optional) — if set, `src/secrets.ts` pulls a JSON secret from AWS Secrets Manager and merges into `process.env` **before** `config.ts` validates. Pre-existing env vars win.
+- There is **no AWS integration**. The `SECRETS_MANAGER_ID` / AWS Secrets Manager hydration (`src/secrets.ts`) was removed on 2026-06-03 along with the `AWS_REGION` config field — it existed only to feed the long-gone Lambda relay / Bedrock path. Config now comes solely from `.env` (via dotenv) and the live env. A stray `AWS_*` left in `.env` is harmless (Zod ignores unknown keys).
 - Three ways to seed channel→capability bindings via env (priority order, set in `src/config.ts`):
   1. `DISCORD_CHANNEL_CAPABILITIES` — preferred. JSON array of `{ guildId?, guildName?, channels: [{ id, capability }] }`.
   2. `DISCORD_AUTHORIZED_CHANNELS` — legacy: all listed channels run `DEFAULT_CAPABILITY`.

@@ -43,7 +43,6 @@ const ConfigSchema = z.object({
   DISCORD_CHANNEL_CAPABILITIES: z.string().optional(),
   CHOPPERBOT_DATA_DIR: z.string().default('./data'),
   DEFAULT_CAPABILITY: z.string().min(1).default('calendar'),
-  AWS_REGION: z.string().min(1).default('us-east-1'),
   KIMI_API_KEY: z.string().min(1, 'KIMI_API_KEY is required'),
   KIMI_BASE_URL: z.string().min(1).default('https://api.kimi.com/coding/v1'),
   KIMI_MODEL_ID: z.string().min(1).default('kimi-for-coding'),

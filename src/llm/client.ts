@@ -125,7 +125,7 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
     }
 
     // Run every tool_call in this assistant turn, then append one role:'tool'
-    // message per result (OpenAI's contract, unlike Bedrock which bundles them).
+    // message per result (OpenAI's contract: one message per tool result).
     for (const tc of toolCalls) {
       const name = tc.function?.name;
       const rawArgs = tc.function?.arguments ?? '{}';
