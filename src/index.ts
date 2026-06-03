@@ -1,9 +1,5 @@
 import 'dotenv/config';
-import { hydrateFromSecretsManager } from './secrets.js';
-
-await hydrateFromSecretsManager();
-
-const { run } = await import('./app.js');
+import { run } from './app.js';
 
 try {
   await run();
