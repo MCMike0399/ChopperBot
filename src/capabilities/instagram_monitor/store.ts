@@ -844,10 +844,49 @@ export class InstagramMonitorStore {
   }
 
   /**
+   * Recompute and persist ONLY the budget-governor {@link RuntimeState.poll_stretch}
+   * from the CURRENT cached per-account intervals — no per-account cadence
+   * recompute, no IG calls, no transaction. Cheap enough to run on every
+   * scheduler tick.
+   *
+   * Split out from {@link recomputeAllCadence} (2026-06-02). Previously the
+   * stretch was refreshed ONLY in the 24h-gated cadence sweep, yet per-account
+   * intervals shrink continuously between sweeps — active accounts tighten as
+   * they post (the opportunistic {@link recomputeCadence} in the scheduler's
+   * `processAccount`). The daily snapshot, locked to whatever wall-clock hour
+   * the bot last restarted, went stale within hours and let realized spend climb
+   * past the headroom target to the hard budget cap: e.g. a ~noon sweep solved
+   * stretch≈2.09 for projected=90, but by the afternoon/evening posting surge the
+   * live-correct stretch was ≈2.67 and realized hit 120/120. Recomputing the
+   * stretch every tick from the latest cached intervals tracks the intra-day
+   * activity cycle and keeps realized near the headroom ceiling.
+   */
+  recomputeGovernorStretch(opts: {
+    callsPerPoll: number;
+    dailyRequestBudget: number;
+    defaultIntervalMs: number;
+    activeFraction: number;
+    headroom?: number;
+  }): { stretch: number; projected: number } {
+    const headroom = opts.headroom ?? CADENCE_BUDGET_HEADROOM;
+    const { stretch, projected } = computeGovernorStretch(this.listAccounts(), {
+      callsPerPoll: opts.callsPerPoll,
+      dailyRequestBudget: opts.dailyRequestBudget,
+      defaultIntervalMs: opts.defaultIntervalMs,
+      activeFraction: opts.activeFraction,
+      headroom,
+    });
+    this.writePollStretch(stretch);
+    return { stretch, projected };
+  }
+
+  /**
    * Daily sweep: recompute cadence for every account whose estimate is stale
    * (NULL or older than {@link CADENCE_TTL_MS}), then recompute and persist the
    * global budget-governor {@link RuntimeState.poll_stretch}. One transaction.
-   * Returns a small summary for logging.
+   * Returns a small summary for logging. (The stretch is ALSO refreshed every
+   * tick via {@link recomputeGovernorStretch}; this just keeps the two in sync
+   * right after the heavier per-account cadence recompute.)
    */
   recomputeAllCadence(
     nowMs: number,
@@ -859,7 +898,6 @@ export class InstagramMonitorStore {
       headroom?: number;
     },
   ): { swept: number; stretch: number; projected: number } {
-    const headroom = opts.headroom ?? CADENCE_BUDGET_HEADROOM;
     return this.db.transaction(() => {
       let swept = 0;
       for (const a of this.listAccounts()) {
@@ -868,14 +906,7 @@ export class InstagramMonitorStore {
           swept++;
         }
       }
-      const { stretch, projected } = computeGovernorStretch(this.listAccounts(), {
-        callsPerPoll: opts.callsPerPoll,
-        dailyRequestBudget: opts.dailyRequestBudget,
-        defaultIntervalMs: opts.defaultIntervalMs,
-        activeFraction: opts.activeFraction,
-        headroom,
-      });
-      this.writePollStretch(stretch);
+      const { stretch, projected } = this.recomputeGovernorStretch(opts);
       return { swept, stretch, projected };
     })();
   }

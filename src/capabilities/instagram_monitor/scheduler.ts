@@ -285,6 +285,10 @@ export class InstagramMonitorScheduler {
   private lastResumeAlertAtMs = 0;
   /** TTL anchor for the daily cadence sweep (in-memory; a restart re-sweeps, which is fine). */
   private lastCadenceSweepAtMs = 0;
+  /** Last governor stretch we info-logged. The per-tick stretch recompute runs
+   * every minute, so it only logs on a material change (≥10%) to keep the
+   * journal readable instead of emitting an identical line 1440×/day. */
+  private lastLoggedStretch = 0;
   /** Timestamps of outbound IG HTTP requests in the rolling 24h window. */
   private requestTimestamps: number[] = [];
   /** Timestamps of account polls in the rolling 24h window. Paired with
@@ -475,6 +479,21 @@ export class InstagramMonitorScheduler {
     }
   }
 
+  /** Inputs the budget governor needs, derived from live measurements + config.
+   * Shared by the daily cadence sweep and the per-tick stretch recompute so the
+   * two can never compute against a different `activeFraction` / `callsPerPoll`.
+   *
+   * `callsPerPoll` is the realized requests/poll measured from the rolling
+   * window (was a hardcoded 1.5 that under-projected; live is ~1.7).
+   * `activeFraction` discounts the quiet-hours window + the random whole-tick
+   * skips — the fraction of the day we actually poll. */
+  private governorInputs(now: number): { callsPerPoll: number; activeFraction: number } {
+    const callsPerPoll = this.measuredCallsPerPoll(now);
+    const activeHoursFraction = (24 - (QUIET_HOURS_END_HOUR - QUIET_HOURS_START_HOUR)) / 24;
+    const activeFraction = activeHoursFraction * (1 - this.tickSkipProbability);
+    return { callsPerPoll, activeFraction };
+  }
+
   /** Daily adaptive-cadence sweep + budget-governor recompute. Pure SQLite (no
    * IG requests), TTL-gated, run from the tick's finally so it executes even
    * while polling is paused — recomputing cadence is exactly what lets a
@@ -483,18 +502,14 @@ export class InstagramMonitorScheduler {
     if (now - this.lastCadenceSweepAtMs < CADENCE_TTL_MS) return;
     this.lastCadenceSweepAtMs = now;
     try {
-      // Realized requests/poll, measured from the rolling window (was a hardcoded
-      // 1.5 that under-projected; live is ~1.7). Self-calibrating so the governor
-      // tracks actual call cost as warmup/pk behavior drifts.
-      const callsPerPoll = this.measuredCallsPerPoll(now);
-      const activeHoursFraction = (24 - (QUIET_HOURS_END_HOUR - QUIET_HOURS_START_HOUR)) / 24;
-      const activeFraction = activeHoursFraction * (1 - this.tickSkipProbability);
+      const { callsPerPoll, activeFraction } = this.governorInputs(now);
       const r = this.deps.store.recomputeAllCadence(now, {
         callsPerPoll,
         dailyRequestBudget: this.dailyRequestBudget,
         defaultIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
         activeFraction,
       });
+      this.lastLoggedStretch = r.stretch;
       log.info(
         {
           swept: r.swept,
@@ -506,6 +521,41 @@ export class InstagramMonitorScheduler {
       );
     } catch (err) {
       log.warn({ err }, 'instagram_monitor.cadence_sweep_failed');
+    }
+  }
+
+  /** Refresh ONLY the budget-governor stretch from the CURRENT cached intervals,
+   * every tick (cheap, pure SQLite — no IG calls). Decoupled from the 24h
+   * cadence sweep: per-account intervals shrink continuously between sweeps as
+   * active accounts post (the opportunistic recompute in `processAccount`), so a
+   * once-daily stretch snapshot went stale within hours and let realized spend
+   * climb to the hard budget cap during the afternoon/evening posting surge.
+   * Runs from the tick's finally (even while paused), so the stretch is already
+   * correct when polling resumes. Best-effort; info-logs only on a material
+   * change to avoid spamming the journal 1440×/day. */
+  private recomputeStretch(now: number): void {
+    if (this.dailyRequestBudget <= 0) return;
+    try {
+      const { callsPerPoll, activeFraction } = this.governorInputs(now);
+      const r = this.deps.store.recomputeGovernorStretch({
+        callsPerPoll,
+        dailyRequestBudget: this.dailyRequestBudget,
+        defaultIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
+        activeFraction,
+      });
+      if (this.lastLoggedStretch === 0 || Math.abs(r.stretch - this.lastLoggedStretch) / this.lastLoggedStretch >= 0.1) {
+        this.lastLoggedStretch = r.stretch;
+        log.info(
+          {
+            stretch: Number(r.stretch.toFixed(3)),
+            projected: Math.round(r.projected),
+            calls_per_poll: Number(callsPerPoll.toFixed(2)),
+          },
+          'instagram_monitor.stretch_update',
+        );
+      }
+    } catch (err) {
+      log.debug({ err }, 'instagram_monitor.stretch_update_failed');
     }
   }
 
@@ -630,6 +680,7 @@ export class InstagramMonitorScheduler {
       this.tickInFlight = false;
       const end = Date.now();
       this.maybeSweepCadence(end);
+      this.recomputeStretch(end);
       this.heartbeat(end);
       await this.maybePostDigest(end);
       log.debug({ ms: end - t0 }, 'instagram_monitor.tick.done');
