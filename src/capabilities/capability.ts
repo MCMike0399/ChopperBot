@@ -96,6 +96,6 @@ export interface CapabilityTurnContext {
 export interface CapabilityTurnBundle {
   /** The full system prompt for this turn. */
   system: string;
-  /** Already collision-checked, ready to pass to bedrock/kimi.ts:ask(). */
+  /** Already collision-checked, ready to pass to llm/client.ts:ask(). */
   tools: ComposedTools;
 }
