@@ -543,4 +543,43 @@ describe('adaptive cadence — store integration', () => {
     expect(store.getRuntime().poll_stretch).toBe(1);
     mem.close();
   });
+
+  test('recomputeGovernorStretch tracks CURRENT cached intervals without a cadence sweep', async () => {
+    const { store, mem } = await newStore();
+    // Many short-interval (active) accounts so the projection blows past the
+    // ceiling and the governor must stretch > 1.
+    const ids: number[] = [];
+    for (let i = 0; i < 12; i++) {
+      const r = store.upsertAccount({ username: `acct${i}`, added_by: 'U' });
+      ids.push(r.account.id);
+      mem
+        .db()
+        .prepare('UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?')
+        .run(45 * 60_000, r.account.id); // 45-min floor — maximally active
+    }
+    const opts = {
+      callsPerPoll: 1.7,
+      dailyRequestBudget: 120,
+      defaultIntervalMs: 60 * 60_000,
+      activeFraction: 0.73,
+    };
+    // No recomputeAllCadence / no sweep — just the cheap stretch recompute.
+    const first = store.recomputeGovernorStretch(opts);
+    expect(first.stretch).toBeGreaterThan(1);
+    expect(store.getRuntime().poll_stretch).toBe(first.stretch);
+    // Now mimic the intra-day drift: active accounts tighten (more would clamp at
+    // the floor → already there) AND a couple more accounts turn active. The
+    // stretch must RISE off the latest cached intervals, with no sweep in between.
+    for (let i = 0; i < 4; i++) {
+      const r = store.upsertAccount({ username: `surge${i}`, added_by: 'U' });
+      mem
+        .db()
+        .prepare('UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?')
+        .run(45 * 60_000, r.account.id);
+    }
+    const second = store.recomputeGovernorStretch(opts);
+    expect(second.stretch).toBeGreaterThan(first.stretch);
+    expect(store.getRuntime().poll_stretch).toBe(second.stretch);
+    mem.close();
+  });
 });
