@@ -14,11 +14,22 @@ import { GeneralChatCapability } from './capabilities/general_chat/capability.js
 import { InstagramMonitorCapability } from './capabilities/instagram_monitor/capability.js';
 import { createClient } from './discord/client.js';
 import { registerHandlers } from './discord/handlers.js';
+import { sendAdminAlert } from './discord/admin-alert.js';
+import { llmHealth } from './llm/health.js';
+import { checkBootAndDetectCrash, markCleanShutdown } from './lifecycle.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
 
 export async function run(): Promise<void> {
+  // 0. Crash detection: did the previous run die without a clean shutdown?
+  //    Checked first (consumes the markers); the alert posts after login.
+  const dataDir = resolve(PROJECT_ROOT, config.CHOPPERBOT_DATA_DIR);
+  const bootCheck = checkBootAndDetectCrash(dataDir);
+  if (bootCheck.crashed) {
+    log.warn({ suppressAlert: bootCheck.suppressAlert }, 'lifecycle.unclean_restart_detected');
+  }
+
   // 1. Shared SQLite store. One file, namespaced per capability.
   const dbPath = resolve(PROJECT_ROOT, config.CHOPPERBOT_DATA_DIR, 'chopperbot.db');
   const memory = new SqliteMemoryStore({ path: dbPath });
@@ -102,6 +113,13 @@ export async function run(): Promise<void> {
 
   const shutdown = async (signal: string) => {
     log.info({ signal }, 'Shutting down');
+    // Mark first: even if dispose/destroy below hang or throw, this exit was
+    // operator-initiated, not a crash.
+    try {
+      markCleanShutdown(dataDir);
+    } catch (err) {
+      log.warn({ err }, 'lifecycle.clean_marker_failed');
+    }
     for (const cap of registry.list()) {
       try {
         await cap.dispose?.();
@@ -117,6 +135,27 @@ export async function run(): Promise<void> {
   process.on('SIGTERM', () => void shutdown('SIGTERM'));
 
   await client.login(config.DISCORD_TOKEN);
+
+  // LLM health → admin channel. From here on, ask() failures (chat replies,
+  // IG classifier) can page the operator instead of dying in the journal.
+  {
+    const c = client;
+    llmHealth.setSink((lines) => sendAdminAlert(c, lines, 'llm.alert'));
+  }
+
+  if (bootCheck.crashed && !bootCheck.suppressAlert) {
+    await sendAdminAlert(
+      client,
+      [
+        '⚠️ **ChopperBot se reinició tras un fallo**',
+        'El proceso anterior terminó sin un apagado limpio (crash, OOM o kill). systemd lo reinició automáticamente.',
+        '',
+        'Diagnóstico: `journalctl --user -u chopperbot -b --no-pager | tail -100` (busca `level: 50/60` o un stack trace al final del proceso anterior).',
+        '(Si entra en bucle de reinicios, esta alerta se silencia a ~1 cada 15 min; systemd corta el bucle a los 10 reinicios en 5 min.)',
+      ],
+      'lifecycle.crash_alert',
+    );
+  }
 
   // 5. Post-login start hooks: capabilities that own background work (polling
   //    schedulers, etc.) start now that the Discord client is connected and
