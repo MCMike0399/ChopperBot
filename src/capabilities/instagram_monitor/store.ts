@@ -458,6 +458,43 @@ export function nextDueAtMs(
 }
 
 /**
+ * Expected polls/day for ONE account whose effective interval is `intervalMs`,
+ * accounting for how the scheduler actually paces polls (quiet-aware; replaced
+ * the uniform `activeFraction` discount on 2026-06-12):
+ *
+ * - **Jitter** ({@link pollJitterMs}) is re-rolled from a fresh Uniform[0, J)
+ *   every tick, so the expected extra delay is the first-passage time of those
+ *   draws — ≈ `sqrt(π/2 × J × tick)` — NOT J/2. (For a 2h interval that's
+ *   ~9 min, ~8%; for 12h ~24 min, ~3%.) Mean poll spacing = interval + that.
+ * - **Quiet hours** don't DROP an account's polls, they time-shift them: a due
+ *   account simply waits and polls at the window's end. The window only costs
+ *   polls an account would have made *more than once* inside it — hence
+ *   `min(DAY/spacing, (DAY − quiet)/spacing + 1)`: the awake hours' polls plus
+ *   the single catch-up at quiet exit. For a 12h-interval account this is ~no
+ *   reduction at all, which is exactly what the old uniform `activeFraction`
+ *   (×0.73 for everyone) got wrong: with many accounts pinned at the 12h
+ *   ceiling, the governor under-projected realized polls by ~17% (modeled 60/day
+ *   vs realized 70 on the 18-account deployment) and realized spend sat at
+ *   106/120 instead of the ~90 headroom target.
+ * - **Random tick skips** are omitted on purpose: a skipped tick delays a due
+ *   poll by ~one tick (the account is still due next tick), it doesn't drop it.
+ *
+ * Second-order effects left unmodeled (small, conservative direction): the
+ * one-account-per-tick serialization during post-quiet catch-up, and the ±20min
+ * quiet-edge jitter (zero-mean).
+ */
+export function expectedPollsPerDay(
+  intervalMs: number,
+  quietWindowMs: number,
+  tickMs: number,
+): number {
+  const jitterMax = intervalMs * POLL_JITTER_FRACTION;
+  const spacing = intervalMs + Math.sqrt((Math.PI / 2) * jitterMax * tickMs);
+  const quiet = Math.min(Math.max(quietWindowMs, 0), DAY_MS);
+  return Math.min(DAY_MS / spacing, (DAY_MS - quiet) / spacing + 1);
+}
+
+/**
  * Budget governor: return a global `stretch` (≥1) that, applied to every
  * account's interval (then clamped to {@link CADENCE_MAX_INTERVAL_MS} by
  * {@link effectiveBaseIntervalMs}), keeps the *realized* projected daily IG
@@ -474,6 +511,12 @@ export function nextDueAtMs(
  * letting realized spend overshoot the ceiling. We instead binary-search the
  * smallest stretch whose realized (post-clamp) projection meets the ceiling.
  * `projected` is that realized figure — the requests we actually expect to make.
+ *
+ * **Quiet-aware** (changed 2026-06-12): per-account polls/day comes from
+ * {@link expectedPollsPerDay} instead of a uniform `activeFraction` multiplier —
+ * see that function for why the uniform discount under-projected clamped
+ * accounts. Pass `quietWindowMs: 0, tickMs: 0` to get the raw `DAY/interval`
+ * projection (used by the pure-math unit tests).
  */
 export function computeGovernorStretch(
   accounts: MonitoredAccount[],
@@ -481,7 +524,8 @@ export function computeGovernorStretch(
     callsPerPoll: number;
     dailyRequestBudget: number;
     defaultIntervalMs: number;
-    activeFraction: number;
+    quietWindowMs: number;
+    tickMs: number;
     headroom: number;
   },
 ): { stretch: number; projected: number } {
@@ -493,10 +537,15 @@ export function computeGovernorStretch(
 
   // Realized daily requests if every interval is stretched by `s`, then clamped
   // to the cadence ceiling (mirrors effectiveBaseIntervalMs).
-  const callsPerDay = opts.activeFraction * DAY_MS * opts.callsPerPoll;
   const projectedAt = (s: number): number =>
     intervals.reduce(
-      (sum, iv) => sum + callsPerDay / Math.min(iv * s, CADENCE_MAX_INTERVAL_MS),
+      (sum, iv) =>
+        sum +
+        expectedPollsPerDay(
+          Math.min(iv * s, CADENCE_MAX_INTERVAL_MS),
+          opts.quietWindowMs,
+          opts.tickMs,
+        ) * opts.callsPerPoll,
       0,
     );
 
@@ -865,7 +914,8 @@ export class InstagramMonitorStore {
     callsPerPoll: number;
     dailyRequestBudget: number;
     defaultIntervalMs: number;
-    activeFraction: number;
+    quietWindowMs: number;
+    tickMs: number;
     headroom?: number;
   }): { stretch: number; projected: number } {
     const headroom = opts.headroom ?? CADENCE_BUDGET_HEADROOM;
@@ -873,7 +923,8 @@ export class InstagramMonitorStore {
       callsPerPoll: opts.callsPerPoll,
       dailyRequestBudget: opts.dailyRequestBudget,
       defaultIntervalMs: opts.defaultIntervalMs,
-      activeFraction: opts.activeFraction,
+      quietWindowMs: opts.quietWindowMs,
+      tickMs: opts.tickMs,
       headroom,
     });
     this.writePollStretch(stretch);
@@ -894,7 +945,8 @@ export class InstagramMonitorStore {
       callsPerPoll: number;
       dailyRequestBudget: number;
       defaultIntervalMs: number;
-      activeFraction: number;
+      quietWindowMs: number;
+      tickMs: number;
       headroom?: number;
     },
   ): { swept: number; stretch: number; projected: number } {
