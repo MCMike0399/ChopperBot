@@ -1,7 +1,8 @@
-import { ChannelType, type Client } from 'discord.js';
+import { type Client } from 'discord.js';
 import { config } from '../../config.js';
 import { log } from '../../log.js';
 import { composeToolSources } from '../../tools/source.js';
+import { sendAdminAlert as sendAdminAlertShared } from '../../discord/admin-alert.js';
 import type {
   Capability,
   CapabilityInitDeps,
@@ -9,7 +10,6 @@ import type {
   CapabilityTurnBundle,
   CapabilityTurnContext,
 } from '../capability.js';
-import { CONFIGURATION_CHANNEL_ID } from '../configuration/constants.js';
 import {
   CADENCE_COLD_START_INTERVAL_MS,
   INSTAGRAM_MONITOR_MIGRATIONS,
@@ -245,26 +245,8 @@ export async function postStatusDigest(
   await sendAdminAlert(client, lines);
 }
 
-/** Shared admin-channel sender. Errors are logged and swallowed — an alert must
- * never bubble up into the polling loop. */
+/** Admin-channel sender shared bot-wide; see src/discord/admin-alert.ts. The
+ * local wrapper just pins this capability's journal tag. */
 async function sendAdminAlert(client: Client, lines: string[]): Promise<void> {
-  try {
-    const channel = await client.channels.fetch(CONFIGURATION_CHANNEL_ID);
-    if (
-      !channel ||
-      (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.DM)
-    ) {
-      log.warn(
-        { channel: CONFIGURATION_CHANNEL_ID },
-        'instagram_monitor.auth_alert.channel_unavailable',
-      );
-      return;
-    }
-    await channel.send(lines.join('\n'));
-  } catch (err) {
-    log.warn(
-      { err, channel: CONFIGURATION_CHANNEL_ID },
-      'instagram_monitor.auth_alert.send_failed',
-    );
-  }
+  await sendAdminAlertShared(client, lines, 'instagram_monitor.auth_alert');
 }
