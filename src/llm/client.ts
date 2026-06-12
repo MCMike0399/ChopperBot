@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import { config } from '../config.js';
 import { log } from '../log.js';
+import { llmHealth } from './health.js';
 import type { Turn } from '../discord/history.js';
 import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source.js';
 
@@ -36,6 +37,20 @@ type ToolCall = {
   type: 'function';
   function: { name: string; arguments: string };
 };
+
+/** Run one completion call, reporting its outcome to the LLM health watchdog
+ * (admin-channel alerts on outage, recovery notice on success). Rethrows —
+ * callers' error handling is unchanged. */
+async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    const result = await call();
+    llmHealth.reportSuccess();
+    return result;
+  } catch (err) {
+    llmHealth.reportFailure(err);
+    throw err;
+  }
+}
 
 type ChatMessage =
   | { role: 'system'; content: string }
@@ -89,12 +104,14 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
     // kimi-for-coding endpoint rejects any value except 1 with a 400
     // ("invalid temperature: only 1 is allowed for this model"). Omitting it
     // takes the server default and survives future allowed-value changes.
-    const response = await client.chat.completions.create({
-      model: config.KIMI_MODEL_ID,
-      messages: convo.slice() as never,
-      tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
-      max_tokens: config.MAX_OUTPUT_TOKENS,
-    });
+    const response = await observedCompletion(() =>
+      client.chat.completions.create({
+        model: config.KIMI_MODEL_ID,
+        messages: convo.slice() as never,
+        tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
+        max_tokens: config.MAX_OUTPUT_TOKENS,
+      }),
+    );
 
     if (response.usage) {
       trace.inputTokens += response.usage.prompt_tokens ?? 0;
@@ -185,11 +202,13 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
       'Forcing final answer without tools (iteration cap reached)',
     );
     try {
-      const forced = await client.chat.completions.create({
-        model: config.KIMI_MODEL_ID,
-        messages: convo.slice() as never,
-        max_tokens: config.MAX_OUTPUT_TOKENS,
-      });
+      const forced = await observedCompletion(() =>
+        client.chat.completions.create({
+          model: config.KIMI_MODEL_ID,
+          messages: convo.slice() as never,
+          max_tokens: config.MAX_OUTPUT_TOKENS,
+        }),
+      );
       if (forced.usage) {
         trace.inputTokens += forced.usage.prompt_tokens ?? 0;
         trace.outputTokens += forced.usage.completion_tokens ?? 0;
