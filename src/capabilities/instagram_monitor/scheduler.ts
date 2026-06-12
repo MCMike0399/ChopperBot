@@ -481,17 +481,26 @@ export class InstagramMonitorScheduler {
 
   /** Inputs the budget governor needs, derived from live measurements + config.
    * Shared by the daily cadence sweep and the per-tick stretch recompute so the
-   * two can never compute against a different `activeFraction` / `callsPerPoll`.
+   * two can never compute against different inputs.
    *
    * `callsPerPoll` is the realized requests/poll measured from the rolling
-   * window (was a hardcoded 1.5 that under-projected; live is ~1.7).
-   * `activeFraction` discounts the quiet-hours window + the random whole-tick
-   * skips — the fraction of the day we actually poll. */
-  private governorInputs(now: number): { callsPerPoll: number; activeFraction: number } {
+   * window (was a hardcoded 1.5 that under-projected; live is ~1.5–1.7).
+   * `quietWindowMs`/`tickMs` feed the per-account quiet-aware polls/day model
+   * (`expectedPollsPerDay` in store.ts) — this replaced the old uniform
+   * `activeFraction` discount (2026-06-12), which under-projected long-interval
+   * accounts (quiet hours time-shift their polls rather than dropping them) and
+   * let realized spend run ~17% over projection. The random tick-skip
+   * probability is deliberately NOT an input: a skipped tick only delays a due
+   * poll by ~one tick, it never drops one. */
+  private governorInputs(now: number): {
+    callsPerPoll: number;
+    quietWindowMs: number;
+    tickMs: number;
+  } {
     const callsPerPoll = this.measuredCallsPerPoll(now);
-    const activeHoursFraction = (24 - (QUIET_HOURS_END_HOUR - QUIET_HOURS_START_HOUR)) / 24;
-    const activeFraction = activeHoursFraction * (1 - this.tickSkipProbability);
-    return { callsPerPoll, activeFraction };
+    const quietWindowMs =
+      (QUIET_HOURS_END_HOUR - QUIET_HOURS_START_HOUR) * 60 * 60 * 1000;
+    return { callsPerPoll, quietWindowMs, tickMs: this.tickMs };
   }
 
   /** Daily adaptive-cadence sweep + budget-governor recompute. Pure SQLite (no
@@ -502,12 +511,13 @@ export class InstagramMonitorScheduler {
     if (now - this.lastCadenceSweepAtMs < CADENCE_TTL_MS) return;
     this.lastCadenceSweepAtMs = now;
     try {
-      const { callsPerPoll, activeFraction } = this.governorInputs(now);
+      const { callsPerPoll, quietWindowMs, tickMs } = this.governorInputs(now);
       const r = this.deps.store.recomputeAllCadence(now, {
         callsPerPoll,
         dailyRequestBudget: this.dailyRequestBudget,
         defaultIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
-        activeFraction,
+        quietWindowMs,
+        tickMs,
       });
       this.lastLoggedStretch = r.stretch;
       log.info(
@@ -536,12 +546,13 @@ export class InstagramMonitorScheduler {
   private recomputeStretch(now: number): void {
     if (this.dailyRequestBudget <= 0) return;
     try {
-      const { callsPerPoll, activeFraction } = this.governorInputs(now);
+      const { callsPerPoll, quietWindowMs, tickMs } = this.governorInputs(now);
       const r = this.deps.store.recomputeGovernorStretch({
         callsPerPoll,
         dailyRequestBudget: this.dailyRequestBudget,
         defaultIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
-        activeFraction,
+        quietWindowMs,
+        tickMs,
       });
       if (this.lastLoggedStretch === 0 || Math.abs(r.stretch - this.lastLoggedStretch) / this.lastLoggedStretch >= 0.1) {
         this.lastLoggedStretch = r.stretch;

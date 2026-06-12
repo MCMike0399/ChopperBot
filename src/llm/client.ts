@@ -85,11 +85,14 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
     trace.iterations = i + 1;
 
+    // No `temperature`: since the K2.7 Code repoint (2026-06-12) the
+    // kimi-for-coding endpoint rejects any value except 1 with a 400
+    // ("invalid temperature: only 1 is allowed for this model"). Omitting it
+    // takes the server default and survives future allowed-value changes.
     const response = await client.chat.completions.create({
       model: config.KIMI_MODEL_ID,
       messages: convo.slice() as never,
       tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
-      temperature: 0.2,
       max_tokens: config.MAX_OUTPUT_TOKENS,
     });
 
@@ -185,7 +188,6 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
       const forced = await client.chat.completions.create({
         model: config.KIMI_MODEL_ID,
         messages: convo.slice() as never,
-        temperature: 0.2,
         max_tokens: config.MAX_OUTPUT_TOKENS,
       });
       if (forced.usage) {

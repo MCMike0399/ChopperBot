@@ -6,6 +6,7 @@ import {
   pollJitterMs,
   computeCadenceInterval,
   computeGovernorStretch,
+  expectedPollsPerDay,
   effectiveBaseIntervalMs,
   nextDueAtMs,
   CADENCE_MIN_INTERVAL_MS,
@@ -361,6 +362,50 @@ describe('adaptive cadence — effectiveBaseIntervalMs / nextDueAtMs', () => {
   });
 });
 
+describe('adaptive cadence — expectedPollsPerDay', () => {
+  const QUIET = 5 * HOUR;
+  const TICK = 60_000;
+
+  test('degenerates to DAY/interval with no quiet window and no tick', () => {
+    expect(expectedPollsPerDay(HOUR, 0, 0)).toBeCloseTo(24, 6);
+    expect(expectedPollsPerDay(12 * HOUR, 0, 0)).toBeCloseTo(2, 6);
+  });
+
+  test('quiet hours time-shift, not drop: a 12h account keeps ~2 polls/day', () => {
+    // min(DAY/sp, (DAY−quiet)/sp + 1): for a 12h interval the awake-hours term
+    // (19/12 + 1 ≈ 2.58) exceeds the raw rate (~1.94), so the quiet window
+    // costs it (almost) nothing — the old uniform ×0.73 modeled only ~1.46.
+    const p = expectedPollsPerDay(12 * HOUR, QUIET, TICK);
+    expect(p).toBeGreaterThan(1.9);
+    expect(p).toBeLessThanOrEqual(2);
+  });
+
+  test('quiet hours DO cost short-interval accounts their in-window polls', () => {
+    // 1h interval: raw ~24/day, quiet-aware ~19 awake + 1 catch-up ≈ 20.
+    const p = expectedPollsPerDay(HOUR, QUIET, TICK);
+    expect(p).toBeLessThan(21);
+    expect(p).toBeGreaterThan(18);
+  });
+
+  test('re-rolled jitter adds a sqrt-scale delay, far below maxJitter/2', () => {
+    // For a 2h interval, J = 1h: E[extra] ≈ sqrt(π/2 × J × tick) ≈ 9.2 min,
+    // not J/2 = 30 min (jitter is re-drawn every tick — first-passage time).
+    const sp = DAY / expectedPollsPerDay(2 * HOUR, 0, TICK);
+    const extraMin = (sp - 2 * HOUR) / 60_000;
+    expect(extraMin).toBeGreaterThan(5);
+    expect(extraMin).toBeLessThan(15);
+  });
+
+  test('monotonically decreasing in interval (binary-search prerequisite)', () => {
+    let prev = Infinity;
+    for (const iv of [45, 60, 90, 120, 240, 480, 720].map((m) => m * 60_000)) {
+      const p = expectedPollsPerDay(iv, QUIET, TICK);
+      expect(p).toBeLessThan(prev);
+      prev = p;
+    }
+  });
+});
+
 describe('adaptive cadence — budget governor', () => {
   test('stretch keeps projected at/under the headroom ceiling; preserves ratio', () => {
     const accounts = [acct({ poll_interval_ms: HOUR }), acct({ poll_interval_ms: HOUR })];
@@ -368,7 +413,8 @@ describe('adaptive cadence — budget governor', () => {
       callsPerPoll: 1,
       dailyRequestBudget: 10,
       defaultIntervalMs: HOUR,
-      activeFraction: 1,
+      quietWindowMs: 0,
+      tickMs: 0,
       headroom: 1,
     });
     // No account clamps at this stretch (1h × 4.8 = 4.8h < 12h MAX), so the
@@ -392,7 +438,8 @@ describe('adaptive cadence — budget governor', () => {
       callsPerPoll: 1,
       dailyRequestBudget: 20,
       defaultIntervalMs: HOUR,
-      activeFraction: 1,
+      quietWindowMs: 0,
+      tickMs: 0,
       headroom: 1,
     });
     // Independently recompute realized spend with the same clamp the scheduler applies.
@@ -416,7 +463,8 @@ describe('adaptive cadence — budget governor', () => {
       callsPerPoll: 1,
       dailyRequestBudget: 2,
       defaultIntervalMs: HOUR,
-      activeFraction: 1,
+      quietWindowMs: 0,
+      tickMs: 0,
       headroom: 1,
     });
     expect(stretch).toBeCloseTo(12, 4);
@@ -433,7 +481,8 @@ describe('adaptive cadence — budget governor', () => {
         callsPerPoll: 1,
         dailyRequestBudget: 0,
         defaultIntervalMs: HOUR,
-        activeFraction: 1,
+        quietWindowMs: 0,
+        tickMs: 0,
         headroom: 1,
       }).stretch,
     ).toBe(1);
@@ -442,7 +491,8 @@ describe('adaptive cadence — budget governor', () => {
         callsPerPoll: 1,
         dailyRequestBudget: 10,
         defaultIntervalMs: HOUR,
-        activeFraction: 1,
+        quietWindowMs: 0,
+        tickMs: 0,
         headroom: 1,
       }).projected,
     ).toBe(0);
@@ -534,7 +584,8 @@ describe('adaptive cadence — store integration', () => {
       callsPerPoll: 1.5,
       dailyRequestBudget: 120,
       defaultIntervalMs: 60 * 60_000,
-      activeFraction: 0.73,
+      quietWindowMs: 5 * HOUR,
+      tickMs: 60_000,
     });
     expect(res.swept).toBe(1);
     expect(store.getAccount('foo')!.poll_interval_ms).toBe(3 * HOUR);
@@ -561,7 +612,8 @@ describe('adaptive cadence — store integration', () => {
       callsPerPoll: 1.7,
       dailyRequestBudget: 120,
       defaultIntervalMs: 60 * 60_000,
-      activeFraction: 0.73,
+      quietWindowMs: 5 * HOUR,
+      tickMs: 60_000,
     };
     // No recomputeAllCadence / no sweep — just the cheap stretch recompute.
     const first = store.recomputeGovernorStretch(opts);

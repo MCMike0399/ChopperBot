@@ -96,16 +96,16 @@ describe('wire contract', () => {
     });
   });
 
-  test('model id and temperature are forwarded from config', async () => {
+  test('model id and max_tokens forwarded; temperature omitted (K2.7 rejects ≠1)', async () => {
     createMock.mockResolvedValueOnce(endStop('hi'));
     await ask({
       system: 's',
       messages: [{ role: 'user', content: 'q' }],
       tools: toolsWithSample(),
     });
-    const req = createMock.mock.calls[0][0] as { model: string; temperature: number; max_tokens: number };
+    const req = createMock.mock.calls[0][0] as { model: string; temperature?: number; max_tokens: number };
     expect(req.model).toBe('test-model');
-    expect(req.temperature).toBe(0.2);
+    expect(req.temperature).toBeUndefined();
     expect(req.max_tokens).toBe(4096);
   });
 
