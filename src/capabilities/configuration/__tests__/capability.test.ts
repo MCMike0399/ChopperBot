@@ -460,7 +460,7 @@ describe('ConfigurationCapability — DB introspection tools', () => {
     memory.close();
   });
 
-  test('config_calendar_peek surfaces discord_user_id + tag and supports filtering by owner', async () => {
+  test('config_calendar peek surfaces the global calendar with creator tags', async () => {
     const { configCap, calCap, userDirectory, memory } = await buildHarness();
     void calCap;
     const USER_ALICE = '50000000000000000001';
@@ -470,34 +470,11 @@ describe('ConfigurationCapability — DB introspection tools', () => {
 
     const { CalendarStore } = await import('../../calendar/store.js');
     const cal = new CalendarStore(memory.db());
-    cal.create({
-      discord_user_id: USER_ALICE,
-      title: 'AliceEvent',
-      start_at: Date.now() + 60_000,
-    });
-    cal.create({
-      discord_user_id: USER_BOB,
-      title: 'BobEvent',
-      start_at: Date.now() + 120_000,
-    });
+    cal.create({ created_by: USER_ALICE, title: 'AliceEvent', start_at: Date.now() + 60_000 });
+    cal.create({ created_by: USER_BOB, title: 'BobEvent', start_at: Date.now() + 120_000 });
 
-    // Peek without filter — both events visible, each with owner info.
     createMock
-      .mockResolvedValueOnce(
-        toolCalls([
-          { id: 'p1', name: 'config_calendar', input: { action: 'peek' } },
-        ]),
-      )
-      .mockResolvedValueOnce(endStop('ok'))
-      .mockResolvedValueOnce(
-        toolCalls([
-          {
-            id: 'p2',
-            name: 'config_calendar',
-            input: { action: 'peek', discord_user_id: USER_ALICE },
-          },
-        ]),
-      )
+      .mockResolvedValueOnce(toolCalls([{ id: 'p1', name: 'config_calendar', input: { action: 'peek' } }]))
       .mockResolvedValueOnce(endStop('ok'));
 
     const turn = await configCap.buildTurn({
@@ -514,26 +491,12 @@ describe('ConfigurationCapability — DB introspection tools', () => {
       tools: turn.tools,
     });
     const peekAll = JSON.parse(findToolMessage(1, 'p1').content) as {
-      filter_discord_user_id: string | null;
-      events: Array<{ title: string; discord_user_id: string; discord_tag: string | null }>;
+      events: Array<{ title: string; created_by: string; created_by_tag: string | null }>;
     };
-    expect(peekAll.filter_discord_user_id).toBeNull();
     expect(peekAll.events.map((e) => e.title).sort()).toEqual(['AliceEvent', 'BobEvent']);
     const alice = peekAll.events.find((e) => e.title === 'AliceEvent');
-    expect(alice?.discord_user_id).toBe(USER_ALICE);
-    expect(alice?.discord_tag).toBe('alice#0001');
-
-    await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: 'peek alice only' }] as Turn[],
-      tools: turn.tools,
-    });
-    const peekAlice = JSON.parse(findToolMessage(3, 'p2').content) as {
-      filter_discord_user_id: string;
-      events: Array<{ title: string }>;
-    };
-    expect(peekAlice.filter_discord_user_id).toBe(USER_ALICE);
-    expect(peekAlice.events.map((e) => e.title)).toEqual(['AliceEvent']);
+    expect(alice?.created_by).toBe(USER_ALICE);
+    expect(alice?.created_by_tag).toBe('alice#0001');
     memory.close();
   });
 

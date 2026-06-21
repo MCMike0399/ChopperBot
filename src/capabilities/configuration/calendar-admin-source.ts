@@ -9,14 +9,14 @@ import type { UserDirectory } from '../../users/store.js';
 export interface ConfigCalendarAdminDeps {
   db: Database.Database;
   userDirectory: UserDirectory;
+  callerUserId: string;
 }
 
 /**
- * Cross-user calendar admin from the config channel. The user-facing calendar
- * tools are strictly per-user; this source uses {@link CalendarStore}'s admin
- * methods (adminListAll / adminGet / adminUpdate / adminDelete) to read and
- * mutate ANY user's events for support/recovery. The user-facing calendar
- * capability is untouched.
+ * Calendar admin from the config channel. The calendar is GLOBAL, so this is
+ * just the same shared store reached from the admin console — handy for
+ * inspecting/repairing events without going to the input channel, and for
+ * pointing the calendar at a different output channel.
  */
 export class ConfigCalendarAdminSource implements ToolSource {
   readonly name = 'config_calendar';
@@ -35,19 +35,20 @@ export class ConfigCalendarAdminSource implements ToolSource {
       {
         name: 'config_calendar',
         description:
-          'Cross-user calendar admin (bypasses the normal per-user scoping). Calendar is per-user globally — there is no channel filter. `action`:\n' +
-          '• "peek" {discord_user_id?, limit?} — list events across all users (or one user); each row carries the owner id + tag.\n' +
-          '• "create" {discord_user_id, title, start_at_iso, end_at_iso?, description?, location?, recurrence_freq?, recurrence_until_iso?} — create an event ON BEHALF of a user.\n' +
-          '• "update" {event_id, confirm, ...same fields} — edit any user\'s event (whole series for recurring). Requires confirm:true.\n' +
-          '• "delete" {event_id, confirm} — delete any user\'s event (whole series for recurring). Requires confirm:true.\n' +
-          'Pass times as ISO 8601 UTC; resolve relative times against the current time in the system prompt.',
+          'Admin of the GLOBAL server calendar from the config channel. `action`:\n' +
+          '• "peek" {limit?} — list events (each row shows the creator id + tag).\n' +
+          '• "create" {title, start_at_iso, end_at_iso?, description?, location?, recurrence_freq?, recurrence_until_iso?} — create an event.\n' +
+          '• "update" {event_id, confirm, ...same fields} — edit any event (whole series for recurring). Requires confirm:true.\n' +
+          '• "delete" {event_id, confirm} — delete any event (whole series for recurring). Requires confirm:true.\n' +
+          '• "get_output_channel" — show the channel where month PDFs + ICS are published.\n' +
+          '• "set_output_channel" {channel_id} — change that output channel.\n' +
+          'NOTE: this does NOT auto-publish; mutations from the config channel only change the DB. Use the input channel (or ask a mod to run `calendar_publish` there) to re-post the rendered PDFs. Pass times as ISO 8601 UTC.',
         inputSchema: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['peek', 'create', 'update', 'delete'] },
-            discord_user_id: {
+            action: {
               type: 'string',
-              description: 'Owner snowflake. Required for "create"; optional filter for "peek".',
+              enum: ['peek', 'create', 'update', 'delete', 'get_output_channel', 'set_output_channel'],
             },
             event_id: { type: 'integer', minimum: 1, description: 'Required for "update"/"delete".' },
             title: { type: 'string', minLength: 1, maxLength: 200 },
@@ -56,13 +57,14 @@ export class ConfigCalendarAdminSource implements ToolSource {
             description: { type: 'string' },
             location: { type: 'string' },
             recurrence_freq: {
-              description: 'One of daily/weekly/monthly, or null to clear recurrence (update).',
+              description: 'daily/weekly/monthly, or null to clear recurrence (update).',
               oneOf: [{ type: 'string', enum: [...RECURRENCE_FREQUENCIES] }, { type: 'null' }],
             },
             recurrence_until_iso: {
               description: 'ISO 8601 UTC last occurrence, or null to clear.',
               oneOf: [{ type: 'string' }, { type: 'null' }],
             },
+            channel_id: { type: 'string', description: 'Discord snowflake for "set_output_channel".' },
             limit: { type: 'integer', minimum: 1, maximum: 50, description: 'For "peek".' },
             confirm: { type: 'boolean', description: 'Must be true for "update"/"delete".' },
           },
@@ -79,7 +81,9 @@ export class ConfigCalendarAdminSource implements ToolSource {
     const t0 = Date.now();
     try {
       const obj = (input ?? {}) as Record<string, unknown>;
-      const action = asAction(obj.action, ['peek', 'create', 'update', 'delete']);
+      const action = asAction(obj.action, [
+        'peek', 'create', 'update', 'delete', 'get_output_channel', 'set_output_channel',
+      ]);
       switch (action) {
         case 'peek':
           return this.handlePeek(obj);
@@ -89,34 +93,24 @@ export class ConfigCalendarAdminSource implements ToolSource {
           return this.handleUpdate(obj, t0);
         case 'delete':
           return this.handleDelete(obj, t0);
+        case 'get_output_channel':
+          return { status: 'success', payload: { output_channel_id: this.store.getOutputChannelId() } };
+        case 'set_output_channel':
+          return this.handleSetOutputChannel(obj);
       }
     } catch (err) {
       log.warn({ tool: toolName, err }, 'tool_call_failed');
-      return {
-        status: 'error',
-        payload: { error: err instanceof Error ? err.message : String(err) },
-      };
+      return { status: 'error', payload: { error: err instanceof Error ? err.message : String(err) } };
     }
   }
 
   private handlePeek(obj: Record<string, unknown>): ToolHandlerResult {
-    const limit = clampInt(obj.limit, 1, 50, 10);
-    const filterUserId =
-      obj.discord_user_id !== undefined && obj.discord_user_id !== null && obj.discord_user_id !== ''
-        ? asSnowflake(obj.discord_user_id, 'discord_user_id')
-        : null;
-    const rows = this.store.adminListAll(filterUserId).slice(0, limit);
-    return {
-      status: 'success',
-      payload: {
-        filter_discord_user_id: filterUserId,
-        events: rows.map((e) => this.serialize(e)),
-      },
-    };
+    const limit = clampInt(obj.limit, 1, 50, 20);
+    const rows = this.store.listAll().slice(0, limit);
+    return { status: 'success', payload: { events: rows.map((e) => this.serialize(e)) } };
   }
 
   private handleCreate(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
-    const discordUserId = asSnowflake(obj.discord_user_id, 'discord_user_id');
     const title = asNonEmptyString(obj.title, 'title');
     const startMs = parseRequiredIso(obj.start_at_iso, 'start_at_iso');
     const endMs = parseOptionalIso(obj.end_at_iso, 'end_at_iso');
@@ -126,19 +120,13 @@ export class ConfigCalendarAdminSource implements ToolSource {
     const recurrenceFreq = parseRecurrenceFreq(obj.recurrence_freq);
     const recurrenceUntil = parseOptionalIso(obj.recurrence_until_iso, 'recurrence_until_iso');
     if (recurrenceUntil !== null && recurrenceFreq === null) {
-      return {
-        status: 'error',
-        payload: { error: 'recurrence_until_iso requires recurrence_freq to also be set.' },
-      };
+      return { status: 'error', payload: { error: 'recurrence_until_iso requires recurrence_freq to also be set.' } };
     }
     if (recurrenceUntil !== null && recurrenceUntil < startMs) {
-      return {
-        status: 'error',
-        payload: { error: 'recurrence_until_iso must be on or after start_at_iso.' },
-      };
+      return { status: 'error', payload: { error: 'recurrence_until_iso must be on or after start_at_iso.' } };
     }
     const created = this.store.create({
-      discord_user_id: discordUserId,
+      created_by: this.deps.callerUserId,
       title,
       start_at: startMs,
       end_at: endMs,
@@ -147,20 +135,14 @@ export class ConfigCalendarAdminSource implements ToolSource {
       recurrence_freq: recurrenceFreq,
       recurrence_until: recurrenceUntil,
     });
-    log.info(
-      { tool: 'config_calendar.create', id: created.id, owner: discordUserId, ms: Date.now() - t0 },
-      'tool_call',
-    );
+    log.info({ tool: 'config_calendar.create', id: created.id, ms: Date.now() - t0 }, 'tool_call');
     return { status: 'success', payload: { event: this.serialize(created) } };
   }
 
   private handleUpdate(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
     const eventId = asPositiveInt(obj.event_id, 'event_id');
     if (obj.confirm !== true) {
-      return {
-        status: 'error',
-        payload: { error: "Refusing to edit another user's event without `confirm: true`." },
-      };
+      return { status: 'error', payload: { error: 'Refusing to edit without `confirm: true`.' } };
     }
     const patch: UpdateEventInput = {};
     if (obj.title !== undefined) patch.title = asNonEmptyString(obj.title, 'title');
@@ -173,14 +155,12 @@ export class ConfigCalendarAdminSource implements ToolSource {
     if (obj.recurrence_freq !== undefined) patch.recurrence_freq = parseRecurrenceFreq(obj.recurrence_freq);
     if (obj.recurrence_until_iso !== undefined) {
       patch.recurrence_until =
-        obj.recurrence_until_iso === null
-          ? null
-          : parseRequiredIso(obj.recurrence_until_iso, 'recurrence_until_iso');
+        obj.recurrence_until_iso === null ? null : parseRequiredIso(obj.recurrence_until_iso, 'recurrence_until_iso');
     }
     if (Object.keys(patch).length === 0) {
       return { status: 'error', payload: { error: 'No fields to update.' } };
     }
-    const updated = this.store.adminUpdate(eventId, patch);
+    const updated = this.store.update(eventId, patch);
     if (!updated) return { status: 'error', payload: { error: `Event #${eventId} not found.` } };
     log.info({ tool: 'config_calendar.update', id: eventId, ms: Date.now() - t0 }, 'tool_call');
     return { status: 'success', payload: { event: this.serialize(updated) } };
@@ -189,32 +169,28 @@ export class ConfigCalendarAdminSource implements ToolSource {
   private handleDelete(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
     const eventId = asPositiveInt(obj.event_id, 'event_id');
     if (obj.confirm !== true) {
-      return {
-        status: 'error',
-        payload: { error: 'Refusing destructive delete without `confirm: true`.' },
-      };
+      return { status: 'error', payload: { error: 'Refusing destructive delete without `confirm: true`.' } };
     }
-    const deleted = this.store.adminDelete(eventId);
+    const deleted = this.store.delete(eventId);
     if (!deleted) return { status: 'error', payload: { error: `Event #${eventId} not found.` } };
-    log.info(
-      { tool: 'config_calendar.delete', id: eventId, owner: deleted.discord_user_id, ms: Date.now() - t0 },
-      'tool_call',
-    );
+    log.info({ tool: 'config_calendar.delete', id: eventId, ms: Date.now() - t0 }, 'tool_call');
     return {
       status: 'success',
       payload: {
-        deleted: {
-          id: deleted.id,
-          title: deleted.title,
-          recurrence_freq: deleted.recurrence_freq,
-          discord_user_id: deleted.discord_user_id,
-        },
+        deleted: { id: deleted.id, title: deleted.title, recurrence_freq: deleted.recurrence_freq },
       },
     };
   }
 
+  private handleSetOutputChannel(obj: Record<string, unknown>): ToolHandlerResult {
+    const channelId = asSnowflake(obj.channel_id, 'channel_id');
+    this.store.setOutputChannelId(channelId);
+    log.info({ tool: 'config_calendar.set_output_channel', channel_id: channelId }, 'tool_call');
+    return { status: 'success', payload: { output_channel_id: channelId } };
+  }
+
   private serialize(e: CalendarEvent) {
-    const owner = this.deps.userDirectory.get(e.discord_user_id);
+    const owner = this.deps.userDirectory.get(e.created_by);
     return {
       id: e.id,
       title: e.title,
@@ -224,10 +200,9 @@ export class ConfigCalendarAdminSource implements ToolSource {
       end_at_iso: e.end_at !== null ? new Date(e.end_at).toISOString() : null,
       location: e.location,
       recurrence_freq: e.recurrence_freq,
-      recurrence_until_iso:
-        e.recurrence_until !== null ? new Date(e.recurrence_until).toISOString() : null,
-      discord_user_id: e.discord_user_id,
-      discord_tag: owner?.discord_tag ?? null,
+      recurrence_until_iso: e.recurrence_until !== null ? new Date(e.recurrence_until).toISOString() : null,
+      created_by: e.created_by,
+      created_by_tag: owner?.discord_tag ?? null,
     };
   }
 }
@@ -274,7 +249,7 @@ function clampInt(v: unknown, min: number, max: number, fallback: number): numbe
 
 function parseRequiredIso(v: unknown, field: string): number {
   if (typeof v !== 'string' || !v.trim()) {
-    throw new Error(`${field}: required ISO 8601 string (e.g. "2026-05-24T21:00:00Z")`);
+    throw new Error(`${field}: required ISO 8601 string (e.g. "2026-06-21T02:00:00Z")`);
   }
   const ms = Date.parse(v);
   if (!Number.isFinite(ms)) throw new Error(`${field}: "${v}" is not a valid ISO 8601 timestamp`);
