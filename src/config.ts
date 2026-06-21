@@ -43,6 +43,15 @@ const ConfigSchema = z.object({
   DISCORD_CHANNEL_CAPABILITIES: z.string().optional(),
   CHOPPERBOT_DATA_DIR: z.string().default('./data'),
   DEFAULT_CAPABILITY: z.string().min(1).default('calendar'),
+  // Channel where the calendar capability publishes rendered month PDFs + the
+  // master ICS. Distinct from the INPUT channel (which is bound to `calendar`
+  // via the normal routing table and is where mods talk to the bot). Optional —
+  // seeds the calendar's DB setting on first boot; after that the DB value wins
+  // (changeable from the config channel via `config_calendar`).
+  CALENDAR_OUTPUT_CHANNEL_ID: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(/^\d{17,20}$/, 'CALENDAR_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
+  ),
   KIMI_API_KEY: z.string().min(1, 'KIMI_API_KEY is required'),
   KIMI_BASE_URL: z.string().min(1).default('https://api.kimi.com/coding/v1'),
   KIMI_MODEL_ID: z.string().min(1).default('kimi-for-coding'),

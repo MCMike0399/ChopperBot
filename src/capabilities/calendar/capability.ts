@@ -1,8 +1,11 @@
+import { type Client } from 'discord.js';
+import { config } from '../../config.js';
 import { log } from '../../log.js';
 import { composeToolSources } from '../../tools/source.js';
 import type {
   Capability,
   CapabilityInitDeps,
+  CapabilityStartDeps,
   CapabilityTurnBundle,
   CapabilityTurnContext,
 } from '../capability.js';
@@ -12,99 +15,172 @@ import {
   type CalendarOccurrence,
 } from './store.js';
 import { CalendarToolSource } from './source.js';
+import { OutputChannelPublisher, type CalendarPublisher } from './publisher.js';
 import { formatInTimezone, DEFAULT_TIMEZONE } from './time.js';
+import { availableMonthKeys } from './render.js';
 
-const SNAPSHOT_LIMIT = 5;
+const SNAPSHOT_LIMIT = 8;
 
 /**
- * Calendar capability: a per-USER calendar backed by SQLite. A user sees the
- * same calendar from any channel bound to this capability — events are not
- * channel-scoped. The tools (create/list/search/update/delete events) are
- * exposed to the model; the system prompt is rebuilt every turn so it
- * includes the current time and a snapshot of the user's next few events.
+ * Calendar capability: a **global** server calendar (not per-user). Moderators
+ * talk to it in the bound input channel using natural language to create,
+ * update and delete events — including weekly/daily/monthly series. Every change
+ * is persisted to SQLite, re-rendered into the month PDF template, and published
+ * (with a master ICS file) to the configured output channel.
  */
 export class CalendarCapability implements Capability {
   readonly id = 'calendar';
   readonly description =
-    'Per-user calendar. Each Discord user has their own events, visible from any channel bound to this capability. Create, list, search, update, and delete.';
+    'Calendario global del servidor. Los moderadores agregan/editan/eliminan eventos en lenguaje natural; el bot los renderiza en el PDF del mes y los publica (con un ICS) en el canal de salida.';
 
   private store: CalendarStore | null = null;
+  private projectRoot = '.';
+  private getDiscordClient: CapabilityInitDeps['getDiscordClient'] = undefined;
 
-  async init({ memory }: CapabilityInitDeps): Promise<void> {
+  async init({ memory, projectRoot, getDiscordClient }: CapabilityInitDeps): Promise<void> {
     await memory.migrate(this.id, CALENDAR_MIGRATIONS);
     this.store = new CalendarStore(memory.db());
-    log.info({ capability: this.id }, 'CalendarCapability initialized');
+    this.projectRoot = projectRoot;
+    this.getDiscordClient = getDiscordClient;
+
+    // Seed the output channel from config on first boot; the DB setting then
+    // becomes the source of truth (changeable from the config channel).
+    if (!this.store.getOutputChannelId() && config.CALENDAR_OUTPUT_CHANNEL_ID) {
+      this.store.setOutputChannelId(config.CALENDAR_OUTPUT_CHANNEL_ID);
+    }
+    log.info(
+      { capability: this.id, output_channel: this.resolveOutputChannel() ?? '(unset)' },
+      'CalendarCapability initialized (global)',
+    );
   }
 
   async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
     if (!this.store) throw new Error('CalendarCapability.buildTurn called before init');
+    const store = this.store;
 
-    const upcoming = this.store.listUpcoming(ctx.userId, ctx.now.getTime(), SNAPSHOT_LIMIT);
-    const system = renderSystemPrompt(ctx.now, upcoming);
+    const upcoming = store.listUpcoming(ctx.now.getTime(), SNAPSHOT_LIMIT);
+    const outputChannelId = this.resolveOutputChannel();
+    const system = renderSystemPrompt(ctx.now, upcoming, outputChannelId);
 
-    const source = new CalendarToolSource(this.store, ctx.userId, ctx.now.getTime());
-    const tools = composeToolSources([source]);
+    // Build a publisher only when the Discord client is available (i.e. at
+    // runtime post-login). Absent in unit tests → the tools just skip posting.
+    let publisher: CalendarPublisher | undefined;
+    if (this.getDiscordClient) {
+      try {
+        publisher = this.makePublisher(this.getDiscordClient());
+      } catch {
+        publisher = undefined; // client not ready — shouldn't happen at buildTurn time
+      }
+    }
 
-    return { system, tools };
+    const source = new CalendarToolSource(store, ctx.userId, ctx.now.getTime(), publisher);
+    return { system, tools: composeToolSources([source]) };
+  }
+
+  /**
+   * Post-login hook: reconcile the output channel once so a month rollover
+   * (or a stale board from older behavior) is corrected without waiting for the
+   * next event edit. Best-effort.
+   */
+  async start({ client }: CapabilityStartDeps): Promise<void> {
+    if (!this.store) return;
+    try {
+      const summary = await this.makePublisher(client).reconcile();
+      log.info(
+        { capability: this.id, posted: summary.posted, removed: summary.removed, ok: summary.ok },
+        'calendar.startup_reconcile',
+      );
+    } catch (err) {
+      log.warn({ capability: this.id, err }, 'calendar.startup_reconcile_failed');
+    }
+  }
+
+  private makePublisher(client: Client): CalendarPublisher {
+    if (!this.store) throw new Error('CalendarCapability not initialized');
+    return new OutputChannelPublisher({
+      client,
+      store: this.store,
+      projectRoot: this.projectRoot,
+      getOutputChannelId: () => this.resolveOutputChannel(),
+    });
+  }
+
+  private resolveOutputChannel(): string | null {
+    return this.store?.getOutputChannelId() ?? config.CALENDAR_OUTPUT_CHANNEL_ID ?? null;
   }
 }
 
-function renderSystemPrompt(now: Date, upcoming: CalendarOccurrence[]): string {
+function renderSystemPrompt(
+  now: Date,
+  upcoming: CalendarOccurrence[],
+  outputChannelId: string | null,
+): string {
   const upcomingSection = upcoming.length === 0
-    ? 'No upcoming events.'
+    ? 'No hay eventos próximos.'
     : upcoming
         .map((e) => {
           const startLocal = formatInTimezone(e.start_at);
-          const endLocal = e.end_at !== null ? ` → ${formatInTimezone(e.end_at)}` : '';
           const loc = e.location ? ` @ ${e.location}` : '';
           const recur = e.recurrence_freq !== null
-            ? ` (recurring ${e.recurrence_freq}${e.is_recurring_instance ? `, instance #${e.occurrence_index}` : ', master'})`
+            ? ` (serie ${e.recurrence_freq}${e.is_recurring_instance ? `, instancia #${e.occurrence_index}` : ''})`
             : '';
-          return `- #${e.id} **${e.title}** — ${startLocal}${endLocal}${loc}${recur}  [UTC: ${new Date(e.start_at).toISOString()}]`;
+          return `- #${e.id} **${e.title}** — ${startLocal}${loc}${recur}`;
         })
         .join('\n');
 
-  return `You are ChopperBot in **Calendar mode**. You manage a per-user calendar for the Discord user talking to you.
+  const months = availableMonthKeys();
+  const outputRef = outputChannelId ? `<#${outputChannelId}>` : '(no configurado)';
 
-# Time awareness
-- Current UTC time: ${now.toISOString()}
-- Current local time: ${formatInTimezone(now.getTime())} (${DEFAULT_TIMEZONE})
-- ${DEFAULT_TIMEZONE} is **UTC-6 year-round** (no DST since October 2022). Do not use "CDT" or assume daylight-saving — the offset is fixed at −06:00.
-- When the user gives a relative time ("tomorrow", "next Friday", "in 2 hours"), resolve it against the **local** time above (not UTC), then convert to ISO 8601 UTC for the tool.
-  - Example: user is in ${DEFAULT_TIMEZONE} and says "tomorrow at 10am" while the current local time is May 24 at 8:52 PM. Tomorrow at 10am local = 2026-05-25T10:00:00−06:00 = **2026-05-25T16:00:00Z** — pass that as \`start_at_iso\`.
+  return `Eres ChopperBot en **modo Calendario**. Administras el **calendario GLOBAL** del servidor Revolución Z: un solo calendario compartido por toda la comunidad. Cualquier moderadorx de este canal puede crear, editar o borrar eventos, y todxs ven los mismos.
 
-# Language
-Mirror the user's language. If they write in Spanish, respond in Spanish. If in English, respond in English.
+# Tu rol
+- Ayudas a lxs moderadorxs a registrar eventos (asambleas, círculos de lectura, talleres, convocatorias) en lenguaje natural.
+- Cuando registras un evento, el bot **renderiza automáticamente** el PDF del mes correspondiente y lo publica, junto con un archivo ICS, en el canal de salida ${outputRef}. No tienes que hacer nada extra para publicar — sucede solo al crear/editar/borrar.
 
-# Tool defaults
-- If the user doesn't give a duration, treat the event as point-in-time (omit \`end_at_iso\`).
-- \`title\` is required. If the user is vague ("set up something"), ask one clarifying question before creating.
-- Before creating an event that resembles an existing one (same day, similar title), call \`calendar_search_events\` first and warn the user about the potential duplicate.
-- For "what's on my calendar / what's coming up", call \`calendar_list_upcoming\`.
+# Conversación de seguimiento (IMPORTANTE)
+Antes de crear un evento necesitas como mínimo:
+1. **Título** claro.
+2. **Fecha** y **hora de inicio**.
+Si falta algo o es ambiguo, **haz una pregunta concisa a la vez** hasta tenerlo. Pregunta también, cuando aplique:
+- **Lugar** (casi todos los eventos tienen sala/lugar — pídelo si no lo dieron).
+- **¿Se repite?** Si la persona dice "cada miércoles", "semanal", "todos los días", es una **serie** → usa \`recurrence_freq\`. Si no queda claro si es único o recurrente, pregúntalo.
+- Hora de fin o descripción solo si la persona las menciona.
+No inventes datos. No crees el evento hasta tener título + fecha + hora. Si la persona ya dio todo en un mensaje, créalo de una vez sin preguntas innecesarias.
 
-# Recurring events
-- Supported via the \`recurrence_freq\` field on \`calendar_create_event\` / \`calendar_update_event\`. Allowed values: \`daily\`, \`weekly\`, \`monthly\`. Pass an optional \`recurrence_until_iso\` to bound the series; omit it for open-ended series.
-- **Triggers:** any phrasing that describes a repeating pattern → set \`recurrence_freq\`. Examples:
-  - "every Wednesday at 8pm", "cada miércoles a las 8pm" → \`recurrence_freq: "weekly"\`, \`start_at_iso\` of the NEXT Wednesday at 8pm local.
-  - "todos los días a las 9am", "every day at 9am" → \`recurrence_freq: "daily"\`.
-  - "el primero de cada mes", "monthly on the 15th" → \`recurrence_freq: "monthly"\` anchored to the chosen day.
-- **Do NOT** create separate events for each occurrence. One row, one \`recurrence_freq\`. The listing tool expands occurrences for you.
-- If the user gives a frequency that isn't daily/weekly/monthly (e.g. "every other Wednesday", "every weekday"), say it isn't supported yet and ask if a weekly series works as a substitute.
-- The listing snapshot below already shows each *occurrence* with a "(recurring weekly, instance #N)" marker. Multiple lines with the same \`#id\` are the same series — when summarizing for the user, collapse them ("Book club every Wednesday at 8pm; next: …") instead of repeating.
-- **Updates and deletes affect the WHOLE series in v1.** There is no per-occurrence override. Warn the user before changing the time of a recurring event or deleting it.
+# Conciencia temporal
+- UTC actual: ${now.toISOString()}
+- Hora local actual: ${formatInTimezone(now.getTime())} (${DEFAULT_TIMEZONE})
+- ${DEFAULT_TIMEZONE} es **UTC-6 todo el año** (sin horario de verano desde octubre 2022). El desfase es fijo −06:00; no uses "CDT".
+- Resuelve tiempos relativos ("mañana", "el sábado", "hoy a las 8") contra la hora **local**, luego conviértelos a ISO 8601 UTC para la herramienta.
+  - Ejemplo: sábado 20 de junio 2026 a las 8:00 PM (CDMX) = 2026-06-20T20:00:00−06:00 = **2026-06-21T02:00:00Z** → pásalo como \`start_at_iso\`.
 
-# Output style
-- Keep replies short — 1–3 sentences for confirmations, a bullet list for multi-event responses.
-- When you display an event time to the user, **use the \`start_at_local\` field from the tool result verbatim** (or the local string in the snapshot below). Do NOT recompute the timezone yourself.
-- For recurring events, mention the cadence and the next occurrence in the user's words ("every Wednesday at 8pm, next May 27"), not the list of all upcoming instances.
-- Do not invent events. If asked about something not in the database, say so plainly.
-- Never end with an invitation to keep talking ("anything else?", "let me know"). Close the topic.
+# Eventos recurrentes
+- Frecuencias soportadas: \`daily\`, \`weekly\`, \`monthly\`. \`start_at_iso\` es la PRIMERA ocurrencia; opcionalmente \`recurrence_until_iso\` acota la serie.
+- Una sola fila por serie — NUNCA crees un evento por cada semana. El renderizador dibuja cada ocurrencia en su celda automáticamente (un evento semanal aparece en cada semana del PDF).
+- Frecuencias no soportadas ("cada 15 días", "entre semana"): dilo y ofrece la alternativa semanal.
 
-# Per-user scoping (important)
-- Every event belongs to a Discord user — the user talking to you right now. You can ONLY see and modify their events. The capability is per-user globally: the same user sees the same events from any channel bound to this calendar.
-- There is no team / channel / shared calendar mode. If a user asks to see "the team calendar" or another user's events, explain that calendars are per-user and that an admin can inspect cross-user data from the configuration channel.
+# Editar / borrar una serie: ALCANCE (\`scope\`) — IMPORTANTE
+Al editar o borrar una serie recurrente, decide el alcance con el parámetro \`scope\` de \`calendar_update_event\` / \`calendar_delete_event\`:
+- \`series\` (por defecto) — afecta TODAS las ocurrencias.
+- \`occurrence\` — SOLO la ocurrencia de la fecha que indiques en \`occurrence_date_iso\` (ej. "mueve el del 21 a las 8:30" → \`scope:"occurrence"\`, \`occurrence_date_iso:"2026-06-21"\`, \`start_at_iso\` con la nueva hora EL MISMO día). Para borrar solo ese día, \`calendar_delete_event scope:"occurrence"\`.
+- \`following\` — esa ocurrencia y TODAS las siguientes ("de aquí en adelante"); las anteriores se quedan igual.
+- **Si la persona no deja claro el alcance** ("cambia el círculo a las 8:30") pregunta: ¿solo ese día, ese y los siguientes, o toda la serie? No asumas \`series\`.
+- Mover una sola ocurrencia a OTRO día no se puede directo: cancela esa ocurrencia (\`scope:"occurrence"\` en delete) y crea un evento aparte.
+- Al confirmar, di claramente qué alcance aplicaste (el resultado trae \`updated_scope\`/\`deleted_scope\`).
 
-# Upcoming events for this user
+# Plantillas disponibles
+- Hay plantillas PDF para: **${months.join(', ')}**. Un evento fuera de ese rango se guarda igual (y entra al ICS), pero no habrá PDF de ese mes — avísalo si pasa.
+
+# Estilo
+- Responde en **español** (esa es la lengua del server), salvo que te escriban en otro idioma.
+- Sé breve: 1–3 frases para confirmaciones. Al confirmar un evento creado/editado, di el día y hora en local (usa \`start_at_local\` del resultado) y menciona que ya se publicó el calendario en el canal de salida (mira el campo \`published\` del resultado: \`posted\` lista los meses publicados).
+- Si \`published.ok\` es \`false\` (p. ej. \`no_output_channel\`), avisa que el evento se guardó pero no se pudo publicar y que un admin configure el canal de salida.
+- No cierres con "¿algo más?". Cierra el tema.
+
+# Antes de crear: revisa duplicados
+Llama \`calendar_search_events\` con el título (o parte) antes de crear, y si ya existe algo muy parecido el mismo día, avísale a la persona en vez de duplicar.
+
+# Próximos eventos (calendario global)
 ${upcomingSection}
 `;
 }

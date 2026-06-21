@@ -98,6 +98,7 @@ export class ConfigurationCapability implements Capability {
     const calendar = new ConfigCalendarAdminSource({
       db: this.db,
       userDirectory,
+      callerUserId: ctx.userId,
     });
     const database = new ConfigDbSource({ db: this.db, store: this.store });
     return {

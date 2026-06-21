@@ -43,7 +43,7 @@ describe('expandOccurrences', () => {
       ms('2026-05-01T00:00:00Z'),
       ms('2026-06-01T00:00:00Z'),
     );
-    expect(out).toEqual([{ start_at: ms('2026-05-27T02:00:00Z'), end_at: null, occurrence_index: 0 }]);
+    expect(out).toEqual([{ start_at: ms('2026-05-27T02:00:00Z'), end_at: null, occurrence_index: 0, override: null }]);
   });
 
   test('non-recurring event outside window → empty', () => {
