@@ -151,15 +151,14 @@ describe('ConfigCalendarAdminSource', () => {
     memory = await makeMemory();
     userDir = new UserDirectory(memory.db());
     userDir.upsert(ALICE, 'alice#0001', Date.now());
-    src = new ConfigCalendarAdminSource({ db: memory.db(), userDirectory: userDir });
+    src = new ConfigCalendarAdminSource({ db: memory.db(), userDirectory: userDir, callerUserId: ALICE });
   });
   afterEach(() => memory.close());
 
-  test('create on behalf of a user then peek shows it with owner tag', async () => {
+  test('create then peek shows it with the creator tag', async () => {
     const created = ok(
       await src.handle('config_calendar', {
         action: 'create',
-        discord_user_id: ALICE,
         title: 'Standup',
         start_at_iso: '2026-06-01T15:00:00Z',
       }),
@@ -171,37 +170,31 @@ describe('ConfigCalendarAdminSource', () => {
     const events = peek.events as Payload[];
     expect(events).toHaveLength(1);
     expect(events[0].title).toBe('Standup');
-    expect(events[0].discord_user_id).toBe(ALICE);
-    expect(events[0].discord_tag).toBe('alice#0001');
+    expect(events[0].created_by).toBe(ALICE);
+    expect(events[0].created_by_tag).toBe('alice#0001');
   });
 
-  test('update edits any user event but requires confirm', async () => {
+  test('update edits any event but requires confirm', async () => {
     const cal = new CalendarStore(memory.db());
-    const ev = cal.create({ discord_user_id: ALICE, title: 'Old', start_at: Date.parse('2026-06-01T15:00:00Z') });
+    const ev = cal.create({ created_by: ALICE, title: 'Old', start_at: Date.parse('2026-06-01T15:00:00Z') });
     expect(err(await src.handle('config_calendar', { action: 'update', event_id: ev.id, title: 'New' }))).toMatch(/confirm/);
     ok(await src.handle('config_calendar', { action: 'update', event_id: ev.id, title: 'New', confirm: true }));
-    expect(cal.adminGet(ev.id)!.title).toBe('New');
-  });
-
-  test('create rejects a bad snowflake', async () => {
-    expect(
-      err(
-        await src.handle('config_calendar', {
-          action: 'create',
-          discord_user_id: 'not-a-snowflake',
-          title: 'X',
-          start_at_iso: '2026-06-01T15:00:00Z',
-        }),
-      ),
-    ).toMatch(/snowflake/);
+    expect(cal.get(ev.id)!.title).toBe('New');
   });
 
   test('delete requires confirm', async () => {
     const cal = new CalendarStore(memory.db());
-    const ev = cal.create({ discord_user_id: ALICE, title: 'Doomed', start_at: Date.now() + 60_000 });
+    const ev = cal.create({ created_by: ALICE, title: 'Doomed', start_at: Date.now() + 60_000 });
     expect(err(await src.handle('config_calendar', { action: 'delete', event_id: ev.id }))).toMatch(/confirm/);
     ok(await src.handle('config_calendar', { action: 'delete', event_id: ev.id, confirm: true }));
-    expect(cal.adminGet(ev.id)).toBeNull();
+    expect(cal.get(ev.id)).toBeNull();
+  });
+
+  test('output channel can be set + read, and rejects a bad snowflake', async () => {
+    expect((ok(await src.handle('config_calendar', { action: 'get_output_channel' })) as Payload).output_channel_id).toBeNull();
+    ok(await src.handle('config_calendar', { action: 'set_output_channel', channel_id: '1518328211165941912' }));
+    expect((ok(await src.handle('config_calendar', { action: 'get_output_channel' })) as Payload).output_channel_id).toBe('1518328211165941912');
+    expect(err(await src.handle('config_calendar', { action: 'set_output_channel', channel_id: 'nope' }))).toMatch(/snowflake/);
   });
 });
 

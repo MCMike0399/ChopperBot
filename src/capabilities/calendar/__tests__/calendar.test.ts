@@ -1,15 +1,15 @@
 /**
  * Calendar capability tests.
  *
- * Calendar is per-user globally — events belong to a Discord user and are
- * visible from any channel bound to the capability. There is no channel
- * scoping and no `scope: "all"` mode.
+ * The calendar is GLOBAL (like instagram_monitor): one shared set of events for
+ * the whole server, with no per-user scoping. `created_by` is attribution only.
  *
- * Two layers of coverage:
- *   1. Direct CalendarStore tests — schema, user isolation, CRUD shapes,
- *      admin-list / admin-delete bypass.
- *   2. Full agent-loop integration via ask() with a mocked Kimi/OpenAI
- *      client, a real CalendarCapability, and an in-memory SQLite store.
+ * Two layers:
+ *   1. Direct CalendarStore tests — global CRUD, recurrence expansion, the
+ *      publish-tracking + settings tables, and the v5 migration shape.
+ *   2. Full agent-loop integration via ask() with a mocked Kimi/OpenAI client,
+ *      a real CalendarCapability and an in-memory SQLite store. The publisher is
+ *      absent (no Discord client) so mutations report publishing_disabled.
  */
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
@@ -25,8 +25,15 @@ vi.mock('openai', () => {
 const { ask } = await import('../../../llm/client.js');
 const { SqliteMemoryStore, NamespacedMemory } = await import('../../../memory/store.js');
 const { CalendarCapability } = await import('../capability.js');
-const { CalendarStore } = await import('../store.js');
+const { CalendarStore, CALENDAR_MIGRATIONS } = await import('../store.js');
 import type { Turn } from '../../../discord/history.js';
+
+/** A migrated store with NO capability seeding (so settings start empty). */
+async function bareStore() {
+  const memory = new SqliteMemoryStore({ path: ':memory:' });
+  await memory.migrate('calendar', CALENDAR_MIGRATIONS);
+  return { memory, store: new CalendarStore(memory.db()) };
+}
 
 function endStop(text: string) {
   return {
@@ -70,159 +77,76 @@ async function newCapability() {
   return { cap, memory, store: new CalendarStore(memory.db()) };
 }
 
-const NOW = new Date('2026-05-23T18:00:00.000Z');
+const NOW = new Date('2026-06-10T18:00:00.000Z');
+const ctx = (over: Partial<{ channelId: string; userId: string }> = {}) => ({
+  channelId: over.channelId ?? 'INPUT_CHAN',
+  guildId: null,
+  userId: over.userId ?? 'MOD_1',
+  userTag: 'mod',
+  now: NOW,
+});
 
-describe('CalendarStore (direct)', () => {
+describe('CalendarStore (direct, global)', () => {
   test('create → get → update → delete roundtrip', async () => {
     const { store, memory } = await newCapability();
-    const created = store.create({
-      discord_user_id: 'USER_1',
-      title: 'Standup',
-      start_at: Date.parse('2026-05-24T15:00:00Z'),
-    });
+    const created = store.create({ created_by: 'MOD_1', title: 'Asamblea', start_at: Date.parse('2026-06-20T02:00:00Z') });
     expect(created.id).toBeGreaterThan(0);
-    expect(created.title).toBe('Standup');
-    expect(created.discord_user_id).toBe('USER_1');
-    expect(created.created_by).toBe('USER_1');
+    expect(created.title).toBe('Asamblea');
+    expect(created.created_by).toBe('MOD_1');
 
-    const fetched = store.get('USER_1', created.id);
-    expect(fetched?.title).toBe('Standup');
-
-    const updated = store.update('USER_1', created.id, { title: 'Daily Standup' });
-    expect(updated?.title).toBe('Daily Standup');
-
-    const deleted = store.delete('USER_1', created.id);
-    expect(deleted?.title).toBe('Daily Standup');
-    expect(store.get('USER_1', created.id)).toBeNull();
+    expect(store.get(created.id)?.title).toBe('Asamblea');
+    expect(store.update(created.id, { title: 'Asamblea constituyente' })?.title).toBe('Asamblea constituyente');
+    expect(store.delete(created.id)?.title).toBe('Asamblea constituyente');
+    expect(store.get(created.id)).toBeNull();
     memory.close();
   });
 
-  test('user isolation: only the owner can read or mutate an event', async () => {
-    const { store, memory } = await newCapability();
-    const a = store.create({
-      discord_user_id: 'USER_A',
-      title: 'A-event',
-      start_at: NOW.getTime() + 1000,
-    });
+  test('events are global: every caller sees the same calendar (no user scoping)', async () => {
+    const { cap, store, memory } = await newCapability();
+    store.create({ created_by: 'MOD_1', title: 'Círculo', start_at: NOW.getTime() + 60_000 });
+    store.create({ created_by: 'MOD_2', title: 'Taller', start_at: NOW.getTime() + 120_000 });
 
-    // USER_B cannot see or mutate it.
-    expect(store.get('USER_B', a.id)).toBeNull();
-    expect(store.update('USER_B', a.id, { title: 'Hacked' })).toBeNull();
-    expect(store.delete('USER_B', a.id)).toBeNull();
+    expect(store.listUpcoming(NOW.getTime(), 10).map((e) => e.title)).toEqual(['Círculo', 'Taller']);
+    expect(store.listAll().map((e) => e.title).sort()).toEqual(['Círculo', 'Taller']);
 
-    // Owner still sees + mutates fine.
-    expect(store.get('USER_A', a.id)?.title).toBe('A-event');
-    expect(store.update('USER_A', a.id, { title: 'Renamed' })?.title).toBe('Renamed');
-    memory.close();
-  });
-
-  test('listUpcoming + search are scoped to the calling user', async () => {
-    const { store, memory } = await newCapability();
-    store.create({
-      discord_user_id: 'USER_A',
-      title: 'A-event',
-      start_at: NOW.getTime() + 1000,
-    });
-    store.create({
-      discord_user_id: 'USER_B',
-      title: 'B-event',
-      start_at: NOW.getTime() + 2000,
-    });
-
-    const aOnly = store.listUpcoming('USER_A', NOW.getTime(), 10);
-    expect(aOnly.map((r) => r.title)).toEqual(['A-event']);
-
-    const bOnly = store.listUpcoming('USER_B', NOW.getTime(), 10);
-    expect(bOnly.map((r) => r.title)).toEqual(['B-event']);
-
-    const aSearch = store.search('USER_A', 'event', null, null, 10);
-    expect(aSearch.map((r) => r.title)).toEqual(['A-event']);
-
-    memory.close();
-  });
-
-  test('adminListAll surfaces every user\'s events; optional filter narrows to one user', async () => {
-    const { store, memory } = await newCapability();
-    store.create({ discord_user_id: 'USER_A', title: 'A1', start_at: NOW.getTime() + 1000 });
-    store.create({ discord_user_id: 'USER_A', title: 'A2', start_at: NOW.getTime() + 2000 });
-    store.create({ discord_user_id: 'USER_B', title: 'B1', start_at: NOW.getTime() + 3000 });
-
-    const all = store.adminListAll(null);
-    expect(all.map((r) => r.title).sort()).toEqual(['A1', 'A2', 'B1']);
-
-    const aOnly = store.adminListAll('USER_A');
-    expect(aOnly.map((r) => r.title).sort()).toEqual(['A1', 'A2']);
-
-    memory.close();
-  });
-
-  test('adminDelete bypasses the user filter', async () => {
-    const { store, memory } = await newCapability();
-    const a = store.create({
-      discord_user_id: 'USER_A',
-      title: 'Owned by A',
-      start_at: NOW.getTime() + 1000,
-    });
-    const deleted = store.adminDelete(a.id);
-    expect(deleted?.title).toBe('Owned by A');
-    expect(store.get('USER_A', a.id)).toBeNull();
-
-    // A second admin delete on the same id is a clean null.
-    expect(store.adminDelete(a.id)).toBeNull();
+    // Both mods get the same snapshot in their system prompt.
+    const a = await cap.buildTurn(ctx({ userId: 'MOD_1' }));
+    const b = await cap.buildTurn(ctx({ userId: 'MOD_2' }));
+    for (const turn of [a, b]) {
+      expect(turn.system).toContain('Círculo');
+      expect(turn.system).toContain('Taller');
+    }
     memory.close();
   });
 
   test('listUpcoming returns only future events, ordered by start_at', async () => {
     const { store, memory } = await newCapability();
-    store.create({ discord_user_id: 'U', title: 'past', start_at: NOW.getTime() - 10_000 });
-    store.create({ discord_user_id: 'U', title: 'second', start_at: NOW.getTime() + 20_000 });
-    store.create({ discord_user_id: 'U', title: 'first', start_at: NOW.getTime() + 10_000 });
-    const rows = store.listUpcoming('U', NOW.getTime(), 10);
-    expect(rows.map((r) => r.title)).toEqual(['first', 'second']);
+    store.create({ created_by: 'U', title: 'past', start_at: NOW.getTime() - 10_000 });
+    store.create({ created_by: 'U', title: 'second', start_at: NOW.getTime() + 20_000 });
+    store.create({ created_by: 'U', title: 'first', start_at: NOW.getTime() + 10_000 });
+    expect(store.listUpcoming(NOW.getTime(), 10).map((r) => r.title)).toEqual(['first', 'second']);
     memory.close();
   });
 
   test('search filters by query and optional date range', async () => {
     const { store, memory } = await newCapability();
-    store.create({ discord_user_id: 'U', title: 'Sprint planning', start_at: NOW.getTime() + 1000 });
-    store.create({ discord_user_id: 'U', title: 'Demo', description: 'Sprint demo for stakeholders', start_at: NOW.getTime() + 2000 });
-    store.create({ discord_user_id: 'U', title: 'Unrelated', start_at: NOW.getTime() + 3000 });
-    const sprintMatches = store.search('U', 'sprint', null, null, 10);
-    expect(sprintMatches.map((r) => r.title).sort()).toEqual(['Demo', 'Sprint planning']);
-    const ranged = store.search('U', 'sprint', NOW.getTime() + 1500, null, 10);
-    expect(ranged.map((r) => r.title)).toEqual(['Demo']);
+    store.create({ created_by: 'U', title: 'Sprint planning', start_at: NOW.getTime() + 1000 });
+    store.create({ created_by: 'U', title: 'Demo', description: 'Sprint demo', start_at: NOW.getTime() + 2000 });
+    store.create({ created_by: 'U', title: 'Unrelated', start_at: NOW.getTime() + 3000 });
+    expect(store.search('sprint', null, null, 10).map((r) => r.title).sort()).toEqual(['Demo', 'Sprint planning']);
+    expect(store.search('sprint', NOW.getTime() + 1500, null, 10).map((r) => r.title)).toEqual(['Demo']);
     memory.close();
   });
 
-  test('migration v4 drops channel_id but preserves discord_user_id + recurrence columns', async () => {
-    const memory = new SqliteMemoryStore({ path: ':memory:' });
-    const c1 = new CalendarCapability();
-    await c1.init({ memory: new NamespacedMemory(memory, c1.id), projectRoot: '.' });
-    const c2 = new CalendarCapability();
-    await c2.init({ memory: new NamespacedMemory(memory, c2.id), projectRoot: '.' });
-    const tableInfo = memory.db().prepare('PRAGMA table_info(calendar_events)').all() as { name: string }[];
-    const cols = tableInfo.map((c) => c.name);
-    expect(cols).not.toContain('channel_id');
-    expect(cols).toContain('discord_user_id');
-    expect(cols).toContain('recurrence_freq');
-    expect(cols).toContain('recurrence_until');
-    const indexes = memory.db().prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all() as { name: string }[];
-    expect(indexes.map((i) => i.name)).toContain('calendar_events_user_start');
-    memory.close();
-  });
-
-  test('recurring weekly event expands into multiple occurrences when listed', async () => {
+  test('recurring weekly event expands into multiple occurrences', async () => {
     const { store, memory } = await newCapability();
     const master = store.create({
-      discord_user_id: 'U',
+      created_by: 'U',
       title: 'Book club',
       start_at: Date.parse('2026-05-27T02:00:00Z'),
       recurrence_freq: 'weekly',
     });
-    expect(master.recurrence_freq).toBe('weekly');
-    expect(master.recurrence_until).toBeNull();
-
-    const rows = store.listUpcoming('U', Date.parse('2026-05-27T00:00:00Z'), 4);
+    const rows = store.listUpcoming(Date.parse('2026-05-27T00:00:00Z'), 4);
     expect(rows).toHaveLength(4);
     expect(rows.every((r) => r.id === master.id)).toBe(true);
     expect(rows.map((r) => new Date(r.start_at).toISOString())).toEqual([
@@ -231,52 +155,81 @@ describe('CalendarStore (direct)', () => {
       '2026-06-10T02:00:00.000Z',
       '2026-06-17T02:00:00.000Z',
     ]);
-    expect(rows[0].is_recurring_instance).toBe(false);
     expect(rows[1].is_recurring_instance).toBe(true);
-    expect(rows[3].occurrence_index).toBe(3);
     memory.close();
   });
 
-  test('recurring + one-off events merge and sort by occurrence start time', async () => {
+  test('listOccurrences expands a series within an explicit window', async () => {
     const { store, memory } = await newCapability();
-    store.create({
-      discord_user_id: 'U',
-      title: 'Weekly standup',
-      start_at: Date.parse('2026-05-27T15:00:00Z'),
-      recurrence_freq: 'weekly',
-      recurrence_until: Date.parse('2026-06-30T23:59:59Z'),
-    });
-    store.create({
-      discord_user_id: 'U',
-      title: 'One-off',
-      start_at: Date.parse('2026-05-29T18:00:00Z'),
-    });
-    const rows = store.listUpcoming('U', Date.parse('2026-05-27T00:00:00Z'), 10);
-    const labels = rows.map((r) => `${r.title}@${new Date(r.start_at).toISOString().slice(0, 10)}`);
-    expect(labels).toEqual([
-      'Weekly standup@2026-05-27',
-      'One-off@2026-05-29',
-      'Weekly standup@2026-06-03',
-      'Weekly standup@2026-06-10',
-      'Weekly standup@2026-06-17',
-      'Weekly standup@2026-06-24',
+    store.create({ created_by: 'U', title: 'Domingo', start_at: Date.parse('2026-06-15T02:00:00Z'), recurrence_freq: 'weekly' });
+    const occ = store.listOccurrences(Date.parse('2026-06-01T06:00:00Z'), Date.parse('2026-07-01T06:00:00Z'));
+    // Sundays in June (local): Jun 14, 21, 28 → 02:00Z on the 15/22/29.
+    expect(occ.map((o) => new Date(o.start_at).toISOString())).toEqual([
+      '2026-06-15T02:00:00.000Z',
+      '2026-06-22T02:00:00.000Z',
+      '2026-06-29T02:00:00.000Z',
     ]);
     memory.close();
   });
 
   test('updating recurrence_freq to null converts a series into a one-off', async () => {
     const { store, memory } = await newCapability();
-    const master = store.create({
-      discord_user_id: 'U',
-      title: 'Was weekly',
-      start_at: Date.parse('2026-05-27T15:00:00Z'),
-      recurrence_freq: 'weekly',
-    });
-    expect(store.listUpcoming('U', master.start_at, 5).length).toBeGreaterThanOrEqual(2);
-    store.update('U', master.id, { recurrence_freq: null });
-    const after = store.listUpcoming('U', master.start_at, 5);
+    const master = store.create({ created_by: 'U', title: 'Was weekly', start_at: Date.parse('2026-06-15T02:00:00Z'), recurrence_freq: 'weekly' });
+    expect(store.listUpcoming(master.start_at, 5).length).toBeGreaterThanOrEqual(2);
+    store.update(master.id, { recurrence_freq: null });
+    const after = store.listUpcoming(master.start_at, 5);
     expect(after).toHaveLength(1);
     expect(after[0].recurrence_freq).toBeNull();
+    memory.close();
+  });
+
+  test('output channel setting round-trips', async () => {
+    const { store, memory } = await bareStore();
+    expect(store.getOutputChannelId()).toBeNull();
+    store.setOutputChannelId('1518328211165941912');
+    expect(store.getOutputChannelId()).toBe('1518328211165941912');
+    store.setOutputChannelId(null);
+    expect(store.getOutputChannelId()).toBeNull();
+    memory.close();
+  });
+
+  test('capability.init seeds the output channel from config when set', async () => {
+    // dotenv (via config import) has populated process.env by now.
+    const expected = process.env.CALENDAR_OUTPUT_CHANNEL_ID ?? null;
+    const { store, memory } = await newCapability();
+    expect(store.getOutputChannelId()).toBe(expected);
+    memory.close();
+  });
+
+  test('published-message tracking set/get/clear', async () => {
+    const { store, memory } = await bareStore();
+    expect(store.getPublished('pdf:2026-06')).toBeNull();
+    store.setPublished('pdf:2026-06', 'CHAN', 'MSG1');
+    expect(store.getPublished('pdf:2026-06')).toMatchObject({ channel_id: 'CHAN', message_id: 'MSG1' });
+    store.setPublished('pdf:2026-06', 'CHAN', 'MSG2'); // upsert
+    expect(store.getPublished('pdf:2026-06')?.message_id).toBe('MSG2');
+    store.clearPublished('pdf:2026-06');
+    expect(store.getPublished('pdf:2026-06')).toBeNull();
+    memory.close();
+  });
+
+  test('v5 migration: global schema (no discord_user_id) + publish/settings tables', async () => {
+    const memory = new SqliteMemoryStore({ path: ':memory:' });
+    const c1 = new CalendarCapability();
+    await c1.init({ memory: new NamespacedMemory(memory, c1.id), projectRoot: '.' });
+
+    const cols = (memory.db().prepare('PRAGMA table_info(calendar_events)').all() as { name: string }[]).map((c) => c.name);
+    expect(cols).not.toContain('discord_user_id');
+    expect(cols).not.toContain('channel_id');
+    expect(cols).toContain('created_by');
+    expect(cols).toContain('recurrence_freq');
+
+    const tables = (memory.db().prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[]).map((t) => t.name);
+    expect(tables).toContain('calendar_published');
+    expect(tables).toContain('calendar_settings');
+
+    const indexes = (memory.db().prepare("SELECT name FROM sqlite_master WHERE type='index'").all() as { name: string }[]).map((i) => i.name);
+    expect(indexes).toContain('calendar_events_start');
     memory.close();
   });
 });
@@ -284,338 +237,116 @@ describe('CalendarStore (direct)', () => {
 describe('CalendarCapability + agent loop (mocked Kimi)', () => {
   beforeEach(() => createMock.mockReset());
 
-  test('buildTurn snapshot is user-scoped — only the caller\'s events appear in the system prompt', async () => {
+  test('buildTurn snapshot includes the current time and all events', async () => {
     const { cap, store, memory } = await newCapability();
-    store.create({
-      discord_user_id: 'USER_1',
-      title: 'Deploy review',
-      start_at: Date.parse('2026-05-24T21:00:00Z'),
-    });
-    store.create({
-      discord_user_id: 'USER_2',
-      title: 'Other user event',
-      start_at: Date.parse('2026-05-24T22:00:00Z'),
-    });
-
-    const turn1 = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 'tester',
-      now: NOW,
-    });
-    expect(turn1.system).toContain('2026-05-23T18:00:00.000Z');
-    expect(turn1.system).toContain('Deploy review');
-    expect(turn1.system).not.toContain('Other user event');
-
-    const turn2 = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_2',
-      userTag: 'other',
-      now: NOW,
-    });
-    expect(turn2.system).toContain('Other user event');
-    expect(turn2.system).not.toContain('Deploy review');
+    store.create({ created_by: 'MOD_1', title: 'Deploy review', start_at: Date.parse('2026-06-12T21:00:00Z') });
+    const turn = await cap.buildTurn(ctx());
+    expect(turn.system).toContain('2026-06-10T18:00:00.000Z');
+    expect(turn.system).toContain('Deploy review');
     memory.close();
   });
 
-  test('the same user sees their events from any channel bound to the capability', async () => {
+  test('create path persists the event (created_by = caller) and reports publishing_disabled', async () => {
     const { cap, store, memory } = await newCapability();
-    store.create({
-      discord_user_id: 'USER_1',
-      title: 'Cross-channel event',
-      start_at: NOW.getTime() + 60_000,
-    });
-
-    const turnA = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    const turnB = await cap.buildTurn({
-      channelId: 'CHAN_B',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    expect(turnA.system).toContain('Cross-channel event');
-    expect(turnB.system).toContain('Cross-channel event');
-    memory.close();
-  });
-
-  test('"create event tomorrow at 3pm" path: create → list confirms persistence', async () => {
-    const { cap, store, memory } = await newCapability();
-
     createMock
       .mockResolvedValueOnce(
-        toolCalls([
-          {
-            id: 'c1',
-            name: 'calendar_create_event',
-            input: { title: 'Deploy review', start_at_iso: '2026-05-24T21:00:00Z' },
-          },
-        ]),
+        toolCalls([{ id: 'c1', name: 'calendar_create_event', input: { title: 'Asamblea', start_at_iso: '2026-06-20T02:00:00Z' } }]),
       )
-      .mockResolvedValueOnce(endStop('Listo, agendé **Deploy review** para mañana 3pm.'));
+      .mockResolvedValueOnce(endStop('Listo, agendé **Asamblea**.'));
 
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: 'agenda deploy review mañana 3pm' }] as Turn[],
-      tools: turn.tools,
-    });
-    expect(out).toContain('Deploy review');
-    const rows = store.listUpcoming('USER_1', NOW.getTime(), 10);
+    const turn = await cap.buildTurn(ctx({ userId: 'MOD_7' }));
+    const out = await ask({ system: turn.system, messages: [{ role: 'user', content: 'agenda asamblea el 19 a las 8pm' }] as Turn[], tools: turn.tools });
+    expect(out).toContain('Asamblea');
+
+    const rows = store.listAll();
     expect(rows).toHaveLength(1);
-    expect(rows[0].title).toBe('Deploy review');
-    expect(rows[0].discord_user_id).toBe('USER_1');
+    expect(rows[0].created_by).toBe('MOD_7');
+
+    const toolMsg = findToolMessage(1, 'c1');
+    const payload = JSON.parse(toolMsg.content) as { published?: { ok: boolean; error?: string } };
+    expect(payload.published?.ok).toBe(false);
+    expect(payload.published?.error).toBe('publishing_disabled');
     memory.close();
   });
 
-  test('list path: returns only the calling user\'s events (no scope param)', async () => {
+  test('list path returns every event on the shared calendar', async () => {
     const { cap, store, memory } = await newCapability();
-    store.create({
-      discord_user_id: 'USER_1',
-      title: 'Standup',
-      start_at: NOW.getTime() + 60_000,
-    });
-    store.create({
-      discord_user_id: 'OTHER',
-      title: 'OtherUserMeeting',
-      start_at: NOW.getTime() + 90_000,
-    });
+    store.create({ created_by: 'MOD_1', title: 'Standup', start_at: NOW.getTime() + 60_000 });
+    store.create({ created_by: 'MOD_2', title: 'Taller', start_at: NOW.getTime() + 90_000 });
 
     createMock
       .mockResolvedValueOnce(toolCalls([{ id: 'l1', name: 'calendar_list_upcoming', input: {} }]))
-      .mockResolvedValueOnce(endStop('Tienes 1 evento próximo: Standup.'));
+      .mockResolvedValueOnce(endStop('Hay 2 eventos.'));
 
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: '¿qué tengo pendiente?' }] as Turn[],
-      tools: turn.tools,
-    });
-    expect(out).toContain('Standup');
+    const turn = await cap.buildTurn(ctx());
+    await ask({ system: turn.system, messages: [{ role: 'user', content: '¿qué viene?' }] as Turn[], tools: turn.tools });
 
-    const toolMsg = findToolMessage(1, 'l1');
-    const payload = JSON.parse(toolMsg.content) as { events: Array<{ title: string }> };
-    expect(payload.events.map((e) => e.title)).toEqual(['Standup']);
+    const payload = JSON.parse(findToolMessage(1, 'l1').content) as { events: Array<{ title: string }> };
+    expect(payload.events.map((e) => e.title)).toEqual(['Standup', 'Taller']);
     memory.close();
   });
 
-  test('cannot delete another user\'s event through the tool layer (returns not-found)', async () => {
+  test('any mod can delete any event; delete echoes the deleted event', async () => {
     const { cap, store, memory } = await newCapability();
-    const a = store.create({
-      discord_user_id: 'USER_A',
-      title: 'A-event',
-      start_at: NOW.getTime() + 60_000,
-    });
+    const created = store.create({ created_by: 'MOD_1', title: 'Lunch', start_at: NOW.getTime() + 60_000 });
 
     createMock
-      .mockResolvedValueOnce(
-        toolCalls([{ id: 'd1', name: 'calendar_delete_event', input: { id: a.id } }]),
-      )
-      .mockResolvedValueOnce(endStop('No encontré ese evento entre los tuyos.'));
-
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_B',
-      userTag: 'b',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: 'borra el evento 1' }] as Turn[],
-      tools: turn.tools,
-    });
-    expect(out).toContain('No encontré');
-
-    const toolMsg = findToolMessage(1, 'd1');
-    const payload = JSON.parse(toolMsg.content) as { error?: string };
-    expect(payload.error).toMatch(/not found/);
-    // Event survives:
-    expect(store.get('USER_A', a.id)?.title).toBe('A-event');
-    memory.close();
-  });
-
-  test('delete echoes the deleted event back to the model as a tool result', async () => {
-    const { cap, store, memory } = await newCapability();
-    const created = store.create({
-      discord_user_id: 'USER_1',
-      title: 'Lunch',
-      start_at: NOW.getTime() + 60_000,
-    });
-
-    createMock
-      .mockResolvedValueOnce(
-        toolCalls([{ id: 'd1', name: 'calendar_delete_event', input: { id: created.id } }]),
-      )
+      .mockResolvedValueOnce(toolCalls([{ id: 'd1', name: 'calendar_delete_event', input: { id: created.id } }]))
       .mockResolvedValueOnce(endStop('Borrado: **Lunch**.'));
 
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: 'borra el lunch' }] as Turn[],
-      tools: turn.tools,
-    });
+    // A different mod deletes it.
+    const turn = await cap.buildTurn(ctx({ userId: 'MOD_2' }));
+    const out = await ask({ system: turn.system, messages: [{ role: 'user', content: 'borra el lunch' }] as Turn[], tools: turn.tools });
     expect(out).toContain('Lunch');
-    expect(store.get('USER_1', created.id)).toBeNull();
+    expect(store.get(created.id)).toBeNull();
     memory.close();
   });
 
-  test('recurring create: model calls create_event with recurrence_freq, snapshot then shows instances', async () => {
+  test('recurring create: model sets recurrence_freq; snapshot then shows the series', async () => {
     const { cap, memory } = await newCapability();
-
     createMock
       .mockResolvedValueOnce(
-        toolCalls([
-          {
-            id: 'c1',
-            name: 'calendar_create_event',
-            input: {
-              title: 'Círculo de lectura: repensando la pobreza',
-              start_at_iso: '2026-05-28T02:00:00Z',
-              recurrence_freq: 'weekly',
-            },
-          },
-        ]),
+        toolCalls([{ id: 'c1', name: 'calendar_create_event', input: { title: 'Círculo: Repensar la Pobreza', start_at_iso: '2026-06-15T02:00:00Z', recurrence_freq: 'weekly' } }]),
       )
-      .mockResolvedValueOnce(
-        endStop('Listo, cada miércoles a las 8pm. El siguiente: miércoles 27 de mayo.'),
-      );
+      .mockResolvedValueOnce(endStop('Listo, cada domingo a las 8pm.'));
 
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [
-        { role: 'user', content: 'agrega un nuevo evento del círculo de lectura cada miércoles a las 8pm' },
-      ] as Turn[],
-      tools: turn.tools,
-    });
-    expect(out).toContain('miércoles');
+    const turn = await cap.buildTurn(ctx());
+    await ask({ system: turn.system, messages: [{ role: 'user', content: 'círculo cada domingo 8pm' }] as Turn[], tools: turn.tools });
 
-    const all = memory.db().prepare('SELECT * FROM calendar_events').all() as Array<{
-      title: string;
-      recurrence_freq: string | null;
-      discord_user_id: string;
-    }>;
+    const all = memory.db().prepare('SELECT * FROM calendar_events').all() as Array<{ title: string; recurrence_freq: string | null }>;
     expect(all).toHaveLength(1);
     expect(all[0].recurrence_freq).toBe('weekly');
-    expect(all[0].title).toContain('Círculo de lectura');
-    expect(all[0].discord_user_id).toBe('USER_1');
 
-    const turn2 = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    expect(turn2.system).toContain('Círculo de lectura');
-    expect(turn2.system).toContain('recurring weekly');
+    const turn2 = await cap.buildTurn(ctx());
+    expect(turn2.system).toContain('Repensar la Pobreza');
+    expect(turn2.system).toContain('serie weekly');
     memory.close();
   });
 
-  test('recurrence_freq with a value outside the allowed enum is rejected', async () => {
+  test('recurrence_freq outside the enum is rejected (nothing persisted)', async () => {
     const { cap, memory } = await newCapability();
-
     createMock
       .mockResolvedValueOnce(
-        toolCalls([
-          {
-            id: 'c1',
-            name: 'calendar_create_event',
-            input: {
-              title: 'every-other',
-              start_at_iso: '2026-05-28T02:00:00Z',
-              recurrence_freq: 'biweekly',
-            },
-          },
-        ]),
+        toolCalls([{ id: 'c1', name: 'calendar_create_event', input: { title: 'x', start_at_iso: '2026-06-15T02:00:00Z', recurrence_freq: 'biweekly' } }]),
       )
-      .mockResolvedValueOnce(endStop('Lo siento, sólo soporto daily, weekly y monthly.'));
+      .mockResolvedValueOnce(endStop('Solo soporto daily, weekly y monthly.'));
 
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: 'every other Wednesday' }] as Turn[],
-      tools: turn.tools,
-    });
-
-    const all = memory.db().prepare('SELECT * FROM calendar_events').all() as unknown[];
-    expect(all).toHaveLength(0);
-
-    const toolMsg = findToolMessage(1, 'c1');
-    expect(toolMsg.content).toContain('error');
+    const turn = await cap.buildTurn(ctx());
+    await ask({ system: turn.system, messages: [{ role: 'user', content: 'cada 15 días' }] as Turn[], tools: turn.tools });
+    expect(memory.db().prepare('SELECT * FROM calendar_events').all()).toHaveLength(0);
+    expect(findToolMessage(1, 'c1').content).toContain('error');
     memory.close();
   });
 
-  test('invalid ISO date returns a structured tool error the model can recover from', async () => {
+  test('invalid ISO date returns a structured tool error', async () => {
     const { cap, memory } = await newCapability();
-
     createMock
-      .mockResolvedValueOnce(
-        toolCalls([
-          {
-            id: 'c1',
-            name: 'calendar_create_event',
-            input: { title: 'x', start_at_iso: 'tomorrow' },
-          },
-        ]),
-      )
-      .mockResolvedValueOnce(endStop('No pude parsear la fecha — necesito ISO 8601.'));
+      .mockResolvedValueOnce(toolCalls([{ id: 'c1', name: 'calendar_create_event', input: { title: 'x', start_at_iso: 'mañana' } }]))
+      .mockResolvedValueOnce(endStop('Necesito una fecha ISO 8601.'));
 
-    const turn = await cap.buildTurn({
-      channelId: 'CHAN_A',
-      guildId: null,
-      userId: 'USER_1',
-      userTag: 't',
-      now: NOW,
-    });
-    const out = await ask({
-      system: turn.system,
-      messages: [{ role: 'user', content: 'crea evento mañana' }] as Turn[],
-      tools: turn.tools,
-    });
-    expect(out).toContain('ISO');
-
-    const toolMsg = findToolMessage(1, 'c1');
-    expect(toolMsg.content).toContain('error');
+    const turn = await cap.buildTurn(ctx());
+    await ask({ system: turn.system, messages: [{ role: 'user', content: 'crea evento mañana' }] as Turn[], tools: turn.tools });
+    expect(findToolMessage(1, 'c1').content).toContain('error');
     memory.close();
   });
 });

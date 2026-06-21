@@ -65,10 +65,29 @@ export interface MasterEventLike {
   recurrence_until: number | null;
 }
 
+/**
+ * A per-occurrence exception to a recurring series, keyed by the occurrence's
+ * ORIGINAL anchor time (`occurrence_start_at` = the time the series would put it
+ * at). `cancelled` skips it; the other fields override the master for just that
+ * occurrence (null = inherit). Retimes are same-day (the renderer/window logic
+ * still buckets by the original anchor's day).
+ */
+export interface OccurrenceOverride {
+  occurrence_start_at: number;
+  cancelled: boolean;
+  start_at: number | null;
+  end_at: number | null;
+  title: string | null;
+  description: string | null;
+  location: string | null;
+}
+
 export interface ExpandedOccurrence {
   start_at: number;
   end_at: number | null;
   occurrence_index: number; // 0 = the master itself
+  /** The override applied to this occurrence, if any (null for plain ones). */
+  override: OccurrenceOverride | null;
 }
 
 /**
@@ -83,6 +102,7 @@ export function expandOccurrences(
   windowStartMs: number,
   windowEndMs: number,
   maxOccurrences: number = 100,
+  overrides?: ReadonlyMap<number, OccurrenceOverride>,
 ): ExpandedOccurrence[] {
   const out: ExpandedOccurrence[] = [];
   const upperBound = event.recurrence_until !== null
@@ -92,25 +112,27 @@ export function expandOccurrences(
 
   if (event.recurrence_freq === null) {
     if (event.start_at >= windowStartMs && event.start_at <= windowEndMs) {
-      out.push({
-        start_at: event.start_at,
-        end_at: event.end_at,
-        occurrence_index: 0,
-      });
+      out.push({ start_at: event.start_at, end_at: event.end_at, occurrence_index: 0, override: null });
     }
     return out;
   }
 
-  // Recurring: walk forward from start_at.
+  // Recurring: walk forward from start_at. Occurrences are keyed by their
+  // ORIGINAL anchor time; an override at that key cancels or retimes them.
   for (let i = 0; out.length < maxOccurrences; i++) {
     const occStart = step(event.start_at, event.recurrence_freq, i);
     if (occStart > upperBound) break;
     if (occStart >= windowStartMs) {
-      out.push({
-        start_at: occStart,
-        end_at: duration !== null ? occStart + duration : null,
-        occurrence_index: i,
-      });
+      const ov = overrides?.get(occStart) ?? null;
+      if (!ov?.cancelled) {
+        const effStart = ov?.start_at ?? occStart;
+        out.push({
+          start_at: effStart,
+          end_at: ov?.end_at ?? (duration !== null ? effStart + duration : null),
+          occurrence_index: i,
+          override: ov,
+        });
+      }
     }
     // Safety: monthly stepping with n very large is fine, but for daily series
     // with a far-future window we cap on maxOccurrences via the loop condition.
