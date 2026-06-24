@@ -19,6 +19,7 @@ vi.mock('@aws-sdk/client-bedrock-runtime', () => {
 });
 
 const { ask } = await import('../client.js');
+import { config } from '../../config.js';
 import type { ComposedTools } from '../../tools/source.js';
 import { ImageAttachable } from '../../attachments/attachable.js';
 
@@ -198,5 +199,27 @@ describe('ask (Bedrock Converse agent loop)', () => {
     });
     expect(out).toBe('ok');
     expect(reqAt(0).messages[0].content).toEqual([{ text: 'hi' }]);
+  });
+
+  test('effort tier selects the matching BEDROCK model id', async () => {
+    const modelOf = (i: number) => (reqAt(i) as unknown as { modelId: string }).modelId;
+    const tools = fakeTools();
+
+    sendMock.mockResolvedValueOnce(endStop('a'));
+    await ask({ system: 'p', messages: [{ role: 'user', content: 'x' }], tools, effort: 'low' });
+    expect(modelOf(0)).toBe(config.BEDROCK_MODEL_LOW);
+
+    sendMock.mockResolvedValueOnce(endStop('b'));
+    await ask({ system: 'p', messages: [{ role: 'user', content: 'x' }], tools, effort: 'medium' });
+    expect(modelOf(1)).toBe(config.BEDROCK_MODEL_MEDIUM);
+
+    sendMock.mockResolvedValueOnce(endStop('c'));
+    await ask({ system: 'p', messages: [{ role: 'user', content: 'x' }], tools, effort: 'high' });
+    expect(modelOf(2)).toBe(config.BEDROCK_MODEL_ID);
+
+    // Default (no effort) is high.
+    sendMock.mockResolvedValueOnce(endStop('d'));
+    await ask({ system: 'p', messages: [{ role: 'user', content: 'x' }], tools });
+    expect(modelOf(3)).toBe(config.BEDROCK_MODEL_ID);
   });
 });

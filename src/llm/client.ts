@@ -26,10 +26,33 @@ const client = new BedrockRuntimeClient({
   },
 });
 
+/**
+ * Effort tier → model. Lets each task choose how much model to pay for:
+ *   high   — multi-turn tool-calling + friendly chat (calendar, general chat).
+ *   medium — IG post classification / summary writing.
+ *   low    — cheap/bulk image understanding (flyer text extraction).
+ * Resolved to a concrete BEDROCK_MODEL_* id by `modelForEffort`.
+ */
+export type Effort = 'high' | 'medium' | 'low';
+
+function modelForEffort(effort: Effort): string {
+  switch (effort) {
+    case 'low':
+      return config.BEDROCK_MODEL_LOW;
+    case 'medium':
+      return config.BEDROCK_MODEL_MEDIUM;
+    case 'high':
+    default:
+      return config.BEDROCK_MODEL_ID;
+  }
+}
+
 export interface AskInput {
   system: string;
   messages: Turn[];
   tools: ComposedTools;
+  /** Model tier for this call. Defaults to 'high' (= BEDROCK_MODEL_ID). */
+  effort?: Effort;
 }
 
 interface AgentTrace {
@@ -60,7 +83,8 @@ async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
  * block per call for the next iteration. Caps at MAX_TOOL_ITERATIONS to bound
  * cost.
  */
-export async function ask({ system, messages, tools }: AskInput): Promise<string> {
+export async function ask({ system, messages, tools, effort = 'high' }: AskInput): Promise<string> {
+  const modelId = modelForEffort(effort);
   const convo: Message[] = messages.map(buildMessage);
 
   const trace: AgentTrace = {
@@ -88,7 +112,7 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
     const response = await observedCompletion(() =>
       client.send(
         new ConverseCommand({
-          modelId: config.BEDROCK_MODEL_ID,
+          modelId,
           system: systemBlocks,
           // Snapshot the array — we mutate `convo` after this call returns.
           messages: convo.slice(),
@@ -176,7 +200,7 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
       const forced = await observedCompletion(() =>
         client.send(
           new ConverseCommand({
-            modelId: config.BEDROCK_MODEL_ID,
+            modelId,
             system: systemBlocks,
             messages: convo.slice(),
             inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
@@ -204,6 +228,8 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
 
   log.info(
     {
+      effort,
+      model: modelId,
       iterations: trace.iterations,
       toolCalls: trace.toolCalls.length,
       tools: trace.toolCalls.map((t) => t.name),
