@@ -52,10 +52,26 @@ const ConfigSchema = z.object({
     emptyToUndefined,
     z.string().regex(/^\d{17,20}$/, 'CALENDAR_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
   ),
-  KIMI_API_KEY: z.string().min(1, 'KIMI_API_KEY is required'),
-  KIMI_BASE_URL: z.string().min(1).default('https://api.kimi.com/coding/v1'),
-  KIMI_MODEL_ID: z.string().min(1).default('kimi-for-coding'),
-  KIMI_USER_AGENT: z.string().min(1).default('claude-cli/1.0.0'),
+  // Amazon Bedrock (Converse API) credentials + model. The bot's whole brain
+  // (Discord chat AND the IG post classifier) runs through Bedrock. Auth is a
+  // plain IAM access key pair — the env var names are deliberately the short
+  // ACCESS_KEY_ID / SECRET_ACCESS_KEY (NOT the AWS_-prefixed standard names) so
+  // they don't collide with any ambient AWS CLI credentials on the host.
+  ACCESS_KEY_ID: z.string().min(1, 'ACCESS_KEY_ID is required'),
+  SECRET_ACCESS_KEY: z.string().min(1, 'SECRET_ACCESS_KEY is required'),
+  // Optional STS session token (only for temporary credentials).
+  AWS_SESSION_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  AWS_REGION: z.string().min(1).default('us-east-1'),
+  // Bedrock model id (Converse API). Default: Amazon Nova Pro via the us
+  // cross-region inference profile — multimodal (image input), strong
+  // multilingual (Spanish), and notably better at multi-step tool calling than
+  // Nova Lite (which the calendar/config agent loops need). Still cheaper than
+  // Claude Haiku and a fraction of Sonnet/Opus. Drop to `us.amazon.nova-lite-v1:0`
+  // to cut cost if the high-volume IG classifier dominates spend and the
+  // tool-loop quality is acceptable. The `us.` prefix is the cross-region
+  // inference profile required for Nova in us-east-1; use the bare
+  // `amazon.nova-pro-v1:0` if your account/region serves it on-demand.
+  BEDROCK_MODEL_ID: z.string().min(1).default('us.amazon.nova-pro-v1:0'),
   MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),

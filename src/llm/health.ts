@@ -3,18 +3,18 @@ import { log } from '../log.js';
 /**
  * LLM health watchdog.
  *
- * Every Kimi request in `ask()` (src/llm/client.ts) reports its outcome here.
- * When the LLM stops working, an alert is pushed to the admin/config Discord
- * channel through the injected sink — closing the gap where the bot's whole
- * brain (chat replies AND the IG post classifier) can silently fail while only
- * journald notices. Motivating incident (2026-06-12): Moonshot repointed the
- * `kimi-for-coding` alias to K2.7, which rejects `temperature` ≠ 1, and every
- * classifier call 400-ed for hours with zero operator-facing signal.
+ * Every Bedrock request in `ask()` (src/llm/client.ts) reports its outcome
+ * here. When the LLM stops working, an alert is pushed to the admin/config
+ * Discord channel through the injected sink — closing the gap where the bot's
+ * whole brain (chat replies AND the IG post classifier) can silently fail
+ * while only journald notices. Motivating incident (2026-06-12): a provider
+ * repoint rejected a request parameter and every classifier call 400-ed for
+ * hours with zero operator-facing signal.
  *
  * Alert policy, mirroring the IG monitor's "alert once, not 1000×" approach:
- * - **Deterministic errors** (4xx config/protocol: 400/401/403/404/422 — the
- *   temperature case, a revoked key, a UA-allowlist change) never self-heal,
- *   so alert on the FIRST one.
+ * - **Deterministic errors** (4xx config/protocol: 400/401/403/404/422 — a
+ *   ValidationException, revoked/insufficient IAM creds, a bad model id) never
+ *   self-heal, so alert on the FIRST one.
  * - **Transient errors** (429/5xx/network/timeouts) can self-heal, so alert
  *   only after `TRANSIENT_ALERT_THRESHOLD` consecutive failures.
  * - At most one failure alert per `ALERT_COOLDOWN_MS` (the error text can
@@ -32,16 +32,35 @@ export const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 export type LlmErrorKind = 'deterministic' | 'transient';
 
 /**
- * Classify an error thrown by the OpenAI SDK. `status` is set on APIError
- * subclasses; connection errors (undici/network) have none and are transient.
- * 408/429/5xx are retryable server/throttle states; the remaining 4xx are
- * protocol or auth mistakes that will fail identically on every retry.
+ * Classify an error thrown by the AWS SDK (Bedrock Converse). The HTTP status
+ * lives on `$metadata.httpStatusCode` (we also accept a bare `.status` for
+ * test fakes / forward-compat); connection and credential-resolution errors
+ * have none and are transient. 408/429/5xx are retryable server/throttle
+ * states; the remaining 4xx are protocol or auth mistakes that will fail
+ * identically on every retry. As a fallback when no status is present, a few
+ * AWS exception `name`s are mapped explicitly (Throttling is transient; the
+ * Validation/AccessDenied/ResourceNotFound family is deterministic).
  */
 export function classifyLlmError(err: unknown): LlmErrorKind {
-  const status = (err as { status?: unknown })?.status;
-  if (typeof status !== 'number') return 'transient';
-  if (status === 408 || status === 429 || status >= 500) return 'transient';
-  if (status >= 400) return 'deterministic';
+  const e = err as { status?: unknown; $metadata?: { httpStatusCode?: unknown }; name?: unknown };
+  const status =
+    typeof e?.status === 'number'
+      ? e.status
+      : typeof e?.$metadata?.httpStatusCode === 'number'
+        ? e.$metadata.httpStatusCode
+        : undefined;
+  if (typeof status === 'number') {
+    if (status === 408 || status === 429 || status >= 500) return 'transient';
+    if (status >= 400) return 'deterministic';
+    return 'transient';
+  }
+  const name = typeof e?.name === 'string' ? e.name : '';
+  if (/Throttling|ServiceUnavailable|InternalServer|ModelTimeout|ModelNotReady/i.test(name)) {
+    return 'transient';
+  }
+  if (/Validation|AccessDenied|ResourceNotFound|UnrecognizedClient|InvalidSignature/i.test(name)) {
+    return 'deterministic';
+  }
   return 'transient';
 }
 
@@ -69,7 +88,7 @@ export class LlmHealthMonitor {
     this.alertedThisOutage = false;
     log.info({ failures }, 'llm.health.recovered');
     this.post([
-      '✅ **LLM (Kimi): recuperado**',
+      '✅ **LLM (Bedrock): recuperado**',
       `Las peticiones al LLM vuelven a funcionar (hubo ${failures} fallo${failures === 1 ? '' : 's'} consecutivo${failures === 1 ? '' : 's'}).`,
       'No se requiere ninguna acción.',
     ]);
@@ -89,14 +108,14 @@ export class LlmHealthMonitor {
       'llm.health.alerting',
     );
     this.post([
-      '🚨 **LLM (Kimi): las peticiones están fallando**',
+      '🚨 **LLM (Bedrock): las peticiones están fallando**',
       `Error: \`${errorMessage(err)}\``,
       kind === 'deterministic'
-        ? 'Tipo: error de configuración/protocolo — **no se va a resolver solo** (p. ej. un cambio de la API de Kimi, key inválida, parámetro rechazado).'
-        : `Tipo: transitorio (red/servidor), pero ya van ${this.consecutiveFailures} fallos consecutivos.`,
+        ? 'Tipo: error de configuración/protocolo — **no se va a resolver solo** (p. ej. credenciales IAM inválidas, modelo/region sin acceso, parámetro rechazado).'
+        : `Tipo: transitorio (red/servidor/throttle), pero ya van ${this.consecutiveFailures} fallos consecutivos.`,
       '',
       'Impacto: el bot no puede responder mensajes ni clasificar posts de Instagram mientras dure.',
-      'Diagnóstico: `journalctl --user -u chopperbot -o cat | grep -iE "BadRequest|llm"` y `npx tsx scripts/live-kimi-smoke.ts`.',
+      'Diagnóstico: `journalctl --user -u chopperbot -o cat | grep -iE "Validation|AccessDenied|Throttling|llm"` y `npx tsx scripts/live-bedrock-smoke.ts`.',
       `(Máx. 1 alerta cada ${Math.round(ALERT_COOLDOWN_MS / 3_600_000)} h; avisaré cuando se recupere.)`,
     ]);
   }

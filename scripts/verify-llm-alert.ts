@@ -1,5 +1,5 @@
 // One-off verification: drive the LLM-health alert end-to-end so the operator
-// can confirm it lands in the admin channel without waiting for a real Kimi
+// can confirm it lands in the admin channel without waiting for a real Bedrock
 // outage. Exercises the EXACT production path: LlmHealthMonitor with the same
 // sendAdminAlert sink app.ts wires, fed a synthetic deterministic error and
 // then a success (so both the failure alert and the recovery notice post).
@@ -38,7 +38,7 @@ monitor.setSink((lines) => {
 
 const syntheticError = Object.assign(
   new Error(
-    '400 SYNTHETIC TEST (verify-llm-alert.ts) — not a real Kimi failure. If you can read this in the admin channel, the LLM-health alert works end to end.',
+    '400 SYNTHETIC TEST (verify-llm-alert.ts) — not a real Bedrock failure. If you can read this in the admin channel, the LLM-health alert works end to end.',
   ),
   { status: 400 },
 );

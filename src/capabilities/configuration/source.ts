@@ -82,7 +82,7 @@ export class ConfigurationToolSource implements ToolSource {
         name: 'config_system',
         description:
           'Bot health, known users, and destructive per-channel purge. `action`:\n' +
-          '• "bot_info" — uptime, Node version, Kimi model id, max output tokens, data dir, DB size, capabilities, binding/guild counts.\n' +
+          '• "bot_info" — uptime, Node version, Bedrock model id + region, max output tokens, data dir, DB size, capabilities, binding/guild counts.\n' +
           '• "list_users" {limit?} — Discord users the bot has seen (id, tag, first/last seen), most-recent first.\n' +
           '• "purge_channel_data" {capability, channel_id, confirm} — DESTRUCTIVE. Delete every row `<capability>_*` carries for a channel (tables with a channel_id column). Clears instagram_monitor_seen_posts (per-channel dedup); calendar_events is per-user (no-op — use config_calendar). Refuses configuration_*. Requires confirm:true.',
         inputSchema: {
@@ -355,7 +355,8 @@ export class ConfigurationToolSource implements ToolSource {
         uptime_ms: uptimeMs,
         uptime_human: humanDuration(uptimeMs),
         node_version: process.version,
-        kimi_model_id: config.KIMI_MODEL_ID,
+        bedrock_model_id: config.BEDROCK_MODEL_ID,
+        aws_region: config.AWS_REGION,
         max_output_tokens: config.MAX_OUTPUT_TOKENS,
         data_dir: config.CHOPPERBOT_DATA_DIR,
         db_path: this.deps.dbPath,

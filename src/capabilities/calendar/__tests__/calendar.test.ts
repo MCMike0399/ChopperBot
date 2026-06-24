@@ -14,12 +14,18 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 
 const { createMock } = vi.hoisted(() => ({ createMock: vi.fn() }));
-vi.mock('openai', () => {
-  class FakeOpenAI {
-    chat = { completions: { create: createMock } };
+vi.mock('@aws-sdk/client-bedrock-runtime', () => {
+  class BedrockRuntimeClient {
+    send = createMock;
     constructor(_opts?: unknown) {}
   }
-  return { default: FakeOpenAI, OpenAI: FakeOpenAI };
+  class ConverseCommand {
+    input: unknown;
+    constructor(input: unknown) {
+      this.input = input;
+    }
+  }
+  return { BedrockRuntimeClient, ConverseCommand };
 });
 
 const { ask } = await import('../../../llm/client.js');
@@ -37,37 +43,39 @@ async function bareStore() {
 
 function endStop(text: string) {
   return {
-    choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
-    usage: { prompt_tokens: 100, completion_tokens: 20 },
+    output: { message: { role: 'assistant', content: [{ text }] } },
+    stopReason: 'end_turn',
+    usage: { inputTokens: 100, outputTokens: 20 },
   };
 }
 
 function toolCalls(calls: Array<{ id: string; name: string; input: unknown }>) {
   return {
-    choices: [
-      {
-        index: 0,
-        message: {
-          role: 'assistant',
-          content: null,
-          tool_calls: calls.map((c) => ({
-            id: c.id,
-            type: 'function',
-            function: { name: c.name, arguments: JSON.stringify(c.input) },
-          })),
-        },
-        finish_reason: 'tool_calls',
+    output: {
+      message: {
+        role: 'assistant',
+        content: calls.map((c) => ({ toolUse: { toolUseId: c.id, name: c.name, input: c.input } })),
       },
-    ],
-    usage: { prompt_tokens: 100, completion_tokens: 20 },
+    },
+    stopReason: 'tool_use',
+    usage: { inputTokens: 100, outputTokens: 20 },
   };
 }
 
+// Find the Converse toolResult block carrying a given toolUseId across all sent
+// requests' messages, and return it in the legacy { tool_call_id, content }
+// shape the test bodies expect (content is the JSON-encoded tool payload).
 function findToolMessage(callIndex: number, toolCallId: string): { role: string; tool_call_id: string; content: string } {
-  const req = createMock.mock.calls[callIndex][0] as { messages: Array<{ role: string; tool_call_id?: string; content?: string }> };
-  const found = req.messages.find((m) => m.role === 'tool' && m.tool_call_id === toolCallId);
-  if (!found) throw new Error(`No tool message with id ${toolCallId}`);
-  return found as { role: string; tool_call_id: string; content: string };
+  const input = (createMock.mock.calls[callIndex][0] as { input: { messages: Array<{ content: Array<Record<string, unknown>> }> } }).input;
+  for (const m of input.messages) {
+    for (const block of m.content ?? []) {
+      const tr = (block as { toolResult?: { toolUseId: string; content: Array<{ text?: string }> } }).toolResult;
+      if (tr && tr.toolUseId === toolCallId) {
+        return { role: 'tool', tool_call_id: tr.toolUseId, content: tr.content?.[0]?.text ?? '' };
+      }
+    }
+  }
+  throw new Error(`No tool message with id ${toolCallId}`);
 }
 
 async function newCapability() {

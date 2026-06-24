@@ -2,18 +2,19 @@ import { describe, test, expect } from 'vitest';
 import { ImageAttachable } from '../attachable.js';
 
 describe('ImageAttachable', () => {
-  test('toContentPart returns OpenAI image_url shape with data URI', () => {
+  test('exposes the provider-neutral fields the LLM client needs', () => {
     const bytes = new Uint8Array([1, 2, 3]);
     const img = new ImageAttachable('test.png', 'image/png', bytes, 'png');
-    const part = img.toContentPart();
-    expect(part.type).toBe('image_url');
-    expect(part.image_url.url).toBe(`data:image/png;base64,${Buffer.from(bytes).toString('base64')}`);
+    expect(img.kind).toBe('image');
+    expect(img.fileName).toBe('test.png');
+    expect(img.mimeType).toBe('image/png');
+    expect(img.format).toBe('png');
+    expect(img.bytes).toBe(bytes);
   });
 
-  test('toContentPart preserves the provided mimeType in the data URI', () => {
-    const bytes = new Uint8Array([255, 216, 255]);
-    const img = new ImageAttachable('photo.jpg', 'image/jpeg', bytes, 'jpeg');
-    const part = img.toContentPart();
-    expect(part.image_url.url.startsWith('data:image/jpeg;base64,')).toBe(true);
+  test('preserves the jpeg format', () => {
+    const img = new ImageAttachable('photo.jpg', 'image/jpeg', new Uint8Array([255, 216, 255]), 'jpeg');
+    expect(img.format).toBe('jpeg');
+    expect(img.mimeType).toBe('image/jpeg');
   });
 });
