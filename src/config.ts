@@ -74,6 +74,17 @@ const ConfigSchema = z.object({
   // (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) is a cheaper ~good middle.
   // Switch via this var — no code change. All are multimodal (vision) + tools.
   BEDROCK_MODEL_ID: z.string().min(1).default('us.anthropic.claude-sonnet-4-6'),
+  // Effort tiers (added 2026-06-23). The bot picks a model per task via an
+  // `effort` level instead of a single global model, so we can pay for Sonnet's
+  // reliable multi-turn tool-calling only where it matters (chat + calendar)
+  // while using cheaper image-capable models for the high-volume IG classifier.
+  //   high   → calendar/chat (multi-turn tool use, friendly conversation)
+  //   medium → IG post classification + summary writing
+  //   low    → cheap/bulk image understanding (flyer OCR pre-pass)
+  // `effort: 'high'` resolves to BEDROCK_MODEL_ID, so existing behavior and that
+  // var are preserved. All three MUST be image-capable (the IG path needs vision).
+  BEDROCK_MODEL_MEDIUM: z.string().min(1).default('us.anthropic.claude-haiku-4-5-20251001-v1:0'),
+  BEDROCK_MODEL_LOW: z.string().min(1).default('us.amazon.nova-pro-v1:0'),
   MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
