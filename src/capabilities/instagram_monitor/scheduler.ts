@@ -14,6 +14,7 @@ import {
   type RecentPost,
 } from './fetcher.js';
 import { classifyPost, type Classification } from './classifier.js';
+import { sniffImageFormat, type ImageFormat } from '../../attachments/attachable.js';
 import { fetchCover as defaultFetchCover, publishPost as defaultPublishPost, type PublishResult } from './publisher.js';
 
 // Base polling cadence per account. Raised from 20 min → 60 min on 2026-05-29
@@ -105,7 +106,7 @@ const STATUS_DIGEST_HOUR = 21;
 export type ClassifyFn = (
   account: string,
   post: RecentPost,
-  opts: { cover?: { bytes: Uint8Array; mimeType: string; format: 'jpeg' }; nowMs: number },
+  opts: { cover?: { bytes: Uint8Array; mimeType: string; format: ImageFormat }; nowMs: number },
 ) => Promise<Classification>;
 export type PublishFn = (
   client: Client,
@@ -901,10 +902,20 @@ export class InstagramMonitorScheduler {
       if (this.disposed) return;
 
       // Classify once per post; same outcome for every channel that gets it.
+      // The cover is fetched anyway for publishing, so we hand it to the
+      // classifier too: many activist flyers carry the real qué/cuándo/dónde
+      // ONLY in the image, not the caption (the gap that made the bot miss a
+      // post's actual content). The classifier reads it on the medium tier.
       const coverBytes = await this.fetchCover(post.displayUrl);
+      // Sniff the real format from magic bytes — IG covers are usually JPEG but
+      // not guaranteed, and a mislabeled image is rejected by Bedrock. If we
+      // can't recognize it, omit it (the classifier falls back to caption-only).
+      const coverFormat = coverBytes ? sniffImageFormat(coverBytes) : null;
       const classification = await this.classify(acc.username, post, {
-        // Cover image omitted from the classifier prompt — caption-only
-        // classification is sufficient for our categories and saves tokens.
+        cover:
+          coverBytes && coverFormat
+            ? { bytes: coverBytes, mimeType: `image/${coverFormat}`, format: coverFormat }
+            : undefined,
         nowMs: Date.now(),
       });
 

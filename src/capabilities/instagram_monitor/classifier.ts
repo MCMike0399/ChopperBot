@@ -27,7 +27,7 @@ export interface Classification {
   reason?: string;
 }
 
-const SYSTEM_PROMPT = `Eres un curador de un canal de Discord que monitorea cuentas activistas mexicanas (feminismo, ecología, DDHH, antimilitarismo, mutual-aid).
+export const SYSTEM_PROMPT = `Eres un curador de un canal de Discord que monitorea cuentas activistas mexicanas (feminismo, ecología, DDHH, antimilitarismo, mutual-aid).
 
 Tu trabajo es decidir si un post de Instagram contiene algo que el canal debería ver:
 - EVENTO: una asamblea, marcha, mitin, foro, encuentro con fecha concreta.
@@ -77,6 +77,14 @@ export async function classifyPost(
     '',
     'Caption:',
     post.caption || '(sin caption)',
+    ...(opts.cover
+      ? [
+          '',
+          'Se adjunta la imagen (portada) del post. En estos colectivos muchos flyers ' +
+            'ponen el qué/cuándo/dónde SOLO en la imagen, no en el caption. LEE el texto ' +
+            'visible en la imagen y úsalo (junto con el caption) para clasificar y resumir.',
+        ]
+      : []),
   ].join('\n');
 
   const attachments = opts.cover
@@ -90,24 +98,40 @@ export async function classifyPost(
       ]
     : undefined;
 
-  const turn: Turn = { role: 'user', content: userText, attachments };
   const tools = composeToolSources([]);
 
+  // Medium tier (Haiku): cheaper than Sonnet, reads flyer text reliably, and
+  // writes clean Spanish summaries — validated in scripts/effort-experiment.ts
+  // against real captions + a synthesized flyer. The cover image (when present)
+  // is what lets the classifier read text that lives ONLY in the flyer, not the
+  // caption — the gap that made the bot miss a post's actual content.
+  //
+  // SAFETY NET: if the call with the image fails (Bedrock can reject an image —
+  // unexpected format, too large, transient), we retry caption-only before
+  // giving up. This guarantees the image path can never do WORSE than the old
+  // caption-only classifier: a relevant post is never silently dropped just
+  // because its cover was unusable.
   let raw = '';
   try {
-    raw = await ask({ system: SYSTEM_PROMPT, messages: [turn], tools });
+    const turn: Turn = { role: 'user', content: userText, attachments };
+    raw = await ask({ system: SYSTEM_PROMPT, messages: [turn], tools, effort: 'medium' });
   } catch (err) {
-    log.warn({ err, account, shortcode: post.shortcode }, 'classifier ask() failed');
-    return {
-      relevant: false,
-      type: 'otro',
-      title: '',
-      summary: '',
-      when: null,
-      where: null,
-      tags: [],
-      reason: `ask_failed: ${err instanceof Error ? err.message : String(err)}`,
-    };
+    if (attachments) {
+      log.warn(
+        { err, account, shortcode: post.shortcode },
+        'classifier ask() with cover failed — retrying caption-only',
+      );
+      try {
+        const textOnly: Turn = { role: 'user', content: userText };
+        raw = await ask({ system: SYSTEM_PROMPT, messages: [textOnly], tools, effort: 'medium' });
+      } catch (err2) {
+        log.warn({ err: err2, account, shortcode: post.shortcode }, 'classifier ask() failed');
+        return failClassification(`ask_failed: ${err2 instanceof Error ? err2.message : String(err2)}`);
+      }
+    } else {
+      log.warn({ err, account, shortcode: post.shortcode }, 'classifier ask() failed');
+      return failClassification(`ask_failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   const parsed = parseClassificationReply(raw);
@@ -116,18 +140,15 @@ export async function classifyPost(
       { account, shortcode: post.shortcode, raw: raw.slice(0, 200) },
       'classifier returned unparseable JSON',
     );
-    return {
-      relevant: false,
-      type: 'otro',
-      title: '',
-      summary: '',
-      when: null,
-      where: null,
-      tags: [],
-      reason: 'parse_error',
-    };
+    return failClassification('parse_error');
   }
   return parsed;
+}
+
+/** A non-relevant Classification carrying a failure `reason`, so callers never
+ * have to handle a null and an unclassifiable post is simply not pushed. */
+function failClassification(reason: string): Classification {
+  return { relevant: false, type: 'otro', title: '', summary: '', when: null, where: null, tags: [], reason };
 }
 
 const TYPE_VALUES: ReadonlySet<ClassificationType> = new Set([
