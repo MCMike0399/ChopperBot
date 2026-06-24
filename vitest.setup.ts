@@ -4,9 +4,10 @@
 process.env.DISCORD_TOKEN ??= 'test-discord-token';
 process.env.DISCORD_CHANNEL_ID ??= '12345678901234567890';
 process.env.CHOPPERBOT_CONFIG_CHANNEL_ID ??= '12345678901234567899';
-process.env.KIMI_API_KEY ??= 'test-kimi-api-key';
-process.env.KIMI_BASE_URL ??= 'https://api.kimi.com/coding/v1';
-process.env.KIMI_MODEL_ID ??= 'test-model';
+process.env.ACCESS_KEY_ID ??= 'test-access-key-id';
+process.env.SECRET_ACCESS_KEY ??= 'test-secret-access-key';
+process.env.AWS_REGION ??= 'us-east-1';
+process.env.BEDROCK_MODEL_ID ??= 'test-model';
 process.env.MAX_OUTPUT_TOKENS ??= '4096';
 process.env.MAX_TOOL_ITERATIONS ??= '5';
 process.env.LOG_LEVEL ??= 'fatal';

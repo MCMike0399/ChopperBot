@@ -17,7 +17,7 @@ export interface ConfigDbSourceDeps {
  * Read-only DB window for the config console: list/describe tables and run
  * ad-hoc SELECTs to answer questions about application state.
  *
- * SAFETY: this is the one place we hand Kimi raw SQL, so writes are blocked by
+ * SAFETY: this is the one place we hand the LLM raw SQL, so writes are blocked by
  * defense-in-depth — (1) a leading-keyword allowlist, (2) a ban on assignment
  * PRAGMAs, and (3) better-sqlite3's `statement.readonly` flag (true iff the
  * statement makes no changes). We execute on the shared handle (not a separate

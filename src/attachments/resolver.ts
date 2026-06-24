@@ -44,10 +44,10 @@ async function downloadBytes(url: string): Promise<Uint8Array> {
 }
 
 /**
- * Resolve Discord message attachments into Kimi-compatible Attachables. Only
+ * Resolve Discord message attachments into LLM-compatible Attachables. Only
  * image formats (png/jpeg/gif/webp) are supported — PDFs, csv, docx, etc.
- * land in the "unsupported attachment type, skipping" branch because the
- * Kimi Code API does not accept documents.
+ * land in the "unsupported attachment type, skipping" branch (the bot only
+ * sends images to the Bedrock Converse API).
  */
 export async function resolveAttachments(message: Message): Promise<Attachable[]> {
   if (message.attachments.size === 0) return [];

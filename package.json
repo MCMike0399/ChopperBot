@@ -1,7 +1,7 @@
 {
   "name": "chopperbot",
   "version": "0.1.0",
-  "description": "Discord Q&A bot for fintech project, powered by the Moonshot Kimi Code API.",
+  "description": "Discord Q&A bot for fintech project, powered by Amazon Bedrock (Converse API).",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -18,10 +18,10 @@
     "node": ">=20"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1074.0",
     "better-sqlite3": "^12.10.0",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
-    "openai": "^6.39.0",
     "pdf-lib": "^1.17.1",
     "pino": "^9.5.0",
     "undici": "^6.24.1",

@@ -7,7 +7,7 @@ export interface ToolHandlerResult {
 /**
  * Provider-neutral tool spec emitted by each ToolSource. The LLM client is the
  * only place that knows how to wrap this into its provider's tool format
- * (OpenAI: `{ type: 'function', function: { name, description, parameters } }`).
+ * (Bedrock Converse: `{ toolSpec: { name, description, inputSchema: { json } } }`).
  */
 export interface ToolSpec {
   name: string;

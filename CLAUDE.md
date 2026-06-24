@@ -11,14 +11,16 @@ pnpm run build          # tsc → dist/
 pnpm run start          # node dist/index.js (prod entry)
 pnpm run dev            # tsx watch src/index.ts
 
-# Tests — vitest, real SQLite (`:memory:`), mocked OpenAI client.
+# Tests — vitest, real SQLite (`:memory:`), mocked Bedrock client.
 npx vitest run                                                # full suite
 npx vitest                                                    # watch mode
 npx vitest run src/capabilities/calendar/__tests__/store.test.ts   # single file
 npx vitest run -t "creates an event"                          # single test by name pattern
 
-# Smoke test against the REAL Kimi API (NOT run by `pnpm test`; costs request budget):
-KIMI_API_KEY=sk-kimi-... tsx scripts/live-kimi-smoke.ts
+# Live e2e smoke against REAL Amazon Bedrock (NOT run by `pnpm test`; spends token budget).
+# Reads ACCESS_KEY_ID/SECRET_ACCESS_KEY/AWS_REGION/BEDROCK_MODEL_ID from .env. Exercises a
+# plain turn, the tool-calling loop, vision, and the real IG classifier (relevant + meme):
+npx tsx scripts/live-bedrock-smoke.ts
 ```
 
 `vitest.setup.ts` pre-fills required env vars at module load so `src/config.ts` (which validates at import) doesn't crash test runs.
@@ -34,13 +36,13 @@ pnpm run build && systemctl --user restart chopperbot.service
 systemctl --user status chopperbot.service        # confirm: active (running)
 ```
 
-The single unit is **`chopperbot.service`** (a `systemd --user` unit at `~/.config/systemd/user/chopperbot.service`). It runs `node dist/index.js` with `WorkingDirectory=` the repo root (so dotenv reads `.env` from here), `Restart=always`/`RestartSec=15`, and a crashloop guard (`StartLimitIntervalSec=300`/`StartLimitBurst=10`). `loginctl enable-linger` is set so it starts at **boot** without an interactive login. Running `node` directly (no shell rc sourced) is deliberate — it stops a stale `export KIMI_API_KEY=...` in `~/.bashrc` from shadowing `.env`.
+The single unit is **`chopperbot.service`** (a `systemd --user` unit at `~/.config/systemd/user/chopperbot.service`). It runs `node dist/index.js` with `WorkingDirectory=` the repo root (so dotenv reads `.env` from here), `Restart=always`/`RestartSec=15`, and a crashloop guard (`StartLimitIntervalSec=300`/`StartLimitBurst=10`). `loginctl enable-linger` is set so it starts at **boot** without an interactive login. Running `node` directly (no shell rc sourced) is deliberate — it stops a stale `export ACCESS_KEY_ID=...` in `~/.bashrc` from shadowing `.env`.
 
 The unit is generated from the template at **`deploy/systemd/chopperbot.service`** by substituting two placeholders (`__REPO__` → repo root, `__NODE__` → node path). That snapshot is not auto-synced — if you change the installed unit, re-copy it into `deploy/` (and run `systemctl --user daemon-reload`).
 
 **The three auxiliary launchd agents were intentionally NOT ported.** On the Mac, `com.user.chopperbot-watcher` (log-watcher → desktop notifications), `com.user.chopperbot-daily-summary` (21:00 notification), and `com.user.chopperbot-health-check` (every 30 min) all fired `osascript`/Sosumi notifications, and `chopperbot-status.sh` was a SwiftBar menu-bar plugin — none of that exists on a headless Pi. **On the Pi there are no timers and no log-watcher: the bot alerts the config Discord channel directly, and everything else is `journalctl`** (see "Logs & observability"). The alert surface (all through the shared `sendAdminAlert` in `src/discord/admin-alert.ts`, all Spanish, all swallow their own send errors):
 - **IG monitor** (from the scheduler): auth-expired, circuit-breaker, budget-exhausted, polling-resumed, and the 21:00 daily status digest — see "Instagram monitor scheduler". These replaced the Mac watcher's role and revived the old `chopperbot-daily-summary`.
-- **LLM health** (`src/llm/health.ts`, added 2026-06-12): every Kimi completion in `ask()` reports to `llmHealth`; deterministic 4xx (400/401/403/404/422 — config/protocol errors that never self-heal, e.g. the K2.7 `temperature` 400 that silently broke the classifier for hours) alert on the FIRST failure, transient errors (429/5xx/network) after 3 consecutive, rate-limited to 1 per 6 h, with a one-shot recovery notice (`✅ LLM recuperado`) when service returns. Sink injected in `app.ts` post-login; without a sink (tests/scripts) it just logs (`llm.health.alerting` / `llm.health.recovered`). Verify end-to-end: `npx tsx scripts/verify-llm-alert.ts` (posts a clearly-marked synthetic alert).
+- **LLM health** (`src/llm/health.ts`, added 2026-06-12): every Bedrock Converse call in `ask()` reports to `llmHealth`; deterministic 4xx (400/401/403/404/422 — config/protocol errors that never self-heal: a `ValidationException`, revoked/insufficient IAM creds, a missing `bedrock:InvokeModel` permission, a bad model id) alert on the FIRST failure, transient errors (Throttling/5xx/network) after 3 consecutive, rate-limited to 1 per 6 h, with a one-shot recovery notice (`✅ LLM recuperado`) when service returns. Status lives on `err.$metadata.httpStatusCode` (AWS SDK), with a name-based fallback (`Throttling*` transient, `Validation/AccessDenied/ResourceNotFound*` deterministic). Sink injected in `app.ts` post-login; without a sink (tests/scripts) it just logs (`llm.health.alerting` / `llm.health.recovered`). Verify end-to-end: `npx tsx scripts/verify-llm-alert.ts` (posts a clearly-marked synthetic alert).
 - **Crash restarts** (`src/lifecycle.ts`): SIGINT/SIGTERM write `data/.shutdown-clean`; boot consumes it and compares against `data/.boot-stamp`. Booted-before + no clean marker = the previous process died (crash/OOM/SIGKILL) and systemd revived it → `⚠️ ChopperBot se reinició tras un fallo` after login. Crashloop-debounced (previous boot <15 min ago → log `lifecycle.unclean_restart_detected` only, no Discord spam; systemd's StartLimitBurst caps the loop anyway). Note this means a `kill -9` test WILL page the channel.
 If broader push alerts are ever wanted (phone push without Discord), the cleanest add is still a log-tail service POSTing to ntfy.sh (`deploy/bin/chopperbot-log-watcher.py` has the matching logic; only the `notify()` sink changes).
 
@@ -60,14 +62,14 @@ The old macOS artifacts are kept in **`deploy/`** purely for reference/rollback:
 - `src/index.ts` → `src/app.ts` — process entry and boot wiring (see "Boot sequence").
 - `src/config.ts` — Zod-validated env config; **validates at import**, so a missing required var crashes the process (and any test that imports it — hence `vitest.setup.ts`).
 - `src/lifecycle.ts` — signal handling + clean-vs-crash restart detection (drives the crash-restart Discord alert).
-- `src/llm/` — the Kimi client (`client.ts`, the agent loop) and the health watchdog (`health.ts`).
+- `src/llm/` — the Bedrock Converse client (`client.ts`, the agent loop) and the health watchdog (`health.ts`).
 - `src/discord/` — gateway `client.ts`, per-turn `handlers.ts`, reply-chain `history.ts`, reply splitting `chunk.ts`, and the shared `admin-alert.ts`.
 - `src/capabilities/<name>/` — one self-contained dir per capability (`calendar`, `configuration`, `general_chat`, `instagram_monitor`). `capability.ts` (interface), `registry.ts`, and `routing.ts` are the framework glue.
-- `src/tools/source.ts` — provider-neutral `ToolSource` composition (`composeToolSources`); the LLM client is the only place that knows the OpenAI wire shape.
+- `src/tools/source.ts` — provider-neutral `ToolSource` composition (`composeToolSources`); the LLM client is the only place that knows the Bedrock Converse wire shape.
 - `src/memory/` — the shared SQLite store (`store.ts`) + the per-capability migration runner (`migrations.ts`).
 - `src/users/` — the framework Discord-user directory (the reserved `__framework__` namespace).
 - `src/attachments/` — image (vision) resolution for incoming Discord attachments.
-- `scripts/` — dev/proof/calibration scripts, **not tests** (some spend real Kimi/IG budget — see the per-script notes elsewhere in this file).
+- `scripts/` — dev/proof/calibration scripts, **not tests** (some spend real Bedrock/IG budget — see the per-script notes elsewhere in this file).
 - `deploy/` — the reference `systemd/` unit (live) plus the decommissioned macOS `launchd/`+`bin/` artifacts (reference/rollback only).
 - `calendar/` — the 7 Canva month-PDF templates; **tracked in git** and read at runtime from the repo root.
 
@@ -88,26 +90,27 @@ The old macOS artifacts are kept in **`deploy/`** purely for reference/rollback:
 2. `userDirectory.upsert()` registers the Discord user (lazy, idempotent — bumps `last_seen_at`).
 3. `buildHistory()` walks the reply chain backward (max 8 turns / 16k chars), strips the `_…sigue ↓_` continuation footer from bot turns, and reverses to chronological order.
 4. `capability.buildTurn(ctx)` returns `{ system, tools }` for *this* message. Capabilities decide whether to rebuild every turn (calendar embeds an upcoming-events snapshot, configuration embeds current time) or cache.
-5. `ask({ system, messages, tools })` drives a multi-turn agent loop against Kimi (max `MAX_TOOL_ITERATIONS`). Within a single `ask()` call, identical `(toolName, JSON-stable-input)` tool calls are deduplicated from a per-turn cache (only successful results are cached).
+5. `ask({ system, messages, tools })` drives a multi-turn agent loop against Bedrock (max `MAX_TOOL_ITERATIONS`). Within a single `ask()` call, identical `(toolName, JSON-stable-input)` tool calls are deduplicated from a per-turn cache (only successful results are cached).
 6. If the loop runs out of iterations while still emitting tool_calls, a final **forcing pass** runs the model **without tools** to extract a text answer instead of leaving the user with a fallback string.
 7. Long replies are split by `chunkBotReply()` — markdown code fences are preserved across chunk boundaries (closed with ``` and reopened with the same language tag); non-tail chunks get the `_…sigue ↓_` footer so users know to reply to the last message.
 
 ### LLM client (`src/llm/client.ts`)
 
-Moonshot Kimi Code via the OpenAI SDK. Non-obvious behaviors:
+Amazon Bedrock via the **Converse API** (`@aws-sdk/client-bedrock-runtime`, `ConverseCommand`). The Converse API gives one uniform messages/tools/image interface across every Bedrock model, so swapping `BEDROCK_MODEL_ID` needs no code change. Migrated off Moonshot Kimi Code (OpenAI SDK) on 2026-06-23. Non-obvious behaviors:
 
-- **The `kimi-for-coding` model id is a rolling alias** Moonshot repoints server-side; `/coding/v1/models` reports the underlying model in `display_name`. On 2026-06-12 it was repointed to **K2.7 Code** (256k context, `supports_image_in: true`, `supports_thinking_type: "only"` = thinking always on). No client opt-in needed — but alias repoints can ship **breaking API changes overnight** (see temperature below), so after a Kimi release check the journal for `BadRequestError` and re-run `scripts/live-kimi-smoke.ts`.
-- **Do NOT send `temperature`.** Since the K2.7 repoint the endpoint 400s any value except 1 ("invalid temperature: only 1 is allowed for this model"). This silently broke the deployed bot's IG-post classifier for ~hours on 2026-06-12 (the old code hardcoded `0.2`). The client now omits the parameter entirely so the server default applies regardless of future allowed values.
-- **User-Agent gating.** Requests with the default `openai-node` UA get a 403 ("Kimi For Coding is currently only available for Coding Agents…"). `KIMI_USER_AGENT` defaults to `claude-cli/1.0.0`, which passes (still true under K2.7). If the allowlist changes, override via env.
-- **Reasoning content.** When thinking mode is on (always, under K2.7), every assistant turn (including tool_call turns) returns `reasoning_content`. The gateway rejects follow-ups that don't echo it back, so the loop re-attaches it to the assistant message before the next request.
+- **Model id is `BEDROCK_MODEL_ID`** (default `us.amazon.nova-pro-v1:0` — Amazon Nova Pro via the **us cross-region inference profile**). Nova Pro is multimodal (image input), strong at multi-step tool calling (the calendar/config agent loops need it) and multilingual (Spanish), and far cheaper than Claude. Drop to `us.amazon.nova-lite-v1:0` to cut cost if the high-volume IG classifier dominates spend. The **`us.` prefix is the cross-region inference profile** required for Nova in us-east-1; the bare `amazon.nova-pro-v1:0` only works where the account serves it on-demand. After changing the model, re-run `npx tsx scripts/live-bedrock-smoke.ts`.
+- **Auth is an IAM access-key pair**: `ACCESS_KEY_ID` + `SECRET_ACCESS_KEY` (+ optional `AWS_SESSION_TOKEN`), region `AWS_REGION` (default us-east-1). The var names are deliberately **un-prefixed** (not `AWS_ACCESS_KEY_ID`) so they don't collide with an ambient AWS CLI credential on the host. The IAM principal needs `bedrock:InvokeModel` (and `InvokeModelWithResponseStream`) on the Nova foundation-model ARNs **and** the `us.amazon.nova-*` inference-profile ARN — a cross-region profile routes to us-east-1/us-east-2/us-west-2, so the foundation-model resource must be region-wildcarded. The live deployment's `chopperbot-readonly` user carries an inline `chopperbot-bedrock-invoke` policy granting exactly this (added 2026-06-23). A missing permission surfaces as `AccessDeniedException` (403) — `classifyLlmError` treats it as deterministic and pages the config channel on the first failure.
+- **No `temperature` sent.** The client passes only `inferenceConfig.maxTokens` (= `MAX_OUTPUT_TOKENS`); sampling params are left at the model default.
+- **Tool loop contract.** On `stopReason === 'tool_use'`, the assistant turn (with its `toolUse` blocks) is echoed back into history verbatim — Converse requires the originating `toolUse` block be present for the matching `toolResult` to validate — then one **user** turn carrying one `toolResult` block per call is appended. The forcing pass (iteration cap hit) re-sends **without `toolConfig`** so the model must emit text.
+- **Image fixtures gotcha:** Nova rejects degenerate 1×1 images ("may not meet the required format"); real IG flyer covers are full-size and fine. The smoke test synthesizes a real 64×64 PNG for the vision check.
 
 ### Image attachments (vision input, `src/attachments/`)
 
-The bot accepts **images only** — the Kimi Code API rejects documents (PDF/csv/docx), so `resolveAttachments()` drops anything that isn't `png`/`jpeg`/`gif`/`webp` (detected by content-type first, then file extension) with a `Unsupported attachment type, skipping` warning. It is called in `handlers.ts` *before* `buildTurn()` and attaches the resolved images to the user `Turn`. Caps (config): `MAX_ATTACHMENT_COUNT` (5 — extras silently ignored) and `MAX_ATTACHMENT_BYTES` (10 MB — oversize skipped); downloads have a 30 s abort timeout and a failed download is logged, not fatal. In `llm/client.ts`, `buildUserOrAssistantMessage()` only emits OpenAI multi-part `content` (a `text` part + one `image_url` part per image, base64 `data:` URI via `ImageAttachable.toContentPart()`) **when attachments are present** — a plain-text turn stays a plain string. Attachments ride only the *current* user turn; history turns reconstructed by `buildHistory()` carry text only.
+The bot accepts **images only** — `resolveAttachments()` drops anything that isn't `png`/`jpeg`/`gif`/`webp` (detected by content-type first, then file extension) with a `Unsupported attachment type, skipping` warning. It is called in `handlers.ts` *before* `buildTurn()` and attaches the resolved images to the user `Turn`. Caps (config): `MAX_ATTACHMENT_COUNT` (5 — extras silently ignored) and `MAX_ATTACHMENT_BYTES` (10 MB — oversize skipped); downloads have a 30 s abort timeout and a failed download is logged, not fatal. `ImageAttachable` is provider-neutral (just `bytes`/`mimeType`/`format`); in `llm/client.ts`, `buildMessage()` emits a Converse content array (a `{ text }` block + one `{ image: { format, source: { bytes } } }` block per image) **when attachments are present**, else a single `{ text }` block. Attachments ride only the *current* user turn; history turns reconstructed by `buildHistory()` carry text only.
 
 ### Capabilities and tools
 
-Each Capability composes one or more `ToolSource`s via `composeToolSources()` (`src/tools/source.ts`). Tool specs are **provider-neutral** (`{ name, description, inputSchema }`); the LLM client is the only place that knows how to wrap them into OpenAI's `{ type: 'function', function: {...} }` shape. Tool name collisions across sources fail at boot — fix the duplicate, don't suppress.
+Each Capability composes one or more `ToolSource`s via `composeToolSources()` (`src/tools/source.ts`). Tool specs are **provider-neutral** (`{ name, description, inputSchema }`); the LLM client is the only place that knows how to wrap them into Bedrock Converse's `{ toolSpec: { name, description, inputSchema: { json } } }` shape. Tool name collisions across sources fail at boot — fix the duplicate, don't suppress.
 
 ### Persistence
 
@@ -206,9 +209,9 @@ The bot fetches **direct** from the host's residential IP — there is no longer
 
 ## Env & configuration gotchas
 
-- **dotenv `override: false`.** A stale `export KIMI_API_KEY=...` (or any other config var) in `~/.zshrc` shadows `.env`. The fix is `unset` in your shell, not flipping override — legitimate dev workflows depend on shell-var overrides.
-- **Required** at boot: `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, `KIMI_API_KEY`. Anything else has a default in the Zod schema.
-- There is **no AWS integration**. The `SECRETS_MANAGER_ID` / AWS Secrets Manager hydration (`src/secrets.ts`) was removed on 2026-06-03 along with the `AWS_REGION` config field — it existed only to feed the long-gone Lambda relay / Bedrock path. Config now comes solely from `.env` (via dotenv) and the live env. A stray `AWS_*` left in `.env` is harmless (Zod ignores unknown keys).
+- **dotenv `override: false`.** A stale `export ACCESS_KEY_ID=...` (or any other config var) in `~/.zshrc` shadows `.env`. The fix is `unset` in your shell, not flipping override — legitimate dev workflows depend on shell-var overrides.
+- **Required** at boot: `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, `ACCESS_KEY_ID`, `SECRET_ACCESS_KEY`. Anything else has a default in the Zod schema (`AWS_REGION` → us-east-1, `BEDROCK_MODEL_ID` → `us.amazon.nova-pro-v1:0`).
+- **AWS Bedrock is the LLM backend** (migrated off Kimi 2026-06-23). The bot calls the Bedrock Converse API with the IAM key pair `ACCESS_KEY_ID`/`SECRET_ACCESS_KEY` (+ optional `AWS_SESSION_TOKEN`) in region `AWS_REGION`. There is **no** other AWS integration — no Secrets Manager, no Lambda relay (both long removed). The deployment's IAM user `chopperbot-readonly` was granted an inline `chopperbot-bedrock-invoke` policy (`bedrock:InvokeModel` on the Nova foundation models + `us.amazon.nova-*` inference profiles). The `AWS_DIVE_*` keys in `.env` are a **different** principal and are not used by the bot. A stray unknown `AWS_*` var is harmless (Zod ignores unknown keys).
 - Three ways to seed channel→capability bindings via env (priority order, set in `src/config.ts`):
   1. `DISCORD_CHANNEL_CAPABILITIES` — preferred. JSON array of `{ guildId?, guildName?, channels: [{ id, capability }] }`.
   2. `DISCORD_AUTHORIZED_CHANNELS` — legacy: all listed channels run `DEFAULT_CAPABILITY`.
@@ -225,7 +228,7 @@ journalctl --user -u chopperbot -f -o cat | npx pino-pretty   # pretty
 journalctl --user -u chopperbot -b -n 100 --no-pager  # since boot / last 100 lines
 ```
 
-Log lines worth recognizing: `Discord client ready` (gateway up), `InstagramMonitorCapability scheduler started` then recurring `instagram_monitor.tick` (poller alive), `instagram_monitor.auth.expired` (**IG cookies expired** — refresh `IG_SESSIONID`/`IG_CSRFTOKEN`/`IG_DS_USER_ID` in `.env`, then `systemctl --user restart chopperbot.service`), `llm.health.alerting`/`llm.health.recovered` (Kimi requests failing/recovered — mirrors the Discord alert), `lifecycle.unclean_restart_detected` (previous process crashed), and pino `level: 50/60` = warn/error/fatal.
+Log lines worth recognizing: `Discord client ready` (gateway up), `InstagramMonitorCapability scheduler started` then recurring `instagram_monitor.tick` (poller alive), `instagram_monitor.auth.expired` (**IG cookies expired** — refresh `IG_SESSIONID`/`IG_CSRFTOKEN`/`IG_DS_USER_ID` in `.env`, then `systemctl --user restart chopperbot.service`), `llm.health.alerting`/`llm.health.recovered` (Bedrock requests failing/recovered — mirrors the Discord alert), `lifecycle.unclean_restart_detected` (previous process crashed), and pino `level: 50/60` = warn/error/fatal.
 
 For ad-hoc state (no status UI on the Pi), query SQLite directly, e.g. `sqlite3 data/chopperbot.db 'SELECT username, consecutive_failures, last_polled_at FROM instagram_monitor_accounts ORDER BY username;'`.
 
