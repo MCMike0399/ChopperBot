@@ -62,16 +62,18 @@ const ConfigSchema = z.object({
   // Optional STS session token (only for temporary credentials).
   AWS_SESSION_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   AWS_REGION: z.string().min(1).default('us-east-1'),
-  // Bedrock model id (Converse API). Default: Amazon Nova Pro via the us
-  // cross-region inference profile — multimodal (image input), strong
-  // multilingual (Spanish), and notably better at multi-step tool calling than
-  // Nova Lite (which the calendar/config agent loops need). Still cheaper than
-  // Claude Haiku and a fraction of Sonnet/Opus. Drop to `us.amazon.nova-lite-v1:0`
-  // to cut cost if the high-volume IG classifier dominates spend and the
-  // tool-loop quality is acceptable. The `us.` prefix is the cross-region
-  // inference profile required for Nova in us-east-1; use the bare
-  // `amazon.nova-pro-v1:0` if your account/region serves it on-demand.
-  BEDROCK_MODEL_ID: z.string().min(1).default('us.amazon.nova-pro-v1:0'),
+  // Bedrock model id (Converse API). Default: Claude Sonnet 4.6 via the us
+  // cross-region inference profile. Chosen after a full bake-off on the calendar
+  // conversation (2026-06-23, scripts/model-competition.ts + calendar-bedrock-smoke.ts):
+  // Sonnet gave the cleanest real-conversation results (right weekday, one-off
+  // with location, duplicate detection, no series fragmentation) — closest to
+  // the old Kimi behavior. Nova Pro/Lite corrupted recurring edits and leaked
+  // `<thinking>`; Llama 4 leaked code; the best image-capable OPEN-WEIGHT model,
+  // Qwen3-VL-235B (`qwen.qwen3-vl-235b-a22b`), was clean + multimodal but
+  // fragmented/duplicated in multi-turn use; Haiku 4.5
+  // (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) is a cheaper ~good middle.
+  // Switch via this var — no code change. All are multimodal (vision) + tools.
+  BEDROCK_MODEL_ID: z.string().min(1).default('us.anthropic.claude-sonnet-4-6'),
   MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),

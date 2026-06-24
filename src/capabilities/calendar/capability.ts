@@ -140,22 +140,25 @@ function renderSystemPrompt(
 # Conversación de seguimiento (IMPORTANTE)
 Antes de crear un evento necesitas como mínimo:
 1. **Título** claro.
-2. **Fecha** y **hora de inicio**.
-Si falta algo o es ambiguo, **haz una pregunta concisa a la vez** hasta tenerlo. Pregunta también, cuando aplique:
-- **Lugar** (casi todos los eventos tienen sala/lugar — pídelo si no lo dieron).
-- **¿Se repite?** Si la persona dice "cada miércoles", "semanal", "todos los días", es una **serie** → usa \`recurrence_freq\`. Si no queda claro si es único o recurrente, pregúntalo.
+2. **Hora de inicio**, y la **fecha** — o, si es serie, la **cadencia** ("todos los jueves", "cada día").
+Si falta algo REQUERIDO o es ambiguo, **haz UNA pregunta concisa a la vez** hasta tenerlo. Lo demás es OPCIONAL: pídelo como mucho una vez y **NO bloquees la creación** por ello:
+- **Lugar**: pídelo si no lo dieron, pero si ya tienes lo requerido, créalo igual (puedes dejar el lugar vacío).
+- **¿Se repite?** "cada miércoles", "semanal", "todos los días" → es una **serie**, usa \`recurrence_freq\`. Si no queda claro si es único o recurrente, pregúntalo.
 - Hora de fin o descripción solo si la persona las menciona.
-No inventes datos. No crees el evento hasta tener título + fecha + hora. Si la persona ya dio todo en un mensaje, créalo de una vez sin preguntas innecesarias.
+**Fecha de inicio de una serie:** si dan la cadencia pero no una fecha (p. ej. "todos los jueves a las 8"), **NO la preguntes** — infiere la PRIMERA ocurrencia como el próximo día que cuadre desde la hora local actual.
+**Fin de la serie (\`recurrence_until_iso\`) es OPCIONAL:** la serie es **indefinida** por defecto. **NUNCA preguntes "¿hasta cuándo se repite?"** — solo acótala si la persona da una fecha de término por iniciativa propia.
+No inventes el título ni la hora. Si el mensaje ya **nombra** el evento ("el evento de asamblea ordinaria", "club de cine", "crea X") ese ES el título — úsalo tal cual, **no preguntes "¿cuál es el título?"**. En cuanto tengas título + hora + (fecha o cadencia), **créalo sin preguntas innecesarias** (primero revisa duplicados con \`calendar_search_events\` como se indica abajo).
 
 # Conciencia temporal
 - UTC actual: ${now.toISOString()}
 - Hora local actual: ${formatInTimezone(now.getTime())} (${DEFAULT_TIMEZONE})
+- **Hoy es ${new Intl.DateTimeFormat('es-MX', { timeZone: DEFAULT_TIMEZONE, weekday: 'long' }).format(now)}.** Cuenta los días de la semana a partir de hoy: "el próximo jueves" / "todos los jueves" es el siguiente jueves en el calendario desde esta fecha (no el día de hoy ni mañana salvo que coincidan).
 - ${DEFAULT_TIMEZONE} es **UTC-6 todo el año** (sin horario de verano desde octubre 2022). El desfase es fijo −06:00; no uses "CDT".
 - Resuelve tiempos relativos ("mañana", "el sábado", "hoy a las 8") contra la hora **local**, luego conviértelos a ISO 8601 UTC para la herramienta.
   - Ejemplo: sábado 20 de junio 2026 a las 8:00 PM (CDMX) = 2026-06-20T20:00:00−06:00 = **2026-06-21T02:00:00Z** → pásalo como \`start_at_iso\`.
 
 # Eventos recurrentes
-- Frecuencias soportadas: \`daily\`, \`weekly\`, \`monthly\`. \`start_at_iso\` es la PRIMERA ocurrencia; opcionalmente \`recurrence_until_iso\` acota la serie.
+- Frecuencias soportadas: \`daily\`, \`weekly\`, \`monthly\`. \`start_at_iso\` es la PRIMERA ocurrencia; opcionalmente \`recurrence_until_iso\` acota la serie. Si no se da, la serie es **indefinida** — no preguntes por una fecha de término.
 - Una sola fila por serie — NUNCA crees un evento por cada semana. El renderizador dibuja cada ocurrencia en su celda automáticamente (un evento semanal aparece en cada semana del PDF).
 - Frecuencias no soportadas ("cada 15 días", "entre semana"): dilo y ofrece la alternativa semanal.
 

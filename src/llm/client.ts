@@ -217,12 +217,22 @@ export async function ask({ system, messages, tools }: AskInput): Promise<string
   return finalText;
 }
 
-/** Concatenate all `text` content blocks in a Converse message. */
+/** Concatenate all `text` content blocks in a Converse message, stripping any
+ * `<thinking>…</thinking>` reasoning the model may inline into the visible text
+ * (some Bedrock models — e.g. Amazon Nova — leak it; Claude does not). Defensive
+ * so a future BEDROCK_MODEL_ID swap can't post raw chain-of-thought to Discord. */
 function extractText(blocks: ContentBlock[]): string {
-  return blocks
+  const text = blocks
     .filter((b): b is ContentBlock.TextMember => 'text' in b)
     .map((b) => b.text)
-    .join('')
+    .join('');
+  return text
+    // Well-formed <thinking>…</thinking> / <think>…</think> blocks.
+    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
+    // Unclosed leading reasoning block (truncated by max_tokens): drop from the
+    // opening tag to the first blank line, then any stray lone tags.
+    .replace(/^\s*<think(?:ing)?>[\s\S]*?(?:\n\s*\n|$)/i, '')
+    .replace(/<\/?think(?:ing)?>/gi, '')
     .trim();
 }
 
