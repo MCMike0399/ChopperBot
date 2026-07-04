@@ -97,7 +97,7 @@ export class FileScannerCapability implements Capability {
       try {
         if (message.author?.bot) return;
         if (message.attachments.size === 0) return;
-        if (!this.isWatched(message.channelId)) return;
+        if (!this.isWatched(message.channelId, message.guildId)) return;
         void this.watcher?.handleMessage(message);
       } catch (err) {
         log.error({ err }, 'file_scanner.listener.error');
@@ -121,12 +121,23 @@ export class FileScannerCapability implements Capability {
     }
   }
 
-  /** Watched-channel membership with a short TTL cache (avoids a DB read per message). */
-  private isWatched(channelId: string): boolean {
+  /**
+   * Whether a message's channel should be scanned, with a short TTL cache
+   * (avoids a DB read per message). The watched set may contain, besides plain
+   * channel ids: `all` (every channel the bot can see, across all guilds) and
+   * `guild:<guildId>` (every channel the bot can see in that one guild). Since
+   * the bot only receives MessageCreate for channels it has access to, these
+   * wildcards naturally scope to "everywhere ChopperBot can read".
+   */
+  private isWatched(channelId: string, guildId: string | null): boolean {
     const now = Date.now();
     if (!this.watchedCache || now - this.watchedCache.at > WATCHED_CACHE_TTL_MS) {
       this.watchedCache = { ids: new Set(this.store!.getWatchedChannels()), at: now };
     }
-    return this.watchedCache.ids.has(channelId);
+    const set = this.watchedCache.ids;
+    if (set.has('all')) return true;
+    if (set.has(channelId)) return true;
+    if (guildId && set.has(`guild:${guildId}`)) return true;
+    return false;
   }
 }

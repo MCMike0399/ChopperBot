@@ -13,6 +13,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.2.0 — 2026-07-03
+
+🛡️ **El análisis de archivos ahora cubre todo el servidor**
+
+La revisión de archivos con VirusTotal ya no se limita a uno o dos canales: ahora ChopperBot puede vigilar **todos los canales del servidor** a los que tiene acceso, incluidos los que se creen en el futuro. Así, cualquier archivo (que no sea imagen) que alguien suba queda protegido, sin importar el canal.
+
+Los administradores lo activan desde la consola de configuración con una sola instrucción (vigilar "este servidor"). No hace falta ir agregando canales uno por uno.
+
+---
+
 ## 1.1.0 — 2026-07-03
 
 🛡️ **Nueva función: revisión de archivos con VirusTotal**

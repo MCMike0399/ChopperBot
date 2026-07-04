@@ -109,7 +109,7 @@ export function formatScannerStatus(input: {
   lines.push(enabled ? 'Estado: **activo**' : 'Estado: **inactivo** (falta `VIRUSTOTAL_API_KEY`)');
   lines.push(
     watchedChannels.length > 0
-      ? `Canales vigilados: ${watchedChannels.map((c) => `<#${c}>`).join(', ')}`
+      ? `Canales vigilados: ${watchedChannels.map(renderWatchTarget).join(', ')}`
       : 'Canales vigilados: _ninguno_ (usa `set_channels`)',
   );
   lines.push(`Presupuesto 24 h: ${used24h}/${budget} peticiones · espaciado ${Math.round(minIntervalMs / 1000)}s`);
@@ -124,6 +124,13 @@ export function formatScannerStatus(input: {
     }
   }
   return lines;
+}
+
+/** Render a watched-target token (channel id, `all`, or `guild:<id>`) for humans. */
+export function renderWatchTarget(token: string): string {
+  if (token === 'all') return '**todos los canales visibles**';
+  if (token.startsWith('guild:')) return `**todo el servidor** (guild \`${token.slice(6)}\`)`;
+  return `<#${token}>`;
 }
 
 /** Verdict-stats one-liner, reused where a compact summary is handy. */
