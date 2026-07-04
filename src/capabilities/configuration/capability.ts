@@ -15,6 +15,7 @@ import { CONFIGURATION_MIGRATIONS, ConfigurationStore } from './store.js';
 import { ConfigurationToolSource } from './source.js';
 import { ConfigInstagramAdminSource } from './instagram-admin-source.js';
 import { ConfigCalendarAdminSource } from './calendar-admin-source.js';
+import { ConfigFileScannerAdminSource } from './filescanner-admin-source.js';
 import { ConfigDbSource } from './db-source.js';
 import { renderConfigurationPrompt } from './preamble.js';
 
@@ -100,10 +101,14 @@ export class ConfigurationCapability implements Capability {
       userDirectory,
       callerUserId: ctx.userId,
     });
+    const filescanner = new ConfigFileScannerAdminSource({
+      db: this.db,
+      callerUserId: ctx.userId,
+    });
     const database = new ConfigDbSource({ db: this.db, store: this.store });
     return {
       system: renderConfigurationPrompt(ctx.now),
-      tools: composeToolSources([core, instagram, calendar, database]),
+      tools: composeToolSources([core, instagram, calendar, filescanner, database]),
     };
   }
 }

@@ -111,6 +111,35 @@ const ConfigSchema = z.object({
   // soft-pauses (auto-recovers as the window drains) and the operator is
   // alerted. A backstop against runaway request volume.
   IG_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(120),
+
+  // ── VirusTotal file scanner (file_scanner capability) ──────────────────────
+  // Optional. When VIRUSTOTAL_API_KEY is set, the file_scanner capability
+  // registers a passive listener that scans non-image uploads in the watched
+  // channels and posts a friendly verdict. Unset → the capability self-disables
+  // at boot (logs a warning; nothing else changes), so the code can ship and be
+  // tested against a mocked client before a key exists.
+  VIRUSTOTAL_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // Channels the scanner watches, independent of the channel→capability routing
+  // table (the scanner coexists with whatever else a channel already does).
+  // JSON array (`["123","456"]`) or comma-separated snowflakes. Seeds the DB
+  // setting on first boot; after that the DB value wins (manage it live from the
+  // config channel via `config_filescanner action:set_channels`).
+  FILE_SCANNER_CHANNEL_IDS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // Rolling-24h ceiling on VirusTotal API calls. Free tier is 500/day; 480 keeps
+  // headroom. On hit the scanner skips the file and tells the user politely.
+  VIRUSTOTAL_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(480),
+  // Minimum spacing between VT API calls (free tier is 4 req/min = 15s; 16s is a
+  // safe margin). Enforced by a single global serialized request queue.
+  VIRUSTOTAL_MIN_REQUEST_INTERVAL_MS: z.coerce.number().int().positive().default(16_000),
+  // Max analysis polls before giving up on a fresh upload (each poll is one
+  // budgeted, spaced call; ~8 polls ≈ a couple of minutes of VT queue time).
+  VIRUSTOTAL_MAX_POLLS: z.coerce.number().int().positive().default(8),
+  // Files larger than this are skipped (VT's simple /files upload endpoint caps
+  // around 32 MB on the public API).
+  VIRUSTOTAL_MAX_FILE_BYTES: z.coerce.number().int().positive().default(32 * 1024 * 1024),
+  // Number of engines flagging "malicious" required to render 🛑 malicioso. A
+  // single detection below this (or any suspicious hit) renders ⚠️ sospechoso.
+  VIRUSTOTAL_MALICIOUS_THRESHOLD: z.coerce.number().int().positive().default(2),
 });
 
 const parsed = ConfigSchema.safeParse(process.env);
