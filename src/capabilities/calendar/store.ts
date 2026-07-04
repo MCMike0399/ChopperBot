@@ -280,23 +280,59 @@ export class CalendarStore {
     return this.expand(this.candidateMasters(fromMs, toMs), fromMs, toMs);
   }
 
+  /**
+   * Fuzzy title/description search over the shared calendar.
+   *
+   * The old implementation was a raw `LIKE '%q%'`: a contiguous, accent- and
+   * punctuation-sensitive substring match. But the model routinely echoes a
+   * title with different punctuation/casing/accents than what's stored — e.g. it
+   * searches `"club de poesia rosario castellanos"` for the stored
+   * `"Club de poesía: Rosario Castellanos"` — and it may reorder words. The colon
+   * and the dropped accent both broke the substring match, so real events came
+   * back as zero rows and the bot wrongly told mods the event didn't exist.
+   *
+   * We now pull the candidate masters in the date window and rank them in JS
+   * after Unicode-normalizing BOTH sides (lowercase, strip diacritics, fold
+   * punctuation to spaces): a full-phrase hit wins, otherwise we score by the
+   * fraction of *distinctive* query words present (stopwords like "de"/"la"
+   * ignored). An empty / "*" query returns everything in the window (so a
+   * broad `query:"*"` call behaves like a scoped list instead of matching zero).
+   *
+   * Returns at most ONE representative occurrence per matching master (the next
+   * upcoming one, else the earliest), most-relevant first — so a weekly series
+   * surfaces once, not ~17 times.
+   */
   search(q: string, fromMs: number | null, toMs: number | null, limit: number): CalendarOccurrence[] {
-    const like = `%${q}%`;
     const lo = fromMs ?? 0;
     const hi = toMs ?? Date.now() + DEFAULT_LIST_HORIZON_MS;
-    const masters = this.db
-      .prepare(
-        `SELECT * FROM calendar_events
-         WHERE (title LIKE ? OR IFNULL(description, '') LIKE ?)
-           AND start_at <= ?
-           AND (
-             recurrence_freq IS NULL AND start_at >= ?
-             OR recurrence_freq IS NOT NULL
-                AND (recurrence_until IS NULL OR recurrence_until >= ?)
-           )`,
-      )
-      .all(like, like, hi, lo, lo) as CalendarEvent[];
-    return this.expand(masters, lo, hi).slice(0, limit);
+    const normQuery = normalizeForSearch(q);
+
+    const scored = this.candidateMasters(lo, hi)
+      .map((master) => ({ master, score: searchScore(normQuery, master) }))
+      .filter((x) => x.score >= SEARCH_MIN_SCORE)
+      .sort((a, b) => b.score - a.score || a.master.start_at - b.master.start_at);
+    if (scored.length === 0) return [];
+
+    // Expand only the matched masters, then collapse to one representative
+    // occurrence per master (prefer the next upcoming one) so a recurring series
+    // isn't returned dozens of times.
+    const expanded = this.expand(scored.map((s) => s.master), lo, hi); // ascending by start_at
+    const now = Date.now();
+    const repByMaster = new Map<number, CalendarOccurrence>();
+    for (const occ of expanded) {
+      const cur = repByMaster.get(occ.id);
+      if (!cur) { repByMaster.set(occ.id, occ); continue; }
+      if (cur.start_at < now && occ.start_at >= now) repByMaster.set(occ.id, occ);
+    }
+
+    // Emit in relevance order (`scored` is already ranked).
+    const out: CalendarOccurrence[] = [];
+    for (const { master } of scored) {
+      const rep = repByMaster.get(master.id);
+      if (rep) out.push(rep);
+      if (out.length >= limit) break;
+    }
+    return out;
   }
 
   /** Expand masters into occurrences, applying per-occurrence overrides. */
@@ -514,6 +550,49 @@ export class CalendarStore {
       )
       .run(channelId, Date.now());
   }
+}
+
+/** Minimum `searchScore` for a master to be considered a match. */
+const SEARCH_MIN_SCORE = 0.6;
+
+/**
+ * Words too common to be distinctive in Spanish/English event titles. Dropped
+ * from the token-fraction score so "club de cine" doesn't half-match every
+ * "club de …" event on the shared "club"/"de" tokens alone.
+ */
+const SEARCH_STOPWORDS = new Set([
+  'de', 'la', 'el', 'los', 'las', 'un', 'una', 'unos', 'unas', 'y', 'o', 'a', 'en',
+  'del', 'con', 'para', 'por', 'the', 'of', 'and', 'to', 'in', 'on',
+]);
+
+/** Lowercase, strip diacritics, fold punctuation to spaces, collapse whitespace. */
+function normalizeForSearch(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '') // combining diacritical marks
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]+/g, ' ') // punctuation (incl. the ":" that broke LIKE) → space
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/**
+ * How well a normalized query matches an event (0 = no match, higher = better):
+ *  - empty query → 1 (match everything, so a "*"/list-style call returns all)
+ *  - full normalized phrase is a substring of title+description → 2 (best)
+ *  - otherwise the fraction of distinctive query words present (0..1)
+ */
+function searchScore(normQuery: string, event: CalendarEvent): number {
+  if (normQuery === '') return 1;
+  const hay = normalizeForSearch(`${event.title} ${event.description ?? ''}`);
+  if (hay.includes(normQuery)) return 2;
+  const all = normQuery.split(' ').filter(Boolean);
+  const distinctive = all.filter((t) => t.length > 1 && !SEARCH_STOPWORDS.has(t));
+  const tokens = distinctive.length > 0 ? distinctive : all;
+  if (tokens.length === 0) return 0;
+  let matched = 0;
+  for (const t of tokens) if (hay.includes(t)) matched++;
+  return matched / tokens.length;
 }
 
 function toOccurrence(master: CalendarEvent, occ: ExpandedOccurrence): CalendarOccurrence {
