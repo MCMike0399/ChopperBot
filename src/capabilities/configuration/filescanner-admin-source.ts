@@ -10,6 +10,8 @@ const WINDOW_MS = 24 * 60 * 60 * 1000;
 export interface ConfigFileScannerAdminDeps {
   db: Database.Database;
   callerUserId: string;
+  /** Guild the config channel lives in — resolves the "este servidor" keyword. */
+  guildId: string | null;
 }
 
 /**
@@ -39,7 +41,7 @@ export class ConfigFileScannerAdminSource implements ToolSource {
           'Admin the VirusTotal file scanner (works from the config channel). `action`:\n' +
           '• "status" — whether scanning is enabled, the channels being watched, the 24h VirusTotal request budget used/remaining, and cache verdict counts.\n' +
           '• "list_channels" — the channel ids currently watched.\n' +
-          '• "set_channels" {channels} — REPLACE the watched-channel set. `channels` is a comma/space-separated list of channel ids (or a JSON array). Pass an empty string to stop watching everything. Takes effect within ~10s (no restart).\n' +
+          '• "set_channels" {channels} — REPLACE the watched-channel set. `channels` may be: a comma/space-separated list of channel ids (or a JSON array); the keyword "este servidor"/"server"/"guild" to watch EVERY channel the bot can see in THIS server; "todos"/"all" to watch every channel in every server the bot is in; or an empty string to stop watching. You can also pass explicit `guild:<serverId>` tokens. Takes effect within ~10s (no restart).\n' +
           '• "scan_stats" — recent scans and totals by verdict.',
         inputSchema: {
           type: 'object',
@@ -91,27 +93,38 @@ export class ConfigFileScannerAdminSource implements ToolSource {
         case 'list_channels':
           return { status: 'success', payload: { channels: this.store.getWatchedChannels() } };
         case 'set_channels': {
-          const raw = typeof obj.channels === 'string' ? obj.channels : '';
-          const ids = parseChannelIdEnv(raw);
-          const invalid = ids.filter((id) => !/^\d{17,20}$/.test(id));
+          const raw = (typeof obj.channels === 'string' ? obj.channels : '').trim();
+          const kw = raw.toLowerCase();
+          let ids: string[];
+          if (kw === 'all' || kw === 'todos') {
+            ids = ['all'];
+          } else if (['este servidor', 'server', 'servidor', 'guild', 'here', 'this server'].includes(kw)) {
+            if (!this.deps.guildId) {
+              return { status: 'error', payload: { error: 'No puedo resolver el servidor actual (mensaje sin guild).' } };
+            }
+            ids = [`guild:${this.deps.guildId}`];
+          } else {
+            ids = parseChannelIdEnv(raw);
+          }
+          const isValid = (t: string) =>
+            /^\d{17,20}$/.test(t) || t === 'all' || /^guild:\d{17,20}$/.test(t);
+          const invalid = ids.filter((t) => !isValid(t));
           if (invalid.length > 0) {
             return {
               status: 'error',
-              payload: { error: `Estos no parecen ids de canal válidos: ${invalid.join(', ')}` },
+              payload: { error: `No reconozco estos valores: ${invalid.join(', ')} (usa ids de canal, "guild:<idServidor>", "este servidor" o "todos").` },
             };
           }
           this.store.setWatchedChannels(ids);
-          log.info({ tool: toolName, count: ids.length, by: this.deps.callerUserId }, 'file_scanner.set_channels');
-          return {
-            status: 'success',
-            payload: {
-              watched: ids,
-              note:
-                ids.length === 0
-                  ? 'Se limpió la lista: el escáner ya no vigila ningún canal.'
-                  : `Ahora vigilo ${ids.length} canal(es). Toma efecto en ~10s.`,
-            },
-          };
+          log.info({ tool: toolName, watched: ids, by: this.deps.callerUserId }, 'file_scanner.set_channels');
+          const note = ids.length === 0
+            ? 'Se limpió la lista: el escáner ya no vigila ningún canal.'
+            : ids.includes('all')
+              ? 'Ahora vigilo TODOS los canales que el bot puede ver (en todos los servidores). Toma efecto en ~10s.'
+              : ids.some((t) => t.startsWith('guild:'))
+                ? 'Ahora vigilo todos los canales visibles del/los servidor(es) indicado(s). Toma efecto en ~10s.'
+                : `Ahora vigilo ${ids.length} canal(es). Toma efecto en ~10s.`;
+          return { status: 'success', payload: { watched: ids, note } };
         }
         case 'scan_stats': {
           const counts = this.store.verdictCounts();

@@ -1,6 +1,6 @@
 import { describe, test, expect } from 'vitest';
 import { toStats, verdictFrom } from '../virustotal.js';
-import { isImageAttachment, renderScanMessage, type FileLine } from '../format.js';
+import { isImageAttachment, renderScanMessage, renderWatchTarget, type FileLine } from '../format.js';
 import { selectScannable } from '../watcher.js';
 
 describe('verdictFrom', () => {
@@ -42,6 +42,15 @@ describe('selectScannable', () => {
       opts,
     );
     expect(picked.map((a) => a.name)).toEqual(['d.pdf', 'e.js']);
+  });
+});
+
+describe('renderWatchTarget', () => {
+  test('renders channel ids, all, and guild wildcards', () => {
+    expect(renderWatchTarget('123456789012345678')).toBe('<#123456789012345678>');
+    expect(renderWatchTarget('all')).toContain('todos los canales');
+    expect(renderWatchTarget('guild:1435843683541979248')).toContain('todo el servidor');
+    expect(renderWatchTarget('guild:1435843683541979248')).toContain('1435843683541979248');
   });
 });
 
