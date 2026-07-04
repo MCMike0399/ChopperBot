@@ -121,9 +121,11 @@ const ConfigSchema = z.object({
   VIRUSTOTAL_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   // Channels the scanner watches, independent of the channel→capability routing
   // table (the scanner coexists with whatever else a channel already does).
-  // JSON array (`["123","456"]`) or comma-separated snowflakes. Seeds the DB
-  // setting on first boot; after that the DB value wins (manage it live from the
-  // config channel via `config_filescanner action:set_channels`).
+  // JSON array (`["123","456"]`) or comma/space-separated tokens. Each token is
+  // a channel snowflake, `guild:<serverId>` (all channels the bot can see in
+  // that server), or `all` (every channel it can see). Seeds the DB setting on
+  // first boot; after that the DB value wins (manage it live from the config
+  // channel via `config_filescanner action:set_channels`).
   FILE_SCANNER_CHANNEL_IDS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   // Rolling-24h ceiling on VirusTotal API calls. Free tier is 500/day; 480 keeps
   // headroom. On hit the scanner skips the file and tells the user politely.
