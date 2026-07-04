@@ -47,7 +47,7 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_search_events',
         description:
-          'Search the shared calendar by title/description (LIKE), optionally within a date range. ALWAYS call this before creating an event to check for a duplicate.',
+          'Fuzzy-search the shared calendar by title/description, optionally within a date range. Matching ignores accents, case, punctuation and word order (so "club de poesia rosario castellanos" finds "Club de poesía: Rosario Castellanos") — pass the words the mod used, no need to guess exact punctuation. Returns one row per matching event (with its numeric id), most-relevant first. Pass "*" or an empty query to list everything in range. ALWAYS call this before creating an event to check for a duplicate.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -172,7 +172,9 @@ export class CalendarToolSource implements ToolSource {
           return { status: 'success', payload: { events: rows.map(serialize) } };
         }
         case 'calendar_search_events': {
-          const query = asNonEmptyString(obj.query, 'query');
+          // Tolerant: "*" or empty means "list everything in range" (the store
+          // normalizes both to a match-all). Don't error on a broad query.
+          const query = asOptionalString(obj.query) ?? '';
           const fromMs = parseOptionalIso(obj.from_iso, 'from_iso');
           const toMs = parseOptionalIso(obj.to_iso, 'to_iso');
           const limit = clampInt(obj.limit, 1, 25, 10);
