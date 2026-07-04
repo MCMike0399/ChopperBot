@@ -13,6 +13,24 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.1.0 — 2026-07-03
+
+🛡️ **Nueva función: revisión de archivos con VirusTotal**
+
+Ahora ChopperBot cuida los canales: cuando alguien sube un archivo (que no sea una imagen), lo analiza automáticamente para avisarte si es seguro. **No hace falta mencionarlo** — reacciona solo al archivo.
+
+### Cómo funciona
+- 🔎 Mientras revisa el archivo verás un mensaje de "analizando…", y en cuanto termina te dice el resultado:
+  - ✅ **Limpio** — ningún antivirus lo marca como dañino.
+  - ⚠️ **Sospechoso** — algunos motores lo señalan; trátalo con cuidado.
+  - 🛑 **Malicioso** — varios antivirus lo detectan como peligroso. El bot lo marca bien claro y **avisa a la moderación** para que nadie lo abra.
+- 🔗 Cada resultado incluye un enlace a VirusTotal por si quieres ver el detalle completo.
+- ⚡ Si un archivo ya se conoce, la respuesta es casi instantánea; y el bot reparte con calma sus consultas para no saturar el servicio.
+
+Los administradores pueden elegir qué canales se vigilan desde la consola de configuración.
+
+---
+
 ## 1.0.1 — 2026-07-03
 
 🛠️ **Ajustes**
