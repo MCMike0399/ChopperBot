@@ -12,6 +12,7 @@ import { CalendarCapability } from './capabilities/calendar/capability.js';
 import { ConfigurationCapability } from './capabilities/configuration/capability.js';
 import { GeneralChatCapability } from './capabilities/general_chat/capability.js';
 import { InstagramMonitorCapability } from './capabilities/instagram_monitor/capability.js';
+import { FileScannerCapability } from './capabilities/file_scanner/capability.js';
 import { createClient } from './discord/client.js';
 import { registerHandlers } from './discord/handlers.js';
 import { sendAdminAlert } from './discord/admin-alert.js';
@@ -53,6 +54,7 @@ export async function run(): Promise<void> {
     configCap,
     new CalendarCapability(),
     new InstagramMonitorCapability(),
+    new FileScannerCapability(),
     new GeneralChatCapability(),
   ];
 
