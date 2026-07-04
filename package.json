@@ -1,6 +1,6 @@
 {
   "name": "chopperbot",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "description": "Discord Q&A bot for fintech project, powered by Amazon Bedrock (Converse API).",
   "private": true,
   "license": "MIT",
@@ -12,7 +12,8 @@
     "dev": "tsx watch src/index.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "release": "tsx scripts/publish-release.ts"
   },
   "engines": {
     "node": ">=20"
