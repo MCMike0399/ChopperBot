@@ -25,6 +25,23 @@ npx tsx scripts/live-bedrock-smoke.ts
 
 `vitest.setup.ts` pre-fills required env vars at module load so `src/config.ts` (which validates at import) doesn't crash test runs.
 
+## Release notes & versioning — IMPORTANT
+
+The bot has a **community-facing release-notes channel** on Discord (`RELEASE_NOTES_CHANNEL_ID`, default `1519178790058725508`). Versioning is **semantic** (`MAJOR.MINOR.PATCH`), and `package.json` `version` is the numeric source of truth (started at **1.0.0** on 2026-07-03). **`CHANGELOG.md`** at the repo root is the source of truth for release *content* — each `## <version> — <YYYY-MM-DD>` section is written in **community-friendly Spanish** (no tech jargon) because that exact text is what gets posted to Discord.
+
+```bash
+pnpm run release                 # publish the latest (topmost) CHANGELOG version
+pnpm run release 1.0.1           # publish a specific version
+npx tsx scripts/publish-release.ts 1.0.1 --dry-run   # preview the post, send nothing
+```
+
+`scripts/publish-release.ts` is a **dev-side script** (like the other `scripts/`), NOT a runtime capability — it logs into Discord with `DISCORD_TOKEN`, parses the requested version out of `CHANGELOG.md`, and posts it (`### Section` headings demoted to bold, `##` header rendered as `🚀 **ChopperBot vX.Y.Z**` + Spanish long-form date). Because it's dev-side, `RELEASE_NOTES_CHANNEL_ID` is read straight from the env and is **not** in the Zod config schema. Always `--dry-run` first — posting is a live, hard-to-reverse community message.
+
+**Standing convention for future sessions — when you ship a user-visible feature or fix, do all three before/at release:**
+1. Bump `package.json` `version` (PATCH for fixes, MINOR for new features, MAJOR for breaking changes).
+2. Add a new dated section to `CHANGELOG.md` in community-friendly Spanish, then publish it with `pnpm run release <version>`.
+3. **Update the relevant part of this CLAUDE.md** so it keeps reflecting the live feature set (this is an explicit user request — CLAUDE.md must not go stale as features land).
+
 ## Deployment context — IMPORTANT
 
 As of 2026-05-27 the live deployment runs on a **Raspberry Pi** (`raspberrypi`, `aarch64`, Node 22 at `/usr/bin/node`), supervised by a **systemd user service**. This repo directory at `/home/burbujamc/Documentos/ChopperBot` **IS** that live deployment. The former macOS/launchd host was decommissioned; the full migration record is kept in a **local-only, gitignored** `RASPBERRY_PI_MIGRATION.md` on this host (it was scrubbed from the repo's git history, so it exists on disk here but not in the repository).
