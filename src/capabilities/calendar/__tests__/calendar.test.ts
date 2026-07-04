@@ -146,6 +146,59 @@ describe('CalendarStore (direct, global)', () => {
     memory.close();
   });
 
+  // Regression for the live incident (2026-07-03): a mod asked to delete
+  // "club de poesía: rosario castellanos" and the LIKE search returned zero rows
+  // because the query dropped the stored title's colon (and, in other turns, the
+  // accent). Fuzzy matching must find it regardless of punctuation/accents/order.
+  test('search is tolerant of punctuation, accents, case and word order', async () => {
+    const { store, memory } = await newCapability();
+    const ev = store.create({ created_by: 'U', title: 'Club de poesía: Rosario Castellanos', start_at: NOW.getTime() + 86_400_000 });
+
+    // Colon dropped (the exact failing query).
+    expect(store.search('club de poesía rosario castellanos', null, null, 10).map((r) => r.id)).toEqual([ev.id]);
+    // Accent dropped too.
+    expect(store.search('club de poesia rosario castellanos', null, null, 10).map((r) => r.id)).toEqual([ev.id]);
+    // Reordered + different case.
+    expect(store.search('ROSARIO castellanos poesia', null, null, 10).map((r) => r.id)).toEqual([ev.id]);
+    // A clearly different event is not matched on the shared "club"/"de" tokens.
+    expect(store.search('club de cine', null, null, 10)).toHaveLength(0);
+    memory.close();
+  });
+
+  test('search disambiguates two similar titles and excludes weak token overlap', async () => {
+    const { store, memory } = await newCapability();
+    const rosario = store.create({ created_by: 'U', title: 'Club de poesía: Rosario Castellanos', start_at: NOW.getTime() + 86_400_000 });
+    store.create({ created_by: 'U', title: 'Club de poesía: Jaime Sabines', start_at: NOW.getTime() + 2 * 86_400_000 });
+
+    // The distinctive words pin it to the right one; the other poetry club (only
+    // "club"+"poesia" in common, 2/4 < 0.6) is filtered out.
+    expect(store.search('rosario castellanos', null, null, 10).map((r) => r.id)).toEqual([rosario.id]);
+    memory.close();
+  });
+
+  test('search returns one representative per recurring master (not every occurrence)', async () => {
+    const { store, memory } = await newCapability();
+    const master = store.create({
+      created_by: 'U',
+      title: 'Círculo de estudios',
+      start_at: NOW.getTime() + 86_400_000,
+      recurrence_freq: 'weekly',
+    });
+    const rows = store.search('círculo de estudios', null, null, 25);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].id).toBe(master.id);
+    memory.close();
+  });
+
+  test('an empty or "*" query lists everything in range', async () => {
+    const { store, memory } = await newCapability();
+    store.create({ created_by: 'U', title: 'Uno', start_at: NOW.getTime() + 1000 });
+    store.create({ created_by: 'U', title: 'Dos', start_at: NOW.getTime() + 2000 });
+    expect(store.search('*', null, null, 10).map((r) => r.title)).toEqual(['Uno', 'Dos']);
+    expect(store.search('', null, null, 10).map((r) => r.title)).toEqual(['Uno', 'Dos']);
+    memory.close();
+  });
+
   test('recurring weekly event expands into multiple occurrences', async () => {
     const { store, memory } = await newCapability();
     const master = store.create({
