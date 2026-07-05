@@ -13,6 +13,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.2.1 — 2026-07-05
+
+🧵 **El análisis de archivos ya funciona en hilos y foros**
+
+Cuando alguien subía un archivo dentro de un hilo o de un canal de foro, ChopperBot reaccionaba con la lupa 🔬 pero no publicaba el resultado. Ya quedó corregido: ahora el veredicto (limpio / sospechoso / malicioso) también aparece en hilos y publicaciones de foro.
+
+Además, si en algún canal ChopperBot no tiene permiso para escribir, ahora lo detecta antes de revisar el archivo y avisa en los registros, en lugar de quedarse en silencio.
+
+---
+
 ## 1.2.0 — 2026-07-03
 
 🛡️ **El análisis de archivos ahora cubre todo el servidor**
