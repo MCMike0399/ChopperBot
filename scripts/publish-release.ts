@@ -8,10 +8,18 @@
 //   tsx scripts/publish-release.ts            # publish the latest (topmost) version
 //   tsx scripts/publish-release.ts 1.0.1      # publish a specific version
 //   tsx scripts/publish-release.ts 1.0.1 --dry-run   # print the post, don't send
+//   tsx scripts/publish-release.ts 1.0.1 --commit    # after publishing, git add -A + commit
+//   tsx scripts/publish-release.ts 1.0.1 --commit --push   # ...and push to the remote
+//
+// --commit/--push are OPT-IN (default publish touches git not at all) so the
+// same command can both announce the release and record it. It commits ONLY
+// after a successful post, staging the whole working tree under a
+// `Release vX.Y.Z` message — run it from a clean-except-for-this-release tree.
 //
 // Channel: RELEASE_NOTES_CHANNEL_ID env var, defaulting to the Revolución Z
 // novedades channel. Login uses DISCORD_TOKEN (same bot account).
 import 'dotenv/config';
+import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -88,9 +96,45 @@ function renderPost(section: ReleaseSection): string {
   ].join('\n');
 }
 
+/** First non-empty changelog line (bold stripped), used as the commit headline. */
+function releaseHeadline(body: string): string {
+  const line = body.split('\n').map((l) => l.trim()).find((l) => l.length > 0) ?? '';
+  return line.replace(/\*\*/g, '').trim();
+}
+
+/**
+ * Commit (and optionally push) the just-published release. Opt-in via
+ * --commit/--push so the default publish stays side-effect-free on git. Stages
+ * the whole working tree (the version bump + CHANGELOG + any still-uncommitted
+ * feature/docs) under a `Release vX.Y.Z` message and prints exactly what it
+ * staged. Deliberately NO Co-Authored-By trailer — this runs as whoever invoked
+ * it (human or agent), so it must not falsely attribute authorship.
+ */
+function commitRelease(section: ReleaseSection, push: boolean): void {
+  const sh = (cmd: string) => execSync(cmd, { encoding: 'utf8' }).trim();
+  const dirty = sh('git status --porcelain');
+  if (!dirty) {
+    console.log('ℹ️  Nothing to commit (working tree already clean).');
+  } else {
+    console.log(`\nStaging & committing:\n${dirty}`);
+    sh('git add -A');
+    const headline = releaseHeadline(section.body);
+    const msg = `Release v${section.version}` + (headline ? `\n\n${headline}` : '');
+    // -F - reads the message from stdin so the blank line + body survive.
+    execSync('git commit -F -', { input: msg, stdio: ['pipe', 'inherit', 'inherit'] });
+    console.log(`✅ Committed release v${section.version}.`);
+  }
+  if (push) {
+    execSync('git push', { stdio: 'inherit' });
+    console.log('✅ Pushed to remote.');
+  }
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const dryRun = args.includes('--dry-run');
+  const commit = args.includes('--commit');
+  const push = args.includes('--push');
   const versionArg = args.find((a) => !a.startsWith('--'));
 
   const md = readFileSync(changelogPath(), 'utf8');
@@ -125,6 +169,7 @@ async function main(): Promise<void> {
 
   if (dryRun) {
     console.log('(dry run — nothing sent)');
+    if (commit || push) console.log('(dry run — no git commit/push either)');
     return;
   }
 
@@ -150,6 +195,9 @@ async function main(): Promise<void> {
   } finally {
     await client.destroy();
   }
+
+  // Only reached on a successful publish — record it in git if asked.
+  if (commit || push) commitRelease(section, push);
 }
 
 main().catch((err) => {

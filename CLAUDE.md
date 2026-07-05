@@ -33,14 +33,19 @@ The bot has a **community-facing release-notes channel** on Discord (`RELEASE_NO
 pnpm run release                 # publish the latest (topmost) CHANGELOG version
 pnpm run release 1.0.1           # publish a specific version
 npx tsx scripts/publish-release.ts 1.0.1 --dry-run   # preview the post, send nothing
+pnpm run release 1.0.1 --commit --push               # publish, THEN git add -A + commit + push
 ```
 
 `scripts/publish-release.ts` is a **dev-side script** (like the other `scripts/`), NOT a runtime capability — it logs into Discord with `DISCORD_TOKEN`, parses the requested version out of `CHANGELOG.md`, and posts it (`### Section` headings demoted to bold, `##` header rendered as `🚀 **ChopperBot vX.Y.Z**` + Spanish long-form date). Because it's dev-side, `RELEASE_NOTES_CHANNEL_ID` is read straight from the env and is **not** in the Zod config schema. Always `--dry-run` first — posting is a live, hard-to-reverse community message.
 
-**Standing convention for future sessions — when you ship a user-visible feature or fix, do all three before/at release:**
-1. Bump `package.json` `version` (PATCH for fixes, MINOR for new features, MAJOR for breaking changes).
-2. Add a new dated section to `CHANGELOG.md` in community-friendly Spanish, then publish it with `pnpm run release <version>`.
-3. **Update the relevant part of this CLAUDE.md** so it keeps reflecting the live feature set (this is an explicit user request — CLAUDE.md must not go stale as features land).
+**Opt-in git flags (added 2026-07-05):** `--commit` and `--push` are OFF by default (the plain publish touches git not at all). When passed, they run **only after a successful post**, staging the *whole working tree* (`git add -A`) under a `Release vX.Y.Z` message (headline = the changelog entry's first line; **no** Co-Authored-By trailer, since the script runs as whoever invoked it). `--dry-run` short-circuits them too. Because it's `git add -A`, run it from a tree that's clean except for this release — it prints exactly what it stages. This exists so "announce + record the release" can be one command; committing the feature separately first (below) is equally fine and gives a richer commit message.
+
+**Standing SHIP CHECKLIST for future sessions — when you ship a user-visible feature or fix, gate on GREEN, then release:**
+1. **Verify it's green FIRST** — the release announces to the community, so never publish red. At minimum: `pnpm run typecheck` + `npx vitest run` pass, `pnpm run build` succeeds, the service restarts `active (running)`, and where there's a runtime surface you've *observed the new behavior work* (drive it / check `journalctl`), not just trusted the tests.
+2. Bump `package.json` `version` (PATCH for fixes, MINOR for new features, MAJOR for breaking changes).
+3. Add a new dated section to `CHANGELOG.md` in community-friendly Spanish (this exact text is what posts to Discord).
+4. **Update the relevant part of this CLAUDE.md** so it keeps reflecting the live feature set (explicit user request — CLAUDE.md must not go stale as features land).
+5. Commit + push the change, then **`--dry-run` the release** to preview, then publish for real: `pnpm run release <version>` (optionally `--commit --push` to fold the git step in). Publishing to the community is live and hard to reverse — only do it once steps 1–4 are done and green. If unsure whether to post publicly, publish the code/commit but leave the Discord announcement for the user to confirm.
 
 ## Deployment context — IMPORTANT
 
