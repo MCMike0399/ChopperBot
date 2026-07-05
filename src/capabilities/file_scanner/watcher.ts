@@ -1,4 +1,4 @@
-import type { Client, Message } from 'discord.js';
+import { PermissionFlagsBits, type Client, type Message } from 'discord.js';
 import { log } from '../../log.js';
 import type { FileScannerStore } from './store.js';
 import { FileScanner, downloadAttachment, type ScanOutcome } from './scanner.js';
@@ -53,12 +53,24 @@ export class FileScanWatcher {
     });
     if (toScan.length === 0) return;
 
+    // If we can't post the verdict, don't burn a VirusTotal budget call or leave
+    // a confusing react-then-unreact with no result. Surface the misconfig in the
+    // logs instead — this is almost always a missing "Send Messages in Threads"
+    // (forum posts/threads) or "Send Messages" permission on the channel.
+    if (!this.canPostVerdict(message)) {
+      log.warn(
+        { channelId: message.channelId, guildId: message.guildId },
+        'file_scanner.watcher.cannot_send',
+      );
+      return;
+    }
+
     const reaction = await message.react('🔬').catch(() => null);
     const lines: FileLine[] = toScan.map((a) => ({ fileName: a.name, status: { phase: 'queued' } }));
 
     let reply: Message | null = null;
     try {
-      reply = await message.reply(renderScanMessage(lines)).catch(() => null);
+      reply = await this.postInitial(message, lines);
 
       for (let i = 0; i < toScan.length; i++) {
         const att = toScan[i];
@@ -77,6 +89,62 @@ export class FileScanWatcher {
         await reaction.users.remove(this.deps.client.user.id).catch(() => {});
       }
     }
+  }
+
+  /**
+   * Whether the bot can actually post a verdict in this message's channel.
+   * Threads and forum posts require `SendMessagesInThreads`, which is a DISTINCT
+   * permission from `SendMessages` (enabling only the latter won't let the bot
+   * reply inside a thread/forum). Returns true when permissions can't be
+   * resolved — we never block on uncertainty, only on a positive denial.
+   */
+  private canPostVerdict(message: Message): boolean {
+    if (!message.inGuild()) return true;
+    const me = message.guild.members.me;
+    if (!me) return true;
+    const perms = message.channel.permissionsFor(me);
+    if (!perms) return true;
+    const needed = message.channel.isThread()
+      ? PermissionFlagsBits.SendMessagesInThreads
+      : PermissionFlagsBits.SendMessages;
+    return perms.has(needed);
+  }
+
+  /**
+   * Post the initial progress message. Prefer a reply (threads the verdict under
+   * the upload), but a reply carries a `message_reference` that Discord only
+   * accepts with `ReadMessageHistory` — so when we lack it we skip straight to a
+   * plain `channel.send()` (which doesn't need it) instead of a guaranteed-to-
+   * fail reply. A `.catch` fallback still covers any unexpected reply failure.
+   */
+  private async postInitial(message: Message, lines: FileLine[]): Promise<Message | null> {
+    const content = renderScanMessage(lines);
+    if (this.canReplyWithReference(message)) {
+      const reply = await message.reply(content).catch((err) => {
+        log.warn({ err, channelId: message.channelId }, 'file_scanner.watcher.reply_failed');
+        return null;
+      });
+      if (reply) return reply;
+    }
+    if (!message.channel.isSendable()) return null;
+    return await message.channel.send(content).catch((err) => {
+      log.warn({ err, channelId: message.channelId }, 'file_scanner.watcher.send_failed');
+      return null;
+    });
+  }
+
+  /**
+   * Whether a reply-with-reference will be accepted here: Discord requires
+   * `ReadMessageHistory` to attach a `message_reference`. Returns true when
+   * permissions can't be resolved (we optimistically try the reply then).
+   */
+  private canReplyWithReference(message: Message): boolean {
+    if (!message.inGuild()) return true;
+    const me = message.guild.members.me;
+    if (!me) return true;
+    const perms = message.channel.permissionsFor(me);
+    if (!perms) return true;
+    return perms.has(PermissionFlagsBits.ReadMessageHistory);
   }
 
   private async scanOne(att: AttachmentLike, uploader: string | null): Promise<ScanOutcome> {

@@ -1,6 +1,6 @@
 {
   "name": "chopperbot",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "description": "Discord Q&A bot for fintech project, powered by Amazon Bedrock (Converse API).",
   "private": true,
   "license": "MIT",
