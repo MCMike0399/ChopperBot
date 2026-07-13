@@ -13,6 +13,13 @@ export interface HandlerDeps {
   registry: CapabilityRegistry;
   router: CapabilityRouter;
   userDirectory: UserDirectory;
+  /**
+   * Optional guard for channels "claimed" by a passive capability that runs its
+   * own MessageCreate listener (e.g. event_intake owns the ticket categories).
+   * When it returns true, the main mention-gated handler stays out so the
+   * passive capability owns the channel — preventing a double-reply.
+   */
+  claimedChannel?: (message: Message) => boolean;
 }
 
 export function registerHandlers(client: Client, deps: HandlerDeps): void {
@@ -45,6 +52,9 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
 
   client.on(Events.MessageCreate, async (message) => {
     try {
+      // A passive capability (e.g. event_intake in the ticket categories) owns
+      // this channel via its own listener — stay out to avoid a double-reply.
+      if (deps.claimedChannel?.(message)) return;
       if (!shouldRespond(client, message, deps.router.allChannelIds())) return;
 
       const userText = stripBotMention(client, message.content).trim();

@@ -13,6 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.3.0 — 2026-07-12
+
+🎟️ **ChopperBot ahora te ayuda con las solicitudes de eventos por ticket**
+
+Cuando abres un ticket para proponer un círculo, taller o asamblea, ChopperBot lee tu formulario al instante y publica ahí mismo una **propuesta ordenada**: confirma que tu solicitud llegó, traduce el día y la hora a una fecha concreta (por ejemplo "domingo" + "8pm" → "domingo 19 de julio, 8:00 PM"), anota quién es el/la ponente y si hace falta que el equipo haga el flyer, y revisa si ya hay algo agendado ese día para avisar de posibles choques.
+
+Lo mejor: **lxs moderadorxs aprueban sin salir del ticket**. Basta con mencionar a ChopperBot ahí mismo ("@ChopperBot créalo") o pedirle un ajuste ("@ChopperBot mejor el sábado a las 7"), y el evento queda registrado en el calendario y publicado automáticamente. Ya no hay que copiar los datos a mano en otro canal.
+
+La última palabra siempre es de lxs moderadorxs: solo lxs Moderadorxs y Administradorxs pueden aprobar un evento; el resto puede afinar los detalles de su solicitud, pero no crearlo.
+
+---
+
 ## 1.2.1 — 2026-07-05
 
 🧵 **El análisis de archivos ya funciona en hilos y foros**

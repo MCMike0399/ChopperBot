@@ -16,6 +16,7 @@ import { ConfigurationToolSource } from './source.js';
 import { ConfigInstagramAdminSource } from './instagram-admin-source.js';
 import { ConfigCalendarAdminSource } from './calendar-admin-source.js';
 import { ConfigFileScannerAdminSource } from './filescanner-admin-source.js';
+import { ConfigEventIntakeAdminSource } from './eventintake-admin-source.js';
 import { ConfigDbSource } from './db-source.js';
 import { renderConfigurationPrompt } from './preamble.js';
 
@@ -106,10 +107,15 @@ export class ConfigurationCapability implements Capability {
       callerUserId: ctx.userId,
       guildId: ctx.guildId,
     });
+    const eventintake = new ConfigEventIntakeAdminSource({
+      db: this.db,
+      callerUserId: ctx.userId,
+      guildId: ctx.guildId,
+    });
     const database = new ConfigDbSource({ db: this.db, store: this.store });
     return {
       system: renderConfigurationPrompt(ctx.now),
-      tools: composeToolSources([core, instagram, calendar, filescanner, database]),
+      tools: composeToolSources([core, instagram, calendar, filescanner, eventintake, database]),
     };
   }
 }
