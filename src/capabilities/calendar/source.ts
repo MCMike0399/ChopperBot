@@ -16,8 +16,33 @@ import type { CalendarPublisher, PublishSummary } from './publisher.js';
  * scoping. After any create/update/delete, the affected month PDF(s) and the
  * ICS are re-rendered and pushed to the output channel (best-effort).
  */
+/** Names of the tools that MUTATE the calendar (gated by `allowWrite`). */
+const WRITE_TOOL_NAMES = new Set([
+  'calendar_create_event',
+  'calendar_update_event',
+  'calendar_delete_event',
+  'calendar_publish',
+]);
+
+/**
+ * Options to expose a RESTRICTED slice of the calendar tools — used by the
+ * event_intake capability so a ticket conversation only ever sees read tools
+ * (+ `calendar_create_event` for mods), never update/delete.
+ */
+export interface CalendarToolSourceOptions {
+  /** If set, `tools()` is filtered to exactly these tool names (allowlist). */
+  include?: readonly string[];
+  /**
+   * When `false`, any WRITE tool is hard-refused in `handle()` even if it was
+   * somehow advertised — defense-in-depth behind the `include` allowlist.
+   * Defaults to `true` (the calendar capability's full read+write behavior).
+   */
+  allowWrite?: boolean;
+}
+
 export class CalendarToolSource implements ToolSource {
   readonly name = 'calendar';
+  private readonly options: CalendarToolSourceOptions;
 
   constructor(
     private readonly store: CalendarStore,
@@ -25,13 +50,22 @@ export class CalendarToolSource implements ToolSource {
     private readonly nowMs: number,
     /** Optional — absent in tests; present at runtime to push to the output channel. */
     private readonly publisher?: CalendarPublisher,
-  ) {}
+    options?: CalendarToolSourceOptions,
+  ) {
+    this.options = options ?? {};
+  }
 
   async systemPromptSection(): Promise<string> {
     return '';
   }
 
   tools(): ToolSpec[] {
+    const specs = this.allTools();
+    const include = this.options.include;
+    return include ? specs.filter((t) => include.includes(t.name)) : specs;
+  }
+
+  private allTools(): ToolSpec[] {
     return [
       {
         name: 'calendar_list_upcoming',
@@ -162,6 +196,15 @@ export class CalendarToolSource implements ToolSource {
 
   async handle(toolName: string, input: unknown): Promise<ToolHandlerResult> {
     const t0 = Date.now();
+    // Server-side authority re-check: even if a write tool were advertised by
+    // mistake, a read-only bundle refuses it (belt-and-suspenders behind the
+    // per-author tool allowlist that event_intake builds).
+    if (this.options.allowWrite === false && WRITE_TOOL_NAMES.has(toolName)) {
+      return {
+        status: 'error',
+        payload: { error: 'Solo un moderador puede aprobar o crear un evento en el calendario.' },
+      };
+    }
     try {
       const obj = (input ?? {}) as Record<string, unknown>;
       switch (toolName) {

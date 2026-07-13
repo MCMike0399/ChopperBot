@@ -13,6 +13,7 @@ import { ConfigurationCapability } from './capabilities/configuration/capability
 import { GeneralChatCapability } from './capabilities/general_chat/capability.js';
 import { InstagramMonitorCapability } from './capabilities/instagram_monitor/capability.js';
 import { FileScannerCapability } from './capabilities/file_scanner/capability.js';
+import { EventIntakeCapability } from './capabilities/event_intake/capability.js';
 import { createClient } from './discord/client.js';
 import { registerHandlers } from './discord/handlers.js';
 import { sendAdminAlert } from './discord/admin-alert.js';
@@ -50,11 +51,15 @@ export async function run(): Promise<void> {
 
   const registry = new CapabilityRegistry();
   const configCap = new ConfigurationCapability();
+  // event_intake reuses the calendar's tables/tools, so it must init AFTER the
+  // calendar capability (whose migrations create calendar_events et al.).
+  const eventIntakeCap = new EventIntakeCapability();
   const candidates: Capability[] = [
     configCap,
     new CalendarCapability(),
     new InstagramMonitorCapability(),
     new FileScannerCapability(),
+    eventIntakeCap,
     new GeneralChatCapability(),
   ];
 
@@ -111,7 +116,16 @@ export async function run(): Promise<void> {
 
   // 4. Discord.
   client = createClient();
-  registerHandlers(client, { registry, router, userDirectory });
+  registerHandlers(client, {
+    registry,
+    router,
+    userDirectory,
+    // Let event_intake own its ticket categories (its own listener replies
+    // there) so the main mention handler doesn't also answer — no double-reply.
+    claimedChannel: registry.has(eventIntakeCap.id)
+      ? (message) => eventIntakeCap.isClaimedChannel(message)
+      : undefined,
+  });
 
   const shutdown = async (signal: string) => {
     log.info({ signal }, 'Shutting down');

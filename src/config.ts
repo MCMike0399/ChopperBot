@@ -142,6 +142,33 @@ const ConfigSchema = z.object({
   // Number of engines flagging "malicious" required to render 🛑 malicioso. A
   // single detection below this (or any suspicious hit) renders ⚠️ sospechoso.
   VIRUSTOTAL_MALICIOUS_THRESHOLD: z.coerce.number().int().positive().default(2),
+
+  // ── Event intake from the ticket funnel (event_intake capability) ──────────
+  // Passive capability that reads the Ticket Tool event-request form in a ticket
+  // channel, posts a normalized + conflict-checked proposal, and lets a MOD
+  // approve by talking to the bot (which auto-creates the calendar event). Like
+  // file_scanner it is NOT in the routing table and self-manages its own
+  // MessageCreate listener over a watched CATEGORY set. All three vars are
+  // optional (no secret needed): with no category configured it simply idles
+  // until a mod points it at the ticket category via `config_eventintake`.
+  //
+  // Categories the intake watches. JSON array (`["123"]`) or comma/space list.
+  // Each token is a CATEGORY snowflake, `guild:<serverId>` (every channel the
+  // bot can see in that server), or `all`. Seeds the DB setting on first boot;
+  // after that the DB value wins (manage it live from the config channel via
+  // `config_eventintake action:set_categories`).
+  EVENT_INTAKE_TICKET_CATEGORY_IDS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // Roles whose members may APPROVE a request (→ create the calendar event).
+  // Each token is a role id snowflake (deterministic — preferred) or a role
+  // NAME (accent/case-insensitive, e.g. "Moderador"); JSON array or comma list.
+  // Seeds the DB setting on first boot; DB wins after (manage via
+  // `config_eventintake action:set_mod_roles`). Empty/unset → the built-in
+  // default Moderador/Administrador/Administradora role IDS (see roles.ts),
+  // plus anyone with Discord's Administrator permission always qualifies.
+  EVENT_INTAKE_MOD_ROLES: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // Discord user id of the ticket bot whose form messages we parse. Defaults to
+  // Ticket Tool. Change it if the server switches ticket bots.
+  EVENT_INTAKE_TICKET_BOT_ID: z.string().regex(/^\d{17,20}$/).default('557628352828014614'),
 });
 
 const parsed = ConfigSchema.safeParse(process.env);

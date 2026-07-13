@@ -16,7 +16,7 @@ import {
 } from './store.js';
 import { CalendarToolSource } from './source.js';
 import { OutputChannelPublisher, type CalendarPublisher } from './publisher.js';
-import { formatInTimezone, DEFAULT_TIMEZONE } from './time.js';
+import { formatInTimezone, renderTemporalAwareness } from './time.js';
 import { availableMonthKeys } from './render.js';
 
 const SNAPSHOT_LIMIT = 8;
@@ -149,13 +149,7 @@ Si falta algo REQUERIDO o es ambiguo, **haz UNA pregunta concisa a la vez** hast
 **Fin de la serie (\`recurrence_until_iso\`) es OPCIONAL:** la serie es **indefinida** por defecto. **NUNCA preguntes "¿hasta cuándo se repite?"** — solo acótala si la persona da una fecha de término por iniciativa propia.
 No inventes el título ni la hora. Si el mensaje ya **nombra** el evento ("el evento de asamblea ordinaria", "club de cine", "crea X") ese ES el título — úsalo tal cual, **no preguntes "¿cuál es el título?"**. En cuanto tengas título + hora + (fecha o cadencia), **créalo sin preguntas innecesarias** (primero revisa duplicados con \`calendar_search_events\` como se indica abajo).
 
-# Conciencia temporal
-- UTC actual: ${now.toISOString()}
-- Hora local actual: ${formatInTimezone(now.getTime())} (${DEFAULT_TIMEZONE})
-- **Hoy es ${new Intl.DateTimeFormat('es-MX', { timeZone: DEFAULT_TIMEZONE, weekday: 'long' }).format(now)}.** Cuenta los días de la semana a partir de hoy: "el próximo jueves" / "todos los jueves" es el siguiente jueves en el calendario desde esta fecha (no el día de hoy ni mañana salvo que coincidan).
-- ${DEFAULT_TIMEZONE} es **UTC-6 todo el año** (sin horario de verano desde octubre 2022). El desfase es fijo −06:00; no uses "CDT".
-- Resuelve tiempos relativos ("mañana", "el sábado", "hoy a las 8") contra la hora **local**, luego conviértelos a ISO 8601 UTC para la herramienta.
-  - Ejemplo: sábado 20 de junio 2026 a las 8:00 PM (CDMX) = 2026-06-20T20:00:00−06:00 = **2026-06-21T02:00:00Z** → pásalo como \`start_at_iso\`.
+${renderTemporalAwareness(now)}
 
 # Eventos recurrentes
 - Frecuencias soportadas: \`daily\`, \`weekly\`, \`monthly\`. \`start_at_iso\` es la PRIMERA ocurrencia; opcionalmente \`recurrence_until_iso\` acota la serie. Si no se da, la serie es **indefinida** — no preguntes por una fecha de término.
