@@ -1,3 +1,4 @@
+import OpenAI from 'openai';
 import {
   BedrockRuntimeClient,
   ConverseCommand,
@@ -12,12 +13,34 @@ import { llmHealth } from './health.js';
 import type { Turn } from '../discord/history.js';
 import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source.js';
 
-// Single Bedrock client. Credentials are the short ACCESS_KEY_ID /
+// ── Two backends, chosen per turn ────────────────────────────────────────────
+// EVERY text turn — Discord chat, calendar/config tool-calling, event-intake
+// proposals, and the IG classifier's caption-only fallback — runs on Moonshot
+// Kimi 2.7 Thinking via the OpenAI-compatible chat-completions API. Bedrock
+// serves ONLY images: Kimi is text-only, so a turn carrying an attachment (the
+// IG post classifier's main call, or a chat message with an image) goes to
+// Amazon Nova Lite (the effort `low` tier). The routing rule:
+//
+//   has an image OR effort 'low'  → Bedrock (Amazon Nova Lite) — images only
+//   otherwise (all text)          → Kimi 2.7 Thinking
+//
+// The Kimi coding endpoint gates by client fingerprint: requests with the
+// default openai-node User-Agent get a 403 ("Kimi For Coding is currently only
+// available for Coding Agents…"). `claude-cli/1.0.0` is empirically on the
+// allowlist; override via KIMI_USER_AGENT if it changes.
+const kimi = new OpenAI({
+  apiKey: config.KIMI_API_KEY,
+  baseURL: config.KIMI_BASE_URL,
+  defaultHeaders: {
+    'User-Agent': config.KIMI_USER_AGENT,
+  },
+});
+
+// Bedrock client for the vision path. Credentials are the short ACCESS_KEY_ID /
 // SECRET_ACCESS_KEY pair from .env (NOT the AWS_-prefixed standard names, so a
 // stray AWS CLI credential on the host can't shadow them). Region defaults to
-// us-east-1. The Converse API gives one uniform messages/tools/image interface
-// across every Bedrock model, so swapping BEDROCK_MODEL_ID needs no code change.
-const client = new BedrockRuntimeClient({
+// us-east-1.
+const bedrock = new BedrockRuntimeClient({
   region: config.AWS_REGION,
   credentials: {
     accessKeyId: config.ACCESS_KEY_ID,
@@ -27,31 +50,22 @@ const client = new BedrockRuntimeClient({
 });
 
 /**
- * Effort tier → model. Lets each task choose how much model to pay for:
- *   high   — multi-turn tool-calling + friendly chat (calendar, general chat).
- *   medium — IG post classification / summary writing.
- *   low    — cheap/bulk image understanding (flyer text extraction).
- * Resolved to a concrete BEDROCK_MODEL_* id by `modelForEffort`.
+ * Effort tier. Since the 2026-07-13 Kimi repoint, `high` and `medium` are both
+ * text → Kimi; `low` is the Nova Lite vision tier. Bedrock (Nova Lite) is used
+ * ONLY for image turns — see the routing rule in ask().
+ *   high   — chat + calendar + event-intake (Kimi 2.7 Thinking).
+ *   medium — IG classifier (Kimi for the caption text; Nova Lite when the flyer
+ *            image is attached, via the images-always-go-to-Nova rule).
+ *   low    — the vision tier: Amazon Nova Lite (images).
  */
 export type Effort = 'high' | 'medium' | 'low';
-
-function modelForEffort(effort: Effort): string {
-  switch (effort) {
-    case 'low':
-      return config.BEDROCK_MODEL_LOW;
-    case 'medium':
-      return config.BEDROCK_MODEL_MEDIUM;
-    case 'high':
-    default:
-      return config.BEDROCK_MODEL_ID;
-  }
-}
 
 export interface AskInput {
   system: string;
   messages: Turn[];
   tools: ComposedTools;
-  /** Model tier for this call. Defaults to 'high' (= BEDROCK_MODEL_ID). */
+  /** Model tier. Defaults to 'high' (Kimi). Images always route to Nova Lite
+   * regardless of tier; 'low' also forces Nova Lite. */
   effort?: Effort;
 }
 
@@ -62,7 +76,7 @@ interface AgentTrace {
   outputTokens: number;
 }
 
-/** Run one Converse call, reporting its outcome to the LLM health watchdog
+/** Run one LLM call, reporting its outcome to the LLM health watchdog
  * (admin-channel alerts on outage, recovery notice on success). Rethrows —
  * callers' error handling is unchanged. */
 async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
@@ -77,32 +91,245 @@ async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Multi-turn agent loop against Amazon Bedrock via the Converse API. Each
- * iteration sends the current message list; if the model returns `tool_use`
- * content blocks, we run them and append a user turn carrying one `toolResult`
- * block per call for the next iteration. Caps at MAX_TOOL_ITERATIONS to bound
- * cost.
+ * Entry point. Bedrock (Amazon Nova Lite) serves ONLY image turns: route there
+ * when the turn carries an image, or when effort 'low' (the vision tier) is
+ * requested explicitly. Everything else — all text — goes to Kimi. Both run the
+ * same multi-turn agent loop contract; the wire shape differs by backend.
  */
-export async function ask({ system, messages, tools, effort = 'high' }: AskInput): Promise<string> {
-  const modelId = modelForEffort(effort);
+export async function ask(input: AskInput): Promise<string> {
+  const { messages, effort = 'high' } = input;
+  const hasImages = messages.some((m) => (m.attachments?.length ?? 0) > 0);
+  if (hasImages || effort === 'low') {
+    return askBedrock({ ...input, effort });
+  }
+  return askKimi(input);
+}
+
+// ── Kimi (OpenAI-compatible chat completions) ────────────────────────────────
+
+type ToolCall = {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+};
+
+type ChatMessage =
+  | { role: 'system'; content: string }
+  | { role: 'user'; content: string }
+  | {
+      role: 'assistant';
+      content: string | null;
+      tool_calls?: ToolCall[];
+      // Kimi-specific: in thinking mode every assistant turn (including
+      // tool_calls turns) comes back with reasoning_content, and the gateway
+      // rejects follow-up requests that don't echo it back. Optional on OpenAI
+      // proper, which ignores unknown fields.
+      reasoning_content?: string;
+    }
+  | { role: 'tool'; tool_call_id: string; content: string };
+
+/**
+ * Multi-turn agent loop against Moonshot Kimi 2.7 Thinking (OpenAI-compatible
+ * chat completions). Each iteration sends the current message list; if the
+ * model emits tool_calls, we run them and append role:'tool' messages for the
+ * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Text-only — image
+ * turns never reach here (see ask()).
+ */
+async function askKimi({ system, messages, tools }: AskInput): Promise<string> {
+  const modelId = config.KIMI_MODEL_ID;
+  const convo: ChatMessage[] = [
+    { role: 'system', content: system },
+    ...messages.map((m): ChatMessage =>
+      m.role === 'assistant'
+        ? { role: 'assistant', content: m.content }
+        : { role: 'user', content: m.content },
+    ),
+  ];
+
+  const trace: AgentTrace = { iterations: 0, toolCalls: [], inputTokens: 0, outputTokens: 0 };
+  let finalText = '';
+  let lastFinishReason: string | undefined;
+
+  // Per-turn dedup cache: identical (toolName, inputJson) returns the cached
+  // result. Only cache successes; errors get retried (the model usually fixes
+  // the input on the next try).
+  const toolCache = new Map<string, ToolHandlerResult>();
+  const openAiTools = buildOpenAiTools(tools.tools);
+
+  for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
+    trace.iterations = i + 1;
+
+    // No `temperature`: the kimi-for-coding endpoint rejects any value except 1
+    // (400 "only 1 is allowed for this model"). Omitting takes the server default.
+    const response = await observedCompletion(() =>
+      kimi.chat.completions.create({
+        model: modelId,
+        messages: convo.slice() as never,
+        tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
+        max_tokens: config.MAX_OUTPUT_TOKENS,
+      } as never),
+    );
+
+    if (response.usage) {
+      trace.inputTokens += response.usage.prompt_tokens ?? 0;
+      trace.outputTokens += response.usage.completion_tokens ?? 0;
+    }
+
+    const choice = response.choices?.[0];
+    if (!choice) {
+      log.warn('Kimi returned no choices');
+      break;
+    }
+    lastFinishReason = choice.finish_reason ?? undefined;
+    const assistantMsg = choice.message;
+    if (!assistantMsg) {
+      log.warn({ finishReason: lastFinishReason }, 'Kimi returned no message');
+      break;
+    }
+
+    const toolCalls = (assistantMsg.tool_calls ?? []) as ToolCall[];
+    const reasoningContent = (assistantMsg as { reasoning_content?: string }).reasoning_content;
+    convo.push({
+      role: 'assistant',
+      content: typeof assistantMsg.content === 'string' ? assistantMsg.content : null,
+      ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
+    });
+
+    if (choice.finish_reason !== 'tool_calls' || toolCalls.length === 0) {
+      finalText = extractText(typeof assistantMsg.content === 'string' ? assistantMsg.content : '');
+      break;
+    }
+
+    // Run every tool_call, then append one role:'tool' message per result
+    // (OpenAI's contract: one message per tool result).
+    for (const tc of toolCalls) {
+      const name = tc.function?.name;
+      const rawArgs = tc.function?.arguments ?? '{}';
+      if (!tc.id || !name) {
+        convo.push({
+          role: 'tool',
+          tool_call_id: tc.id ?? 'unknown',
+          content: JSON.stringify({ error: 'Malformed tool_call (missing id or name).' }),
+        });
+        continue;
+      }
+
+      let parsedInput: unknown;
+      try {
+        parsedInput = rawArgs.length > 0 ? JSON.parse(rawArgs) : {};
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        convo.push({
+          role: 'tool',
+          tool_call_id: tc.id,
+          content: JSON.stringify({ error: `Invalid tool arguments JSON: ${msg}` }),
+        });
+        trace.toolCalls.push({ name, input: rawArgs, status: 'error' });
+        continue;
+      }
+
+      const cacheKey = `${name}:${stableStringify(parsedInput)}`;
+      let result: ToolHandlerResult;
+      const cached = toolCache.get(cacheKey);
+      if (cached) {
+        log.info({ tool: name, cached: true }, 'tool_call_cached');
+        result = cached;
+      } else {
+        result = await tools.handle(name, parsedInput);
+        if (result.status === 'success') toolCache.set(cacheKey, result);
+      }
+      trace.toolCalls.push({ name, input: parsedInput, status: result.status });
+
+      convo.push({
+        role: 'tool',
+        tool_call_id: tc.id,
+        content: JSON.stringify(result.payload ?? null),
+      });
+    }
+  }
+
+  // Forcing pass: out of iterations while still calling tools → one more
+  // completion WITHOUT `tools` so the model synthesizes a text answer.
+  if (!finalText && lastFinishReason === 'tool_calls') {
+    log.info(
+      { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
+      'Forcing final answer without tools (iteration cap reached)',
+    );
+    try {
+      const forced = await observedCompletion(() =>
+        kimi.chat.completions.create({
+          model: modelId,
+          messages: convo.slice() as never,
+          max_tokens: config.MAX_OUTPUT_TOKENS,
+        } as never),
+      );
+      if (forced.usage) {
+        trace.inputTokens += forced.usage.prompt_tokens ?? 0;
+        trace.outputTokens += forced.usage.completion_tokens ?? 0;
+      }
+      lastFinishReason = forced.choices?.[0]?.finish_reason ?? lastFinishReason;
+      const forcedContent = forced.choices?.[0]?.message?.content;
+      finalText = typeof forcedContent === 'string' ? extractText(forcedContent) : '';
+    } catch (err) {
+      log.error({ err }, 'Forcing pass failed');
+    }
+  }
+
+  if (!finalText) {
+    log.warn(
+      { finishReason: lastFinishReason, iterations: trace.iterations },
+      'Kimi loop ended without final text',
+    );
+    finalText = "I couldn't generate a response.";
+  }
+
+  log.info(
+    {
+      backend: 'kimi',
+      effort: 'high',
+      model: modelId,
+      iterations: trace.iterations,
+      toolCalls: trace.toolCalls.length,
+      tools: trace.toolCalls.map((t) => t.name),
+      inputTokens: trace.inputTokens,
+      outputTokens: trace.outputTokens,
+      stopReason: lastFinishReason,
+    },
+    'agent_turn',
+  );
+
+  return finalText;
+}
+
+function buildOpenAiTools(specs: ToolSpec[]): unknown[] {
+  return specs.map((t) => ({
+    type: 'function',
+    function: {
+      name: t.name,
+      description: t.description,
+      parameters: t.inputSchema,
+    },
+  }));
+}
+
+// ── Bedrock (Converse) — the vision backend ──────────────────────────────────
+
+/**
+ * Multi-turn agent loop against Amazon Bedrock via the Converse API. Serves the
+ * image path only, always on Amazon Nova Lite (BEDROCK_MODEL_LOW): on
+ * `stopReason === 'tool_use'` we run the tools and append a user turn carrying
+ * one `toolResult` block per call. Caps at MAX_TOOL_ITERATIONS.
+ */
+async function askBedrock({ system, messages, tools, effort = 'low' }: AskInput): Promise<string> {
+  const modelId = config.BEDROCK_MODEL_LOW;
   const convo: Message[] = messages.map(buildMessage);
 
-  const trace: AgentTrace = {
-    iterations: 0,
-    toolCalls: [],
-    inputTokens: 0,
-    outputTokens: 0,
-  };
-
+  const trace: AgentTrace = { iterations: 0, toolCalls: [], inputTokens: 0, outputTokens: 0 };
   let finalText = '';
   let lastStopReason: string | undefined;
 
-  // Per-turn deduplication cache. If the model emits the exact same
-  // (toolName, inputJson) twice in a single ask() call, return the cached
-  // result. Only cache successes; errors get retried because the model
-  // usually fixes the input on the second try.
   const toolCache = new Map<string, ToolHandlerResult>();
-
   const toolConfig = buildToolConfig(tools.tools);
   const systemBlocks = system ? [{ text: system }] : undefined;
 
@@ -110,7 +337,7 @@ export async function ask({ system, messages, tools, effort = 'high' }: AskInput
     trace.iterations = i + 1;
 
     const response = await observedCompletion(() =>
-      client.send(
+      bedrock.send(
         new ConverseCommand({
           modelId,
           system: systemBlocks,
@@ -142,12 +369,10 @@ export async function ask({ system, messages, tools, effort = 'high' }: AskInput
     const toolUses = blocks.filter((b): b is ContentBlock.ToolUseMember => 'toolUse' in b);
 
     if (response.stopReason !== 'tool_use' || toolUses.length === 0) {
-      finalText = extractText(blocks);
+      finalText = extractTextBlocks(blocks);
       break;
     }
 
-    // Run every tool_use in this assistant turn, then append ONE user message
-    // carrying one toolResult block per call (Converse's contract).
     const resultBlocks: ContentBlock[] = [];
     for (const { toolUse } of toolUses) {
       const id = toolUse.toolUseId;
@@ -187,10 +412,7 @@ export async function ask({ system, messages, tools, effort = 'high' }: AskInput
     convo.push({ role: 'user', content: resultBlocks });
   }
 
-  // Forcing pass: if the loop ran out of iterations while the model was still
-  // calling tools, do one more Converse call WITHOUT `toolConfig` so the model
-  // is forced to synthesize a text answer from everything it gathered, instead
-  // of leaving the user with a generic fallback.
+  // Forcing pass without toolConfig (iteration cap hit while still calling tools).
   if (!finalText && lastStopReason === 'tool_use') {
     log.info(
       { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
@@ -198,7 +420,7 @@ export async function ask({ system, messages, tools, effort = 'high' }: AskInput
     );
     try {
       const forced = await observedCompletion(() =>
-        client.send(
+        bedrock.send(
           new ConverseCommand({
             modelId,
             system: systemBlocks,
@@ -212,7 +434,7 @@ export async function ask({ system, messages, tools, effort = 'high' }: AskInput
         trace.outputTokens += forced.usage.outputTokens ?? 0;
       }
       lastStopReason = forced.stopReason ?? lastStopReason;
-      finalText = extractText(forced.output?.message?.content ?? []);
+      finalText = extractTextBlocks(forced.output?.message?.content ?? []);
     } catch (err) {
       log.error({ err }, 'Forcing pass failed');
     }
@@ -228,6 +450,7 @@ export async function ask({ system, messages, tools, effort = 'high' }: AskInput
 
   log.info(
     {
+      backend: 'bedrock',
       effort,
       model: modelId,
       iterations: trace.iterations,
@@ -243,15 +466,21 @@ export async function ask({ system, messages, tools, effort = 'high' }: AskInput
   return finalText;
 }
 
-/** Concatenate all `text` content blocks in a Converse message, stripping any
- * `<thinking>…</thinking>` reasoning the model may inline into the visible text
- * (some Bedrock models — e.g. Amazon Nova — leak it; Claude does not). Defensive
- * so a future BEDROCK_MODEL_ID swap can't post raw chain-of-thought to Discord. */
-function extractText(blocks: ContentBlock[]): string {
+/** Concatenate all `text` blocks in a Converse message, then strip reasoning. */
+function extractTextBlocks(blocks: ContentBlock[]): string {
   const text = blocks
     .filter((b): b is ContentBlock.TextMember => 'text' in b)
     .map((b) => b.text)
     .join('');
+  return extractText(text);
+}
+
+/** Strip any `<thinking>…</thinking>` / `<think>…</think>` reasoning a model
+ * inlines into visible text (some models — e.g. Amazon Nova — leak it) so raw
+ * chain-of-thought never reaches Discord, then trim. Kimi returns reasoning in a
+ * separate `reasoning_content` field, so its visible content is already clean —
+ * this is defensive. */
+function extractText(text: string): string {
   return text
     // Well-formed <thinking>…</thinking> / <think>…</think> blocks.
     .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
