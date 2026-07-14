@@ -23,6 +23,7 @@
     "better-sqlite3": "^12.10.0",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
+    "openai": "^6.46.0",
     "pdf-lib": "^1.17.1",
     "pino": "^9.5.0",
     "undici": "^6.24.1",

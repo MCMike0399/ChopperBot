@@ -100,11 +100,11 @@ export async function classifyPost(
 
   const tools = composeToolSources([]);
 
-  // Medium tier (Haiku): cheaper than Sonnet, reads flyer text reliably, and
-  // writes clean Spanish summaries — validated in scripts/effort-experiment.ts
-  // against real captions + a synthesized flyer. The cover image (when present)
-  // is what lets the classifier read text that lives ONLY in the flyer, not the
-  // caption — the gap that made the bot miss a post's actual content.
+  // Routing (2026-07-13): a call carrying the cover image goes to Amazon Nova
+  // Lite (the images-only vision backend — Kimi 2.7 Thinking is text-only); the
+  // caption-only fallback below is text and goes to Kimi. The cover image (when
+  // present) is what lets the classifier read text that lives ONLY in the flyer,
+  // not the caption — the gap that made the bot miss a post's actual content.
   //
   // SAFETY NET: if the call with the image fails (Bedrock can reject an image —
   // unexpected format, too large, transient), we retry caption-only before

@@ -6,19 +6,15 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
 import type { Client, Guild } from 'discord.js';
 
+// The admin console runs on the "high" text tier → Kimi via the OpenAI SDK.
+// Mock `openai`; `createMock` is called with the chat-completions request.
 const { createMock } = vi.hoisted(() => ({ createMock: vi.fn() }));
-vi.mock('@aws-sdk/client-bedrock-runtime', () => {
-  class BedrockRuntimeClient {
-    send = createMock;
+vi.mock('openai', () => {
+  class OpenAI {
+    chat = { completions: { create: createMock } };
     constructor(_opts?: unknown) {}
   }
-  class ConverseCommand {
-    input: unknown;
-    constructor(input: unknown) {
-      this.input = input;
-    }
-  }
-  return { BedrockRuntimeClient, ConverseCommand };
+  return { default: OpenAI };
 });
 
 const { ask } = await import('../../../llm/client.js');
@@ -41,36 +37,40 @@ const TARGET_CH = '30000000000000000005';
 
 function endStop(text: string) {
   return {
-    output: { message: { role: 'assistant', content: [{ text }] } },
-    stopReason: 'end_turn',
-    usage: { inputTokens: 100, outputTokens: 20 },
+    choices: [{ message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
+    usage: { prompt_tokens: 100, completion_tokens: 20 },
   };
 }
 
 function toolCalls(calls: Array<{ id: string; name: string; input: unknown }>) {
   return {
-    output: {
-      message: {
-        role: 'assistant',
-        content: calls.map((c) => ({ toolUse: { toolUseId: c.id, name: c.name, input: c.input } })),
+    choices: [
+      {
+        message: {
+          role: 'assistant',
+          content: null,
+          tool_calls: calls.map((c) => ({
+            id: c.id,
+            type: 'function',
+            function: { name: c.name, arguments: JSON.stringify(c.input) },
+          })),
+        },
+        finish_reason: 'tool_calls',
       },
-    },
-    stopReason: 'tool_use',
-    usage: { inputTokens: 100, outputTokens: 20 },
+    ],
+    usage: { prompt_tokens: 100, completion_tokens: 20 },
   };
 }
 
-// Find the Converse toolResult block carrying a given toolUseId across all sent
-// requests' messages, and return it in the legacy { tool_call_id, content }
-// shape the test bodies expect (content is the JSON-encoded tool payload).
+// Find the role:'tool' message carrying a given tool_call_id across all sent
+// requests. Content is the JSON-encoded tool payload the test bodies parse.
 function findToolMessage(callIndex: number, toolCallId: string): { role: string; tool_call_id: string; content: string } {
-  const input = (createMock.mock.calls[callIndex][0] as { input: { messages: Array<{ content: Array<Record<string, unknown>> }> } }).input;
-  for (const m of input.messages) {
-    for (const block of m.content ?? []) {
-      const tr = (block as { toolResult?: { toolUseId: string; content: Array<{ text?: string }> } }).toolResult;
-      if (tr && tr.toolUseId === toolCallId) {
-        return { role: 'tool', tool_call_id: tr.toolUseId, content: tr.content?.[0]?.text ?? '' };
-      }
+  const req = createMock.mock.calls[callIndex][0] as {
+    messages: Array<{ role: string; tool_call_id?: string; content: string }>;
+  };
+  for (const m of req.messages) {
+    if (m.role === 'tool' && m.tool_call_id === toolCallId) {
+      return { role: 'tool', tool_call_id: m.tool_call_id, content: m.content };
     }
   }
   throw new Error(`No tool message with id ${toolCallId}`);
