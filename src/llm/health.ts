@@ -3,8 +3,9 @@ import { log } from '../log.js';
 /**
  * LLM health watchdog.
  *
- * Every Bedrock request in `ask()` (src/llm/client.ts) reports its outcome
- * here. When the LLM stops working, an alert is pushed to the admin/config
+ * Every LLM request in `ask()` (src/llm/client.ts) — Kimi (OpenAI SDK) on the
+ * text path and Bedrock on the vision path — reports its outcome here. When the
+ * LLM stops working, an alert is pushed to the admin/config
  * Discord channel through the injected sink — closing the gap where the bot's
  * whole brain (chat replies AND the IG post classifier) can silently fail
  * while only journald notices. Motivating incident (2026-06-12): a provider
@@ -32,9 +33,9 @@ export const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 export type LlmErrorKind = 'deterministic' | 'transient';
 
 /**
- * Classify an error thrown by the AWS SDK (Bedrock Converse). The HTTP status
- * lives on `$metadata.httpStatusCode` (we also accept a bare `.status` for
- * test fakes / forward-compat); connection and credential-resolution errors
+ * Classify an error from either backend. OpenAI SDK errors (Kimi) carry the
+ * HTTP status on `.status`; AWS SDK errors (Bedrock) carry it on
+ * `$metadata.httpStatusCode` — we read both. Connection and credential-resolution errors
  * have none and are transient. 408/429/5xx are retryable server/throttle
  * states; the remaining 4xx are protocol or auth mistakes that will fail
  * identically on every retry. As a fallback when no status is present, a few
@@ -88,7 +89,7 @@ export class LlmHealthMonitor {
     this.alertedThisOutage = false;
     log.info({ failures }, 'llm.health.recovered');
     this.post([
-      '✅ **LLM (Bedrock): recuperado**',
+      '✅ **LLM: recuperado**',
       `Las peticiones al LLM vuelven a funcionar (hubo ${failures} fallo${failures === 1 ? '' : 's'} consecutivo${failures === 1 ? '' : 's'}).`,
       'No se requiere ninguna acción.',
     ]);
@@ -108,14 +109,14 @@ export class LlmHealthMonitor {
       'llm.health.alerting',
     );
     this.post([
-      '🚨 **LLM (Bedrock): las peticiones están fallando**',
+      '🚨 **LLM: las peticiones están fallando**',
       `Error: \`${errorMessage(err)}\``,
       kind === 'deterministic'
-        ? 'Tipo: error de configuración/protocolo — **no se va a resolver solo** (p. ej. credenciales IAM inválidas, modelo/region sin acceso, parámetro rechazado).'
+        ? 'Tipo: error de configuración/protocolo — **no se va a resolver solo** (p. ej. API key de Kimi inválida, credenciales IAM inválidas, modelo/region sin acceso, parámetro rechazado).'
         : `Tipo: transitorio (red/servidor/throttle), pero ya van ${this.consecutiveFailures} fallos consecutivos.`,
       '',
       'Impacto: el bot no puede responder mensajes ni clasificar posts de Instagram mientras dure.',
-      'Diagnóstico: `journalctl --user -u chopperbot -o cat | grep -iE "Validation|AccessDenied|Throttling|llm"` y `npx tsx scripts/live-bedrock-smoke.ts`.',
+      'Diagnóstico: `journalctl --user -u chopperbot -o cat | grep -iE "Validation|AccessDenied|Throttling|llm"`.',
       `(Máx. 1 alerta cada ${Math.round(ALERT_COOLDOWN_MS / 3_600_000)} h; avisaré cuando se recupere.)`,
     ]);
   }

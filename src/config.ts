@@ -52,39 +52,50 @@ const ConfigSchema = z.object({
     emptyToUndefined,
     z.string().regex(/^\d{17,20}$/, 'CALENDAR_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
   ),
-  // Amazon Bedrock (Converse API) credentials + model. The bot's whole brain
-  // (Discord chat AND the IG post classifier) runs through Bedrock. Auth is a
-  // plain IAM access key pair — the env var names are deliberately the short
-  // ACCESS_KEY_ID / SECRET_ACCESS_KEY (NOT the AWS_-prefixed standard names) so
-  // they don't collide with any ambient AWS CLI credentials on the host.
+  // ── Moonshot Kimi (the text brain — ALL text, every domain) ────────────────
+  // Every text turn — Discord chat, the calendar/config tool-calling, the
+  // event-intake proposals, and the IG classifier's caption-only fallback — runs
+  // on Moonshot Kimi 2.7 Thinking via the OpenAI-compatible chat-completions API
+  // (the `openai` SDK). Bedrock is used ONLY for images: Kimi 2.7 Thinking is
+  // text-only, so any turn carrying an image is routed to Amazon Nova Lite (the
+  // `low` tier — see BEDROCK_MODEL_LOW below and src/llm/client.ts).
+  KIMI_API_KEY: z.string().min(1, 'KIMI_API_KEY is required'),
+  // OpenAI-compatible base URL. Default is the Kimi-for-Coding endpoint, which
+  // serves the K2.7 model but gates on a coding-agent User-Agent (see
+  // KIMI_USER_AGENT). Point at https://api.moonshot.ai/v1 for the plain platform
+  // API (model id `kimi-k2-thinking`, no UA gate).
+  KIMI_BASE_URL: z.string().min(1).default('https://api.kimi.com/coding/v1'),
+  // Model id. `kimi-for-coding` on the coding endpoint IS Kimi 2.7 Thinking (it
+  // returns `reasoning_content` — the client echoes it back so follow-up turns
+  // validate). On the platform API use `kimi-k2-thinking`.
+  KIMI_MODEL_ID: z.string().min(1).default('kimi-for-coding'),
+  // The coding endpoint 403s requests whose User-Agent isn't a known coding
+  // agent with "Kimi For Coding is currently only available for Coding Agents".
+  // `claude-cli/1.0.0` is empirically on the allowlist. Ignored by the plain
+  // platform API. Override if the allowlist changes.
+  KIMI_USER_AGENT: z.string().min(1).default('claude-cli/1.0.0'),
+
+  // Amazon Bedrock (Converse API) credentials + model — the IMAGES-ONLY backend.
+  // Kimi is text-only, so the ONLY thing Bedrock serves is vision: any turn
+  // carrying an image (the IG post classifier's main call, or a chat message with
+  // an attachment) goes to Amazon Nova Lite. Auth is a plain IAM access key pair —
+  // the env var names are deliberately the short ACCESS_KEY_ID / SECRET_ACCESS_KEY
+  // (NOT the AWS_-prefixed standard names) so they don't collide with any ambient
+  // AWS CLI credentials on the host.
   ACCESS_KEY_ID: z.string().min(1, 'ACCESS_KEY_ID is required'),
   SECRET_ACCESS_KEY: z.string().min(1, 'SECRET_ACCESS_KEY is required'),
   // Optional STS session token (only for temporary credentials).
   AWS_SESSION_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   AWS_REGION: z.string().min(1).default('us-east-1'),
-  // Bedrock model id (Converse API). Default: Claude Sonnet 4.6 via the us
-  // cross-region inference profile. Chosen after a full bake-off on the calendar
-  // conversation (2026-06-23, scripts/model-competition.ts + calendar-bedrock-smoke.ts):
-  // Sonnet gave the cleanest real-conversation results (right weekday, one-off
-  // with location, duplicate detection, no series fragmentation) — closest to
-  // the old Kimi behavior. Nova Pro/Lite corrupted recurring edits and leaked
-  // `<thinking>`; Llama 4 leaked code; the best image-capable OPEN-WEIGHT model,
-  // Qwen3-VL-235B (`qwen.qwen3-vl-235b-a22b`), was clean + multimodal but
-  // fragmented/duplicated in multi-turn use; Haiku 4.5
-  // (`us.anthropic.claude-haiku-4-5-20251001-v1:0`) is a cheaper ~good middle.
-  // Switch via this var — no code change. All are multimodal (vision) + tools.
+  // Legacy Bedrock text model id. No longer on any hot path — every text domain
+  // is Kimi now (see KIMI_MODEL_ID). Kept only for the dev smoke/bake-off scripts
+  // and so a future all-Bedrock rollback needs no schema change.
   BEDROCK_MODEL_ID: z.string().min(1).default('us.anthropic.claude-sonnet-4-6'),
-  // Effort tiers (added 2026-06-23). The bot picks a model per task via an
-  // `effort` level instead of a single global model, so we can pay for Sonnet's
-  // reliable multi-turn tool-calling only where it matters (chat + calendar)
-  // while using cheaper image-capable models for the high-volume IG classifier.
-  //   high   → calendar/chat (multi-turn tool use, friendly conversation)
-  //   medium → IG post classification + summary writing
-  //   low    → cheap/bulk image understanding (flyer OCR pre-pass)
-  // `effort: 'high'` resolves to BEDROCK_MODEL_ID, so existing behavior and that
-  // var are preserved. All three MUST be image-capable (the IG path needs vision).
-  BEDROCK_MODEL_MEDIUM: z.string().min(1).default('us.anthropic.claude-haiku-4-5-20251001-v1:0'),
-  BEDROCK_MODEL_LOW: z.string().min(1).default('us.amazon.nova-pro-v1:0'),
+  // The vision model (Amazon Nova Lite), the effort `low` tier. This is the ONLY
+  // model Bedrock serves and it is used ONLY for image turns — `high`/`medium`
+  // are text and go to Kimi. Directive (2026-07-13): "Nova only for images; it is
+  // the low tier; medium and high are Kimi." MUST be image-capable.
+  BEDROCK_MODEL_LOW: z.string().min(1).default('us.amazon.nova-lite-v1:0'),
   MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
