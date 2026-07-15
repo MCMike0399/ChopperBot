@@ -63,9 +63,50 @@ describe('parseClassificationReply', () => {
   test('returns null on unbalanced braces', () => {
     expect(parseClassificationReply('{ "relevant": true ')).toBeNull();
   });
+
+  // The weaker vision model (Nova Lite) regularly writes the string "null"
+  // instead of the JSON literal; left verbatim it printed a literal
+  // "Cuándo: null" on the card. The parser must fold nullish tokens to a real
+  // absence.
+  test('normalizes a literal string "null"/"None" in when/where to real null', () => {
+    const raw =
+      '{"relevant":true,"type":"noticia","title":"x","summary":"y","when":"null","where":"None","tags":[]}';
+    const c = parseClassificationReply(raw);
+    expect(c!.when).toBeNull();
+    expect(c!.where).toBeNull();
+  });
+
+  test('normalizes accented / upper-case nullish tokens (Sin Fecha, NINGUNO, N/A)', () => {
+    const raw =
+      '{"relevant":true,"type":"noticia","title":"x","summary":"y","when":"Sin Fecha","where":"N/A","tags":[]}';
+    const c = parseClassificationReply(raw);
+    expect(c!.when).toBeNull();
+    expect(c!.where).toBeNull();
+    const raw2 =
+      '{"relevant":true,"type":"noticia","title":"x","summary":"y","when":"NINGUNO","where":"no especificado","tags":[]}';
+    const c2 = parseClassificationReply(raw2);
+    expect(c2!.when).toBeNull();
+    expect(c2!.where).toBeNull();
+  });
+
+  test('normalizes nullish title/summary to empty strings', () => {
+    const raw =
+      '{"relevant":false,"type":"otro","title":"null","summary":"ninguna","when":null,"where":null,"tags":[]}';
+    const c = parseClassificationReply(raw);
+    expect(c!.title).toBe('');
+    expect(c!.summary).toBe('');
+  });
+
+  test('keeps a real date / place unchanged', () => {
+    const raw =
+      '{"relevant":true,"type":"evento","title":"t","summary":"s","when":"2026-03-08","where":"CDMX","tags":[]}';
+    const c = parseClassificationReply(raw);
+    expect(c!.when).toBe('2026-03-08');
+    expect(c!.where).toBe('CDMX');
+  });
 });
 
-describe('classifyPost', () => {
+describe('classifyPost (two-stage: Nova reads, Kimi decides)', () => {
   const post: RecentPost = {
     igPostId: '123',
     shortcode: 'ABC',
@@ -77,51 +118,78 @@ describe('classifyPost', () => {
   const goodReply = JSON.stringify({
     relevant: true, type: 'convocatoria', title: 't', summary: 's', when: null, where: null, tags: [],
   });
+  const cover = { bytes: new Uint8Array([1, 2, 3]), mimeType: 'image/jpeg', format: 'jpeg' as const };
 
   beforeEach(() => askMock.mockReset());
 
-  test('runs on the medium effort tier', async () => {
+  test('no cover → a single caption-only Kimi call on the medium tier, no attachment', async () => {
     askMock.mockResolvedValueOnce(goodReply);
-    await classifyPost('acc', post, { nowMs: Date.now() });
+    const out = await classifyPost('acc', post, { nowMs: Date.now() });
     expect(askMock).toHaveBeenCalledTimes(1);
-    expect(askMock.mock.calls[0][0]).toMatchObject({ effort: 'medium' });
-  });
-
-  test('forwards the cover image as an attachment when present', async () => {
-    askMock.mockResolvedValueOnce(goodReply);
-    const cover = { bytes: new Uint8Array([1, 2, 3]), mimeType: 'image/jpeg', format: 'jpeg' as const };
-    await classifyPost('acc', post, { cover, nowMs: Date.now() });
-    const arg = askMock.mock.calls[0][0] as { messages: Array<{ attachments?: unknown[] }> };
-    expect(arg.messages[0].attachments).toHaveLength(1);
-    expect(arg.messages[0].attachments![0]).toMatchObject({ mimeType: 'image/jpeg', format: 'jpeg' });
-  });
-
-  test('sends no attachment when there is no cover', async () => {
-    askMock.mockResolvedValueOnce(goodReply);
-    await classifyPost('acc', post, { nowMs: Date.now() });
-    const arg = askMock.mock.calls[0][0] as { messages: Array<{ attachments?: unknown[] }> };
+    const arg = askMock.mock.calls[0][0] as {
+      effort: string;
+      messages: Array<{ attachments?: unknown[] }>;
+    };
+    expect(arg.effort).toBe('medium');
     expect(arg.messages[0].attachments).toBeUndefined();
+    expect(out.relevant).toBe(true);
   });
 
-  test('retries caption-only when the cover image is rejected, never dropping the post', async () => {
+  test('with cover → stage 1 (image, low) transcribes; stage 2 (text, medium) classifies with the transcription inlined', async () => {
+    const transcription = 'MARCHA 8M · 8 de marzo 17:00 · Zócalo CDMX';
     askMock
-      .mockRejectedValueOnce(new Error('image format not supported')) // image attempt fails
-      .mockResolvedValueOnce(goodReply); // caption-only retry succeeds
-    const cover = { bytes: new Uint8Array([1]), mimeType: 'image/jpeg', format: 'jpeg' as const };
+      .mockResolvedValueOnce(transcription) // stage 1: Nova vision transcription
+      .mockResolvedValueOnce(goodReply); // stage 2: Kimi classification
     const out = await classifyPost('acc', post, { cover, nowMs: Date.now() });
     expect(askMock).toHaveBeenCalledTimes(2);
-    // First call carried the image; the retry did not.
-    expect((askMock.mock.calls[0][0] as { messages: Array<{ attachments?: unknown[] }> }).messages[0].attachments).toHaveLength(1);
-    expect((askMock.mock.calls[1][0] as { messages: Array<{ attachments?: unknown[] }> }).messages[0].attachments).toBeUndefined();
-    expect(out.relevant).toBe(true); // recovered, not dropped
+
+    // Stage 1 is the vision call: carries the image on the low tier.
+    const s1 = askMock.mock.calls[0][0] as {
+      effort: string;
+      messages: Array<{ attachments?: Array<{ mimeType: string; format: string }> }>;
+    };
+    expect(s1.effort).toBe('low');
+    expect(s1.messages[0].attachments).toHaveLength(1);
+    expect(s1.messages[0].attachments![0]).toMatchObject({ mimeType: 'image/jpeg', format: 'jpeg' });
+
+    // Stage 2 is the decision call: text-only (no attachment), medium tier, and
+    // the transcribed flyer text is inlined into what Kimi sees.
+    const s2 = askMock.mock.calls[1][0] as {
+      effort: string;
+      messages: Array<{ content: string; attachments?: unknown[] }>;
+    };
+    expect(s2.effort).toBe('medium');
+    expect(s2.messages[0].attachments).toBeUndefined();
+    expect(s2.messages[0].content).toContain(transcription);
+
+    expect(out.relevant).toBe(true);
+  });
+
+  test('transcription failure is non-fatal — still classifies caption-only, never drops the post', async () => {
+    askMock
+      .mockRejectedValueOnce(new Error('bedrock rejected image')) // stage 1 fails
+      .mockResolvedValueOnce(goodReply); // stage 2 succeeds
+    const out = await classifyPost('acc', post, { cover, nowMs: Date.now() });
+    expect(askMock).toHaveBeenCalledTimes(2);
+    const s2 = askMock.mock.calls[1][0] as { messages: Array<{ attachments?: unknown[] }> };
+    expect(s2.messages[0].attachments).toBeUndefined();
+    expect(out.relevant).toBe(true);
     expect(out.reason).toBeUndefined();
   });
 
-  test('gives up with a non-relevant result only when even caption-only fails', async () => {
+  test('empty transcription → no flyer section handed to Kimi', async () => {
     askMock
-      .mockRejectedValueOnce(new Error('bedrock down')) // image attempt
-      .mockRejectedValueOnce(new Error('bedrock down')); // caption-only retry
-    const cover = { bytes: new Uint8Array([1]), mimeType: 'image/jpeg', format: 'jpeg' as const };
+      .mockResolvedValueOnce('   ') // stage 1: whitespace only → treated as no text
+      .mockResolvedValueOnce(goodReply);
+    await classifyPost('acc', post, { cover, nowMs: Date.now() });
+    const s2 = askMock.mock.calls[1][0] as { messages: Array<{ content: string }> };
+    expect(s2.messages[0].content).not.toContain('transcrito');
+  });
+
+  test('gives up (non-relevant, reason ask_failed) only when the Kimi classification call fails', async () => {
+    askMock
+      .mockResolvedValueOnce('algún texto del flyer') // stage 1 ok
+      .mockRejectedValueOnce(new Error('kimi down')); // stage 2 fails
     const out = await classifyPost('acc', post, { cover, nowMs: Date.now() });
     expect(askMock).toHaveBeenCalledTimes(2);
     expect(out.relevant).toBe(false);

@@ -13,6 +13,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.3.1 — 2026-07-15
+
+🔎 **El monitor de Instagram entiende mejor los flyers**
+
+Mejoramos cómo ChopperBot lee las publicaciones de las cuentas que sigue. Ahora separa dos tareas: primero **lee el texto del flyer** de la imagen y después **analiza el contenido** por separado. Con eso clasifica con más precisión de qué trata cada post (evento, convocatoria, alerta…) y saca mejor la fecha y el lugar cuando aparecen.
+
+También corregimos un detalle por el que, a veces, en la tarjeta del post se colaba la palabra "null" en lugar de la fecha o el lugar. Ya no pasa.
+
+---
+
 ## 1.3.0 — 2026-07-12
 
 🎟️ **ChopperBot ahora te ayuda con las solicitudes de eventos por ticket**
