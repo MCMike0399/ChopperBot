@@ -905,19 +905,39 @@ export class InstagramMonitorScheduler {
       // The cover is fetched anyway for publishing, so we hand it to the
       // classifier too: many activist flyers carry the real qué/cuándo/dónde
       // ONLY in the image, not the caption (the gap that made the bot miss a
-      // post's actual content). The classifier reads it on the medium tier.
+      // post's actual content). The classifier runs two stages — Nova Lite
+      // transcribes the flyer image, Kimi decides — inside classifyPost.
       const coverBytes = await this.fetchCover(post.displayUrl);
       // Sniff the real format from magic bytes — IG covers are usually JPEG but
       // not guaranteed, and a mislabeled image is rejected by Bedrock. If we
       // can't recognize it, omit it (the classifier falls back to caption-only).
       const coverFormat = coverBytes ? sniffImageFormat(coverBytes) : null;
+      const hadCover = Boolean(coverBytes && coverFormat);
       const classification = await this.classify(acc.username, post, {
-        cover:
-          coverBytes && coverFormat
-            ? { bytes: coverBytes, mimeType: `image/${coverFormat}`, format: coverFormat }
-            : undefined,
+        cover: hadCover
+          ? { bytes: coverBytes!, mimeType: `image/${coverFormat}`, format: coverFormat! }
+          : undefined,
         nowMs: Date.now(),
       });
+
+      // One structured line per classified post, so a data-quality regression
+      // (e.g. a nullish `when`/`where`, a parse failure, or a post that should
+      // have been relevant) is visible in the journal without querying SQLite.
+      log.info(
+        {
+          account: acc.username,
+          shortcode: post.shortcode,
+          media_type: post.mediaType,
+          had_cover: hadCover,
+          relevant: classification.relevant,
+          type: classification.type,
+          when: classification.when,
+          where: classification.where,
+          tags: classification.tags.length,
+          reason: classification.reason,
+        },
+        'instagram_monitor.classified',
+      );
 
       for (const channelId of boundChannels) {
         if (this.disposed) return;
@@ -974,13 +994,6 @@ export class InstagramMonitorScheduler {
           discord_message_id: result.messageId,
         });
         if (result.ok) pushedByChannel.set(channelId, pushedHere + 1);
-      }
-
-      if (!classification.relevant) {
-        log.info(
-          { account: acc.username, shortcode: post.shortcode, type: classification.type },
-          'instagram_monitor.classify.skip',
-        );
       }
     }
 
