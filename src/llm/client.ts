@@ -135,7 +135,7 @@ type ChatMessage =
  * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Text-only — image
  * turns never reach here (see ask()).
  */
-async function askKimi({ system, messages, tools }: AskInput): Promise<string> {
+async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): Promise<string> {
   const modelId = config.KIMI_MODEL_ID;
   const convo: ChatMessage[] = [
     { role: 'system', content: system },
@@ -287,7 +287,7 @@ async function askKimi({ system, messages, tools }: AskInput): Promise<string> {
   log.info(
     {
       backend: 'kimi',
-      effort: 'high',
+      effort,
       model: modelId,
       iterations: trace.iterations,
       toolCalls: trace.toolCalls.length,
