@@ -20,6 +20,8 @@
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1074.0",
+    "@aws-sdk/client-cloudwatch-logs": "^3.1074.0",
+    "@aws-sdk/credential-providers": "^3.1074.0",
     "better-sqlite3": "^12.10.0",
     "discord.js": "^14.16.3",
     "dotenv": "^16.4.5",
