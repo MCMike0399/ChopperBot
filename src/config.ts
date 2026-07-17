@@ -180,6 +180,27 @@ const ConfigSchema = z.object({
   // Discord user id of the ticket bot whose form messages we parse. Defaults to
   // Ticket Tool. Change it if the server switches ticket bots.
   EVENT_INTAKE_TICKET_BOT_ID: z.string().regex(/^\d{17,20}$/).default('557628352828014614'),
+
+  // ── redacted-ops copilot (redacted-ops capability) ─────────────────────────────
+  // A strictly READ-ONLY ops assistant for the redacted platform. Observes the
+  // backend only through CloudWatch Logs Insights (logsvc wide events) and
+  // read-only GitHub — it never touches a live system.
+  //
+  // AWS named profile used for the CloudWatch client (the process runs as
+  // burbujamc, whose ~/.aws/config has the `redacted` profile). Credentials
+  // resolve lazily on first query, so a missing profile does NOT break boot.
+  redacted-ops_AWS_PROFILE: z.string().min(1).default('redacted'),
+  // Region of the logsvc log groups. Pinned to us-east-2 (account 000000000000).
+  redacted-ops_AWS_REGION: z.string().min(1).default('us-east-2'),
+  // Which environments the copilot may query, comma-separated. Filtered against
+  // the known log groups (dev|qa|prod); an empty result falls back to all three.
+  redacted-ops_logsvc_ENVS: z.string().min(1).default('dev,qa,prod'),
+  // Read-only GitHub token for the `github` tool. Optional: when unset the
+  // capability falls back to `gh auth token`, and degrades gracefully (the tool
+  // reports itself unavailable) if neither is present.
+  GITHUB_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // GitHub org the redacted app repos live under.
+  GITHUB_ORG: z.string().min(1).default('redacted-org'),
 });
 
 const parsed = ConfigSchema.safeParse(process.env);
