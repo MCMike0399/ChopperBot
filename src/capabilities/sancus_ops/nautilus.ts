@@ -153,22 +153,32 @@ runs a **CloudWatch Logs Insights** query against one environment's Nautilus
 wide-event log group. It is strictly read-only — you cannot mutate anything, and
 you never touch a live system directly; you only read its structured event log.
 
-**One wide event = one unit of work.** Common fields on every \`http.request\` event:
-- \`event_type\` ("http.request", "cron.<job_id>", "card.issuance_pipeline")
+**One wide event = one unit of work.** Fields present on most events:
+- \`event_type\` — "http.request", "cron.<job_id>" (see cron list below), "card.issuance_pipeline"
 - \`service\` (always "sancus-backend"), \`env\` ("development"/"qa"/"production")
-- \`http_method\`, \`http_path\`, \`http_status\`, \`outcome\` ("ok" | "error")
-- \`duration_ms\`, \`trace_id\`, \`subject_type\`, \`subject_id\`
-- On errors: \`error_type\`, \`error_msg\` (secrets/PII are already scrubbed)
-- Provider failures: \`provider\`, \`provider_endpoint\`, \`provider_status\`
-- Dock auth: \`dock_auth_type\`, \`dock_auth_approved\`; Dock errors: \`dock_error_code\`
-- Cron jobs: per-job result counts + \`job_failed\`
+- \`http_method\`, \`http_path\`, \`http_status\`, \`outcome\` ("ok" | "error"), \`duration_ms\`, \`trace_id\`
+- \`subject_type\`, \`subject_id\` — **only on authenticated routes** (absent on webhooks, public onboarding, login), so don't assume every request has them.
+- On errors: \`error_type\`, \`error_msg\`, \`error_stack\`. **⚠️ These are NOT scrubbed** — a provider error body or stack trace can carry tokens/PII. Summarize them; never paste a raw \`error_msg\`/\`error_stack\` verbatim into Discord.
+- Business attrs (query these for flow-level signal): onboarding \`prospect_id\`, \`prospect_creation_failed\`, \`mambu_client_uid\`, \`clabe_created\`, \`approval_partial_{contpaqi,complif,clabe,contract,welcome_email}\`; deposit/fees \`fintoc_event_type\`, \`webhook_duplicate\`, \`company_id\`, \`fee_not_found\`, \`fee_insufficient_balance\`, \`fee_not_charged\`; cards \`tarjeta_habiente_id\`, \`card_batch_id\`, \`embossing_file_id\`, \`sftp_uploaded\`, \`dock_failed_step\`, \`dock_rollback\`, \`dock_error_code\`, \`card_id\`; dispersion \`dispersion_batch_key\`, \`dispersion_ok_count\`, \`dispersion_failed_count\`.
+- Cron jobs: per-job counts + \`job_failed\`. The 8 job ids: \`cron.daily_journal_processor\` (1 AM ContPAQi GL póliza), \`cron.recurring_fee_processor\`, \`cron.contract_status_poller\`, \`cron.daily_complif_transactions_upload\`, \`cron.invoice_sweep\`, \`cron.monthly_invoice\`, \`cron.prod_health_daily_digest\`, \`cron.prod_health_periodic_check\`.
+
+**Provider failures — read this before answering "is provider X down?":**
+Only **Dock** stamps \`provider_status\` on *every* ≥400 (its own client). All other providers (Mambu, Complif, Fintoc, Nubarium, FacturAPI) set \`provider\`/\`provider_endpoint\`/\`provider_status\` **only on 401 and 429**; connect/timeout set \`provider\` but no status; a 400/403/404/5xx sets **nothing** and surfaces only as \`outcome="error"\` on the parent \`http.request\`. So \`filter provider_status>=400\` **undercounts** — for non-Dock providers, find failures via \`outcome="error"\` + the \`http_path\` of the calling route, not \`provider_status\`.
+
+**⚠️ What these logs CANNOT see (say so plainly — never report "all clear" for these):**
+- **Real-time Dock card authorization** (consult/purchase/withdrawal/reversal/payment) and **inbound Dock webhooks** run on the **mx-central-1 backend sidecar**, which ships its wide events to journald, **NOT CloudWatch**. So \`dock_auth_type\`/\`dock_auth_approved\`/\`dock_auth_nsu\` from the live card-auth path do **not** appear here. Card *issuance* (\`card.issuance_pipeline\`, via the us-east-2 backend) IS visible; live *authorization* is not.
+- **The Card Services Gateway and the Dock IPsec VPN** (mx-central-1) — no CloudWatch signal at all.
+- **The frontend** (React/nginx) emits no wide events — you cannot see UI errors or page traffic.
+- **RDS/ALB/NAT internals** — only their downstream effect on backend requests is visible.
+If asked about any of these, answer that it is **outside your observability** and point to the infra/dive team — do not infer health from the absence of events.
 
 **Recipes (adapt the env and time range):**
 - Error rate:    \`filter outcome="error" | stats count() as errors by bin(1h)\`
 - Recent errors: \`filter outcome="error" | fields @timestamp, http_path, http_status, error_type, error_msg | sort @timestamp desc\`
 - p95 latency:   \`filter event_type="http.request" | stats pct(duration_ms,95) as p95, avg(duration_ms) as avg by bin(1h)\`
 - Cron outcomes: \`filter event_type like /^cron\\./ | fields @timestamp, event_type, job_failed | sort @timestamp desc\`
-- Provider fails: \`filter ispresent(provider_status) and provider_status>=400 | stats count() by provider, provider_status\`
+- Dock provider fails: \`filter provider="dock" and provider_status>=400 | stats count() by provider_status, dock_error_code\`
+- Any provider error: \`filter outcome="error" and ispresent(provider) | stats count() by provider, http_path\`
 - Traffic:       \`filter event_type="http.request" | stats count() as reqs by bin(1h)\`
 
 Always append \`| limit N\`. Prefer \`stats\` aggregations for questions about

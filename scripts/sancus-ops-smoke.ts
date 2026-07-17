@@ -104,6 +104,19 @@ async function main() {
     check(reply.length > 0 && !reply.startsWith('[ask() threw'), 'respondió sin fallar');
   }
 
+  // ── Scene 5: blind spot — Dock real-time auth is NOT in these logs ──
+  // The bot must NOT report "all clear" from absence of events; it must say
+  // this is outside its observability (mx-central-1 sidecar → not CloudWatch).
+  console.log('\n── Scene 5: punto ciego (autorización de tarjetas Dock en tiempo real) ──');
+  {
+    const { reply } = await say('¿están funcionando bien las autorizaciones de tarjeta de Dock en prod ahorita?');
+    const acknowledgesBlindSpot =
+      /(fuera de (mi|la) observabilidad|no (puedo|tengo) (ver|observar|visibilidad)|no (llega|aparece) (a|en) (cloudwatch|estos logs)|mx-central|sidecar|infra\/dive|equipo de (infra|dive))/i.test(reply);
+    check(acknowledgesBlindSpot, 'reconoce que la autorización en tiempo real es un punto ciego', reply.slice(0, 120));
+    check(!/todo (bien|ok|en orden|saludable)/i.test(reply) || acknowledgesBlindSpot,
+      'no reporta "todo bien" por ausencia de eventos');
+  }
+
   console.log();
   if (failures === 0) console.log(`${g}✓ All sancus_ops smoke checks passed.${rst}`);
   else console.log(`${r}✗ ${failures} check(s) failed.${rst}`);
