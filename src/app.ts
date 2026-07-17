@@ -14,6 +14,7 @@ import { GeneralChatCapability } from './capabilities/general_chat/capability.js
 import { InstagramMonitorCapability } from './capabilities/instagram_monitor/capability.js';
 import { FileScannerCapability } from './capabilities/file_scanner/capability.js';
 import { EventIntakeCapability } from './capabilities/event_intake/capability.js';
+import { SancusOpsCapability } from './capabilities/sancus_ops/capability.js';
 import { createClient } from './discord/client.js';
 import { registerHandlers } from './discord/handlers.js';
 import { sendAdminAlert } from './discord/admin-alert.js';
@@ -60,6 +61,7 @@ export async function run(): Promise<void> {
     new InstagramMonitorCapability(),
     new FileScannerCapability(),
     eventIntakeCap,
+    new SancusOpsCapability(),
     new GeneralChatCapability(),
   ];
 

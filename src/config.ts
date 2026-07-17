@@ -180,6 +180,27 @@ const ConfigSchema = z.object({
   // Discord user id of the ticket bot whose form messages we parse. Defaults to
   // Ticket Tool. Change it if the server switches ticket bots.
   EVENT_INTAKE_TICKET_BOT_ID: z.string().regex(/^\d{17,20}$/).default('557628352828014614'),
+
+  // ── Sancus Ops copilot (sancus_ops capability) ─────────────────────────────
+  // A strictly READ-ONLY ops assistant for the Sancus platform. Observes the
+  // backend only through CloudWatch Logs Insights (Nautilus wide events) and
+  // read-only GitHub — it never touches a live system.
+  //
+  // AWS named profile used for the CloudWatch client (the process runs as
+  // burbujamc, whose ~/.aws/config has the `sancus` profile). Credentials
+  // resolve lazily on first query, so a missing profile does NOT break boot.
+  SANCUS_OPS_AWS_PROFILE: z.string().min(1).default('sancus'),
+  // Region of the Nautilus log groups. Pinned to us-east-2 (account 524329886851).
+  SANCUS_OPS_AWS_REGION: z.string().min(1).default('us-east-2'),
+  // Which environments the copilot may query, comma-separated. Filtered against
+  // the known log groups (dev|qa|prod); an empty result falls back to all three.
+  SANCUS_OPS_NAUTILUS_ENVS: z.string().min(1).default('dev,qa,prod'),
+  // Read-only GitHub token for the `github` tool. Optional: when unset the
+  // capability falls back to `gh auth token`, and degrades gracefully (the tool
+  // reports itself unavailable) if neither is present.
+  GITHUB_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // GitHub org the Sancus app repos live under.
+  GITHUB_ORG: z.string().min(1).default('deep-dive-mexico'),
 });
 
 const parsed = ConfigSchema.safeParse(process.env);
