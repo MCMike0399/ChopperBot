@@ -13,6 +13,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.3.2 — 2026-07-18
+
+🎬 **El escáner de archivos ya no revisa videos**
+
+ChopperBot analiza los archivos que se suben para avisar si alguno es peligroso, pero los **videos** (mp4, mov, mkv, webm y demás) ya no pasan por ese análisis: son archivos pesados, casi nunca traen riesgos y solo gastaban el cupo diario de revisiones. Así el escáner se concentra en los archivos donde de verdad importa (documentos, comprimidos, instaladores…) y responde más rápido. Las imágenes ya se saltaban desde antes; ahora también los videos.
+
+---
+
 ## 1.3.1 — 2026-07-15
 
 🔎 **El monitor de Instagram entiende mejor los flyers**

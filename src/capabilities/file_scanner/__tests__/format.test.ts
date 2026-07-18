@@ -1,6 +1,12 @@
 import { describe, test, expect } from 'vitest';
 import { toStats, verdictFrom } from '../virustotal.js';
-import { isImageAttachment, renderScanMessage, renderWatchTarget, type FileLine } from '../format.js';
+import {
+  isImageAttachment,
+  isVideoAttachment,
+  renderScanMessage,
+  renderWatchTarget,
+  type FileLine,
+} from '../format.js';
 import { selectScannable } from '../watcher.js';
 
 describe('verdictFrom', () => {
@@ -27,12 +33,25 @@ describe('isImageAttachment', () => {
   });
 });
 
+describe('isVideoAttachment', () => {
+  test('detects by extension and content-type', () => {
+    expect(isVideoAttachment('clip.mp4', null)).toBe(true);
+    expect(isVideoAttachment('clip.MOV', null)).toBe(true);
+    expect(isVideoAttachment('recording.mkv', null)).toBe(true);
+    expect(isVideoAttachment('noext', 'video/mp4')).toBe(true);
+    expect(isVideoAttachment('doc.pdf', 'application/pdf')).toBe(false);
+    expect(isVideoAttachment('setup.exe', null)).toBe(false);
+    expect(isVideoAttachment('cat.png', 'image/png')).toBe(false);
+  });
+});
+
 describe('selectScannable', () => {
   const opts = { maxFileBytes: 1000, maxFiles: 2 };
-  test('skips images, empty and oversized; caps count', () => {
+  test('skips images, videos, empty and oversized; caps count', () => {
     const picked = selectScannable(
       [
         { name: 'a.png', size: 10, url: 'u', contentType: 'image/png' }, // image → skip
+        { name: 'v.mp4', size: 500, url: 'u', contentType: 'video/mp4' }, // video → skip
         { name: 'b.exe', size: 0, url: 'u', contentType: null }, // empty → skip
         { name: 'c.zip', size: 5000, url: 'u', contentType: null }, // too big → skip
         { name: 'd.pdf', size: 500, url: 'u', contentType: 'application/pdf' }, // keep
@@ -42,6 +61,14 @@ describe('selectScannable', () => {
       opts,
     );
     expect(picked.map((a) => a.name)).toEqual(['d.pdf', 'e.js']);
+  });
+
+  test('skips a video even when it is within size and count limits', () => {
+    const picked = selectScannable(
+      [{ name: 'movie.mov', size: 500, url: 'u', contentType: null }],
+      opts,
+    );
+    expect(picked).toEqual([]);
   });
 });
 
