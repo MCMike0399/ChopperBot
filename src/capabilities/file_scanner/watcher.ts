@@ -2,7 +2,7 @@ import { PermissionFlagsBits, type Client, type Message } from 'discord.js';
 import { log } from '../../log.js';
 import type { FileScannerStore } from './store.js';
 import { FileScanner, downloadAttachment, type ScanOutcome } from './scanner.js';
-import { isImageAttachment, renderScanMessage, type FileLine } from './format.js';
+import { isImageAttachment, isVideoAttachment, renderScanMessage, type FileLine } from './format.js';
 
 /** Minimal shape of a Discord attachment we care about (also what tests pass). */
 export interface AttachmentLike {
@@ -187,9 +187,9 @@ export class FileScanWatcher {
 }
 
 /**
- * Pick the attachments worth scanning: skip images (quota protection), skip
- * empty or oversized files, and cap the count per message. Pure — unit-tested
- * without Discord.
+ * Pick the attachments worth scanning: skip images and videos (quota
+ * protection), skip empty or oversized files, and cap the count per message.
+ * Pure — unit-tested without Discord.
  */
 export function selectScannable(
   attachments: AttachmentLike[],
@@ -200,6 +200,7 @@ export function selectScannable(
     if (out.length >= opts.maxFiles) break;
     if (a.size <= 0 || a.size > opts.maxFileBytes) continue;
     if (isImageAttachment(a.name, a.contentType)) continue;
+    if (isVideoAttachment(a.name, a.contentType)) continue;
     out.push(a);
   }
   return out;
