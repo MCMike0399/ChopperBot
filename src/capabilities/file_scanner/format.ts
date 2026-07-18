@@ -5,6 +5,30 @@ import type { VerdictStats } from './store.js';
 const IMAGE_EXTENSIONS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp']);
 const IMAGE_MIME_PREFIX = 'image/';
 
+/**
+ * Video formats — never sent to VirusTotal. They're large media (usually over
+ * the 32 MB VT limit anyway), essentially never malicious, and would just burn
+ * the tight free-tier quota. Skipped just like images.
+ */
+const VIDEO_EXTENSIONS = new Set([
+  'mp4',
+  'm4v',
+  'mov',
+  'avi',
+  'mkv',
+  'webm',
+  'flv',
+  'wmv',
+  'mpeg',
+  'mpg',
+  '3gp',
+  'ogv',
+  'mts',
+  'm2ts',
+  'ts',
+]);
+const VIDEO_MIME_PREFIX = 'video/';
+
 /** Per-file line state as the scan progresses (edited in place). */
 export type LineStatus = { phase: 'queued' } | { phase: 'scanning' } | ScanOutcome;
 
@@ -23,6 +47,19 @@ export function isImageAttachment(name: string, contentType: string | null): boo
   if (ct.startsWith(IMAGE_MIME_PREFIX)) return true;
   const ext = name.split('.').pop()?.toLowerCase() ?? '';
   return IMAGE_EXTENSIONS.has(ext);
+}
+
+/**
+ * True if an attachment is a video (by content-type or extension). Videos are
+ * skipped for the same reasons as images: they're large media that rarely
+ * carry malware and would waste the limited VirusTotal quota (and usually
+ * exceed its 32 MB file limit anyway).
+ */
+export function isVideoAttachment(name: string, contentType: string | null): boolean {
+  const ct = (contentType ?? '').split(';')[0].trim().toLowerCase();
+  if (ct.startsWith(VIDEO_MIME_PREFIX)) return true;
+  const ext = name.split('.').pop()?.toLowerCase() ?? '';
+  return VIDEO_EXTENSIONS.has(ext);
 }
 
 const VT_LINK = (sha256: string) => `<https://www.virustotal.com/gui/file/${sha256}>`;
