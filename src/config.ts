@@ -32,6 +32,13 @@ const emptyToUndefined = (v: unknown) => (v === '' ? undefined : v);
 
 const ConfigSchema = z.object({
   DISCORD_TOKEN: z.string().min(1, 'DISCORD_TOKEN is required'),
+  // Request the privileged MessageContent gateway intent at login. Default true
+  // (self-hosted app has it enabled). Set to the literal string 'false' when the
+  // Discord app does NOT have the intent toggled on — the gateway would reject
+  // IDENTIFY with "Used disallowed intents". Without it the bot still receives
+  // content for messages that @mention it (Discord always delivers those), so
+  // the mention-driven flows keep working; passive listeners do not.
+  DISCORD_MESSAGE_CONTENT_INTENT: z.string().optional(),
   DISCORD_CHANNEL_ID: z.preprocess(
     emptyToUndefined,
     z
