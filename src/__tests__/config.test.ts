@@ -1,4 +1,4 @@
-import { describe, test, expect, beforeEach, vi } from 'vitest';
+import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const originalEnv = { ...process.env };
 
@@ -170,5 +170,56 @@ describe('getChannelCapabilityMap', () => {
     _resetChannelCache();
 
     expect(() => getChannelCapabilityMap()).toThrow(/appears more than once/);
+  });
+});
+
+describe('boot validation (LLM text backend + AWS credential pair)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function mockExit() {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(process, 'exit').mockImplementation(((code?: string | number) => {
+      throw new Error(`exit:${code}`);
+    }) as never);
+  }
+
+  test('LLM_TEXT_BACKEND=bedrock boots with NO KIMI_API_KEY', async () => {
+    delete process.env.KIMI_API_KEY;
+    process.env.LLM_TEXT_BACKEND = 'bedrock';
+
+    const { config } = await import('../config.js');
+    expect(config.LLM_TEXT_BACKEND).toBe('bedrock');
+    expect(config.KIMI_API_KEY).toBeUndefined();
+  });
+
+  test('default kimi backend exits when KIMI_API_KEY is missing', async () => {
+    delete process.env.KIMI_API_KEY;
+    delete process.env.LLM_TEXT_BACKEND;
+    mockExit();
+
+    await expect(import('../config.js')).rejects.toThrow('exit:1');
+  });
+
+  test('ACCESS_KEY_ID without SECRET_ACCESS_KEY exits (both-or-neither)', async () => {
+    process.env.ACCESS_KEY_ID = 'solo-key';
+    delete process.env.SECRET_ACCESS_KEY;
+    mockExit();
+
+    await expect(import('../config.js')).rejects.toThrow('exit:1');
+  });
+
+  test('both AWS keys unset boots (default credential chain mode)', async () => {
+    delete process.env.ACCESS_KEY_ID;
+    delete process.env.SECRET_ACCESS_KEY;
+
+    const { config } = await import('../config.js');
+    expect(config.ACCESS_KEY_ID).toBeUndefined();
+    expect(config.SECRET_ACCESS_KEY).toBeUndefined();
   });
 });
