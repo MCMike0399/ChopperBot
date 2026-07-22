@@ -14,39 +14,52 @@ import type { Turn } from '../discord/history.js';
 import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source.js';
 
 // ── Two backends, chosen per turn ────────────────────────────────────────────
-// EVERY text turn — Discord chat, calendar/config tool-calling, event-intake
-// proposals, and the IG classifier's caption-only fallback — runs on Moonshot
-// Kimi 2.7 Thinking via the OpenAI-compatible chat-completions API. Bedrock
-// serves ONLY images: Kimi is text-only, so a turn carrying an attachment (the
-// IG post classifier's main call, or a chat message with an image) goes to
-// Amazon Nova Lite (the effort `low` tier). The routing rule:
+// DEFAULT (LLM_TEXT_BACKEND=kimi, self-hosted/Pi): EVERY text turn — Discord
+// chat, calendar/config tool-calling, event-intake proposals, and the IG
+// classifier's caption-only fallback — runs on Moonshot Kimi 2.7 Thinking via
+// the OpenAI-compatible chat-completions API. Bedrock serves ONLY images there:
+// Kimi is text-only, so a turn carrying an attachment goes to Amazon Nova Lite
+// (the effort `low` tier). The routing rule:
 //
-//   has an image OR effort 'low'  → Bedrock (Amazon Nova Lite) — images only
-//   otherwise (all text)          → Kimi 2.7 Thinking
+//   has an image OR effort 'low'    → Bedrock (Amazon Nova Lite) — images only
+//   text + LLM_TEXT_BACKEND=kimi    → Kimi 2.7 Thinking
+//   text + LLM_TEXT_BACKEND=bedrock → Bedrock Converse (BEDROCK_MODEL_ID)
 //
-// The Kimi coding endpoint gates by client fingerprint: requests with the
-// default openai-node User-Agent get a 403 ("Kimi For Coding is currently only
-// available for Coding Agents…"). `claude-cli/1.0.0` is empirically on the
-// allowlist; override via KIMI_USER_AGENT if it changes.
-const kimi = new OpenAI({
-  apiKey: config.KIMI_API_KEY,
-  baseURL: config.KIMI_BASE_URL,
-  defaultHeaders: {
-    'User-Agent': config.KIMI_USER_AGENT,
-  },
-});
+// The bedrock text mode exists for AWS-native deploys (the ECS sancus ops bot):
+// no external LLM API key is available there, so text runs on the same Bedrock
+// client, authenticated by the task role. The Kimi coding endpoint gates by
+// client fingerprint: requests with the default openai-node User-Agent get a
+// 403 ("Kimi For Coding is currently only available for Coding Agents…").
+// `claude-cli/1.0.0` is empirically on the allowlist; override via
+// KIMI_USER_AGENT if it changes. The client is constructed LAZILY — in bedrock
+// text mode no KIMI_API_KEY exists and no Kimi client is needed.
+const kimi = config.KIMI_API_KEY
+  ? new OpenAI({
+      apiKey: config.KIMI_API_KEY,
+      baseURL: config.KIMI_BASE_URL,
+      defaultHeaders: {
+        'User-Agent': config.KIMI_USER_AGENT,
+      },
+    })
+  : null;
 
-// Bedrock client for the vision path. Credentials are the short ACCESS_KEY_ID /
-// SECRET_ACCESS_KEY pair from .env (NOT the AWS_-prefixed standard names, so a
-// stray AWS CLI credential on the host can't shadow them). Region defaults to
+// Bedrock client (vision path always; text path when LLM_TEXT_BACKEND=bedrock).
+// Credentials: the short ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env when
+// set (NOT the AWS_-prefixed standard names, so a stray AWS CLI credential on
+// the host can't shadow them); otherwise the AWS default credential chain
+// (ECS task role, instance profile, or AWS_PROFILE). Region defaults to
 // us-east-1.
 const bedrock = new BedrockRuntimeClient({
   region: config.AWS_REGION,
-  credentials: {
-    accessKeyId: config.ACCESS_KEY_ID,
-    secretAccessKey: config.SECRET_ACCESS_KEY,
-    ...(config.AWS_SESSION_TOKEN ? { sessionToken: config.AWS_SESSION_TOKEN } : {}),
-  },
+  ...(config.ACCESS_KEY_ID && config.SECRET_ACCESS_KEY
+    ? {
+        credentials: {
+          accessKeyId: config.ACCESS_KEY_ID,
+          secretAccessKey: config.SECRET_ACCESS_KEY,
+          ...(config.AWS_SESSION_TOKEN ? { sessionToken: config.AWS_SESSION_TOKEN } : {}),
+        },
+      }
+    : {}),
 });
 
 /**
@@ -91,16 +104,21 @@ async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /**
- * Entry point. Bedrock (Amazon Nova Lite) serves ONLY image turns: route there
- * when the turn carries an image, or when effort 'low' (the vision tier) is
- * requested explicitly. Everything else — all text — goes to Kimi. Both run the
- * same multi-turn agent loop contract; the wire shape differs by backend.
+ * Entry point. Bedrock (Amazon Nova Lite) serves image turns always: route
+ * there when the turn carries an image, or when effort 'low' (the vision tier)
+ * is requested explicitly. Text turns go to Kimi by default, or to Bedrock
+ * (BEDROCK_MODEL_ID) when LLM_TEXT_BACKEND=bedrock (AWS-native deploys with no
+ * external LLM key). Both run the same multi-turn agent loop contract; the wire
+ * shape differs by backend.
  */
 export async function ask(input: AskInput): Promise<string> {
   const { messages, effort = 'high' } = input;
   const hasImages = messages.some((m) => (m.attachments?.length ?? 0) > 0);
   if (hasImages || effort === 'low') {
     return askBedrock({ ...input, effort });
+  }
+  if (config.LLM_TEXT_BACKEND === 'bedrock') {
+    return askBedrock({ ...input, effort, modelId: config.BEDROCK_MODEL_ID });
   }
   return askKimi(input);
 }
@@ -136,6 +154,11 @@ type ChatMessage =
  * turns never reach here (see ask()).
  */
 async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): Promise<string> {
+  if (!kimi) {
+    throw new Error(
+      'Kimi text backend selected but KIMI_API_KEY is not set — set the key, or LLM_TEXT_BACKEND=bedrock for AWS-native runs',
+    );
+  }
   const modelId = config.KIMI_MODEL_ID;
   const convo: ChatMessage[] = [
     { role: 'system', content: system },
@@ -317,12 +340,18 @@ function buildOpenAiTools(specs: ToolSpec[]): unknown[] {
 
 /**
  * Multi-turn agent loop against Amazon Bedrock via the Converse API. Serves the
- * image path only, always on Amazon Nova Lite (BEDROCK_MODEL_LOW): on
+ * image path on Amazon Nova Lite (BEDROCK_MODEL_LOW, the default `modelId`) and,
+ * when LLM_TEXT_BACKEND=bedrock, the text path on BEDROCK_MODEL_ID. On
  * `stopReason === 'tool_use'` we run the tools and append a user turn carrying
  * one `toolResult` block per call. Caps at MAX_TOOL_ITERATIONS.
  */
-async function askBedrock({ system, messages, tools, effort = 'low' }: AskInput): Promise<string> {
-  const modelId = config.BEDROCK_MODEL_LOW;
+async function askBedrock({
+  system,
+  messages,
+  tools,
+  effort = 'low',
+  modelId = config.BEDROCK_MODEL_LOW,
+}: AskInput & { modelId?: string }): Promise<string> {
   const convo: Message[] = messages.map(buildMessage);
 
   const trace: AgentTrace = { iterations: 0, toolCalls: [], inputTokens: 0, outputTokens: 0 };

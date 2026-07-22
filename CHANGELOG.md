@@ -13,6 +13,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.4.0 — 2026-07-21
+
+🛰️ **ChopperBot aprende a vivir en AWS (modo nube nativa)**
+
+Por dentro, ChopperBot ya puede funcionar sin llaves externas: además de su cerebro habitual (Kimi), ahora puede pensar con **Amazon Bedrock** cuando corre dentro de AWS — útil para despliegues en la nube donde no hay claves de servicios externos. Sus credenciales de AWS también se volvieron opcionales: si no hay llaves configuradas, usa la identidad del ambiente donde corre (por ejemplo, el rol de la tarea en ECS). Para los canales de siempre nada cambia: en la Raspberry Pi sigue funcionando igual.
+
+Además estrena el modo **Sancus Ops**: un copiloto de operaciones estrictamente de solo-lectura que responde preguntas sobre la plataforma Sancus (errores, tráfico, latencias, crons, fallos de proveedores) consultando sus bitácoras en la nube y el estado de los PRs en GitHub.
+
+---
+
 ## 1.3.2 — 2026-07-18
 
 🎬 **El escáner de archivos ya no revisa videos**

@@ -47,14 +47,16 @@ export class SancusOpsCapability implements Capability {
       .filter((s) => s in LOG_GROUPS);
     if (this.allowedEnvs.length === 0) this.allowedEnvs = Object.keys(LOG_GROUPS);
 
-    // CloudWatch client uses the `sancus` named profile (the process runs as
-    // burbujamc). Credentials resolve lazily on first query, so a missing/bad
-    // profile does NOT break boot — the tool call just returns an error. Region
-    // is pinned (Nautilus log groups live in us-east-2). Never logged: creds.
+    // CloudWatch client. Self-hosted runs use the `sancus` named profile (the
+    // process runs as burbujamc); the literal value `default` skips fromIni and
+    // uses the AWS default credential chain (ECS task role / instance profile).
+    // Credentials resolve lazily on first query, so a missing/bad profile does
+    // NOT break boot — the tool call just returns an error. Region is pinned
+    // (Nautilus log groups live in us-east-2). Never logged: creds.
     const profile = config.SANCUS_OPS_AWS_PROFILE;
     this.cwClient = new CloudWatchLogsClient({
       region: config.SANCUS_OPS_AWS_REGION,
-      credentials: fromIni({ profile }),
+      ...(profile === 'default' ? {} : { credentials: fromIni({ profile }) }),
     });
 
     this.githubToken = resolveGithubToken();

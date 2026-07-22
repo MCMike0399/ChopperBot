@@ -266,4 +266,72 @@ describe('ask — routing between Kimi (text) and Bedrock (vision)', () => {
       }
     });
   });
+
+  describe('bedrock text backend (LLM_TEXT_BACKEND=bedrock)', () => {
+    test('text turn routes to Bedrock BEDROCK_MODEL_ID; Kimi not touched', async () => {
+      config.LLM_TEXT_BACKEND = 'bedrock';
+      config.BEDROCK_MODEL_ID = 'test-text-model';
+      try {
+        sendMock.mockResolvedValueOnce(bedrockEnd('bedrock answer'));
+        const out = await ask({
+          system: 'p',
+          messages: [{ role: 'user', content: 'hi' }],
+          tools: fakeTools(),
+        });
+        expect(out).toBe('bedrock answer');
+        expect(bedrockReqAt(0).modelId).toBe('test-text-model');
+        expect(kimiMock).not.toHaveBeenCalled();
+      } finally {
+        config.LLM_TEXT_BACKEND = 'kimi';
+      }
+    });
+
+    test('image turn still routes to Nova Lite even in bedrock text mode', async () => {
+      config.LLM_TEXT_BACKEND = 'bedrock';
+      try {
+        sendMock.mockResolvedValueOnce(bedrockEnd('vision'));
+        const img = new ImageAttachable('x.png', 'image/png', new Uint8Array([1, 2]), 'png');
+        await ask({
+          system: 'p',
+          messages: [{ role: 'user', content: 'x', attachments: [img] }],
+          tools: fakeTools(),
+        });
+        expect(bedrockReqAt(0).modelId).toBe(config.BEDROCK_MODEL_LOW);
+        expect(kimiMock).not.toHaveBeenCalled();
+      } finally {
+        config.LLM_TEXT_BACKEND = 'kimi';
+      }
+    });
+
+    test('text turn runs tool calls over Converse in bedrock mode', async () => {
+      config.LLM_TEXT_BACKEND = 'bedrock';
+      config.BEDROCK_MODEL_ID = 'test-text-model';
+      try {
+        sendMock
+          .mockResolvedValueOnce({
+            output: {
+              message: {
+                role: 'assistant',
+                content: [{ toolUse: { toolUseId: 'u1', name: 'nautilus_query', input: { env: 'dev', query: 'stats count() | limit 1' } } }],
+              },
+            },
+            stopReason: 'tool_use',
+            usage: { inputTokens: 10, outputTokens: 2 },
+          })
+          .mockResolvedValueOnce(bedrockEnd('0 errores en dev'));
+        const tools = fakeTools(async (name) => ({ status: 'success', payload: { tool: name, rowCount: 1 } }));
+        const out = await ask({
+          system: 'p',
+          messages: [{ role: 'user', content: 'errores en dev?' }],
+          tools,
+        });
+        expect(out).toBe('0 errores en dev');
+        expect(tools.handle).toHaveBeenCalledWith('nautilus_query', { env: 'dev', query: 'stats count() | limit 1' });
+        expect(sendMock).toHaveBeenCalledTimes(2);
+        expect(kimiMock).not.toHaveBeenCalled();
+      } finally {
+        config.LLM_TEXT_BACKEND = 'kimi';
+      }
+    });
+  });
 });

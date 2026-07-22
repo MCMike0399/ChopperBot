@@ -52,6 +52,13 @@ const ConfigSchema = z.object({
     emptyToUndefined,
     z.string().regex(/^\d{17,20}$/, 'CALENDAR_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
   ),
+  // ── Text brain selector ────────────────────────────────────────────────────
+  // `kimi` (default, self-hosted/Pi): every text turn runs on Moonshot Kimi 2.7
+  // Thinking (KIMI_API_KEY required). `bedrock` (AWS-native deploys, e.g. the
+  // ECS sancus ops bot): text turns run on Amazon Bedrock Converse with
+  // BEDROCK_MODEL_ID, authenticated by the ambient AWS credential chain (task
+  // role on ECS, named profile locally) — no external API key needed.
+  LLM_TEXT_BACKEND: z.enum(['kimi', 'bedrock']).default('kimi'),
   // ── Moonshot Kimi (the text brain — ALL text, every domain) ────────────────
   // Every text turn — Discord chat, the calendar/config tool-calling, the
   // event-intake proposals, and the IG classifier's caption-only fallback — runs
@@ -59,7 +66,9 @@ const ConfigSchema = z.object({
   // (the `openai` SDK). Bedrock is used ONLY for images: Kimi 2.7 Thinking is
   // text-only, so any turn carrying an image is routed to Amazon Nova Lite (the
   // `low` tier — see BEDROCK_MODEL_LOW below and src/llm/client.ts).
-  KIMI_API_KEY: z.string().min(1, 'KIMI_API_KEY is required'),
+  // Required when LLM_TEXT_BACKEND=kimi (enforced by the superRefine below);
+  // optional in bedrock mode, where no Kimi client is constructed.
+  KIMI_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   // OpenAI-compatible base URL. Default is the Kimi-for-Coding endpoint, which
   // serves the K2.7 model but gates on a coding-agent User-Agent (see
   // KIMI_USER_AGENT). Point at https://api.moonshot.ai/v1 for the plain platform
@@ -75,15 +84,17 @@ const ConfigSchema = z.object({
   // platform API. Override if the allowlist changes.
   KIMI_USER_AGENT: z.string().min(1).default('claude-cli/1.0.0'),
 
-  // Amazon Bedrock (Converse API) credentials + model — the IMAGES-ONLY backend.
-  // Kimi is text-only, so the ONLY thing Bedrock serves is vision: any turn
-  // carrying an image (the IG post classifier's main call, or a chat message with
-  // an attachment) goes to Amazon Nova Lite. Auth is a plain IAM access key pair —
-  // the env var names are deliberately the short ACCESS_KEY_ID / SECRET_ACCESS_KEY
-  // (NOT the AWS_-prefixed standard names) so they don't collide with any ambient
-  // AWS CLI credentials on the host.
-  ACCESS_KEY_ID: z.string().min(1, 'ACCESS_KEY_ID is required'),
-  SECRET_ACCESS_KEY: z.string().min(1, 'SECRET_ACCESS_KEY is required'),
+  // Amazon Bedrock (Converse API) credentials + models. On the Pi these are the
+  // static ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env (the IMAGES-ONLY
+  // backend: Kimi is text-only, so the ONLY thing Bedrock serves there is
+  // vision — any turn carrying an image goes to Amazon Nova Lite). The env var
+  // names are deliberately the short ACCESS_KEY_ID / SECRET_ACCESS_KEY (NOT the
+  // AWS_-prefixed standard names) so they don't collide with any ambient AWS CLI
+  // credentials on the host. BOTH are OPTIONAL: when unset, the Bedrock client
+  // falls back to the AWS default credential chain (ECS task role, EC2 instance
+  // profile, or AWS_PROFILE locally) — the mode used by the AWS-native deploy.
+  ACCESS_KEY_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  SECRET_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   // Optional STS session token (only for temporary credentials).
   AWS_SESSION_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   AWS_REGION: z.string().min(1).default('us-east-1'),
@@ -186,9 +197,11 @@ const ConfigSchema = z.object({
   // backend only through CloudWatch Logs Insights (Nautilus wide events) and
   // read-only GitHub — it never touches a live system.
   //
-  // AWS named profile used for the CloudWatch client (the process runs as
-  // burbujamc, whose ~/.aws/config has the `sancus` profile). Credentials
-  // resolve lazily on first query, so a missing profile does NOT break boot.
+  // AWS named profile used for the CloudWatch client (self-hosted runs: the
+  // process runs as burbujamc, whose ~/.aws/config has the `sancus` profile).
+  // Credentials resolve lazily on first query, so a missing profile does NOT
+  // break boot. Set to the literal `default` to skip fromIni and use the AWS
+  // default credential chain instead (ECS task role / instance profile).
   SANCUS_OPS_AWS_PROFILE: z.string().min(1).default('sancus'),
   // Region of the Nautilus log groups. Pinned to us-east-2 (account 524329886851).
   SANCUS_OPS_AWS_REGION: z.string().min(1).default('us-east-2'),
@@ -201,6 +214,21 @@ const ConfigSchema = z.object({
   GITHUB_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   // GitHub org the Sancus app repos live under.
   GITHUB_ORG: z.string().min(1).default('deep-dive-mexico'),
+}).superRefine((c, ctx) => {
+  if (c.LLM_TEXT_BACKEND === 'kimi' && !c.KIMI_API_KEY) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['KIMI_API_KEY'],
+      message: 'KIMI_API_KEY is required when LLM_TEXT_BACKEND=kimi',
+    });
+  }
+  if ((c.ACCESS_KEY_ID && !c.SECRET_ACCESS_KEY) || (!c.ACCESS_KEY_ID && c.SECRET_ACCESS_KEY)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['ACCESS_KEY_ID'],
+      message: 'ACCESS_KEY_ID and SECRET_ACCESS_KEY must be set together (or both unset for the default AWS credential chain)',
+    });
+  }
 });
 
 const parsed = ConfigSchema.safeParse(process.env);
