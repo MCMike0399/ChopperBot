@@ -46,6 +46,66 @@ export interface CalendarPublisher {
   reconcile(): Promise<PublishSummary>;
 }
 
+/** The minimal event shape {@link desiredMonthKeys} needs. */
+export interface MonthCardEvent {
+  start_at: number;
+  recurrence_freq: string | null;
+}
+
+/**
+ * Which months should have a card in the output channel right now — the pure
+ * core of the publisher's reconcile, so the board's shape is testable without
+ * Discord. The board is a **live board, not an archive**:
+ *
+ *  - the CURRENT month, always (that's where a recurring series shows, and it
+ *    guarantees the month-rollover publish has something to post even before
+ *    anyone books anything — the caption reads "sin eventos por ahora");
+ *  - every FUTURE month containing a ONE-OFF event, so something already booked
+ *    ahead is visible;
+ *  - never a PAST month, and never a future month that only a recurring series
+ *    would fill (one weekly event must not blast a card for every remaining
+ *    month of the year).
+ *
+ * Months without a calibrated template are dropped — there's nothing to render.
+ * Month keys are "YYYY-MM", so string comparison is chronological.
+ */
+export function desiredMonthKeys(events: readonly MonthCardEvent[], nowMs: number): string[] {
+  const current = monthKeyOfUtc(nowMs);
+  const set = new Set<string>();
+  if (hasTemplateFor(current)) set.add(current);
+  for (const e of events) {
+    if (e.recurrence_freq !== null) continue; // recurring never spawns future cards
+    const k = monthKeyOfUtc(e.start_at);
+    if (k <= current) continue;              // past months are pruned; current already added
+    if (hasTemplateFor(k)) set.add(k);
+  }
+  return [...set].sort();
+}
+
+/** Verdict of {@link monthPublishAction} — what the rollover watcher should do. */
+export type MonthPublishAction = 'publish' | 'already_published' | 'no_template';
+
+/**
+ * Whether the current month's board still needs posting.
+ *
+ * This is the whole month-rollover trigger, kept pure and stateless on purpose:
+ * there is no "last rollover" timestamp to drift, go stale across a restart, or
+ * need a migration. {@link desiredMonthKeys} always keeps a card for the current
+ * month, and `calendar_published` holds one row per posted card — so a MISSING
+ * `pdf:<currentMonth>` row means exactly "this month hasn't been published yet".
+ *
+ * Consequences worth keeping true: a restart can't double-post (the row lives in
+ * SQLite), and a publish that fails leaves the row absent so the next check
+ * retries by itself.
+ */
+export function monthPublishAction(
+  currentMonthKey: string,
+  isPublished: (pubKey: string) => boolean,
+): MonthPublishAction {
+  if (!hasTemplateFor(currentMonthKey)) return 'no_template';
+  return isPublished(`pdf:${currentMonthKey}`) ? 'already_published' : 'publish';
+}
+
 export interface OutputChannelPublisherDeps {
   client: Client;
   store: CalendarStore;
@@ -79,29 +139,8 @@ export class OutputChannelPublisher implements CalendarPublisher {
     return this.deps.getOutputChannelId();
   }
 
-  /**
-   * The months that should have a card right now:
-   *  - every month containing a ONE-OFF event (so a booked one-off is visible
-   *    even if it's a future month), and
-   *  - the CURRENT month, if it has any occurrence (this is where a recurring
-   *    series shows — recurring events never spawn future cards).
-   * Only months with a calibrated template qualify.
-   */
   private desiredMonths(): string[] {
-    const set = new Set<string>();
-    for (const e of this.deps.store.listAll()) {
-      if (e.recurrence_freq === null) {
-        const k = monthKeyOfUtc(e.start_at);
-        if (hasTemplateFor(k)) set.add(k);
-      }
-    }
-    const cur = monthKeyOfUtc(Date.now());
-    if (hasTemplateFor(cur)) {
-      const [y, m] = cur.split('-').map(Number);
-      const { startMs, endMs } = monthWindowUtc(y, m);
-      if (this.deps.store.listOccurrences(startMs, endMs - 1).length > 0) set.add(cur);
-    }
-    return [...set].sort();
+    return desiredMonthKeys(this.deps.store.listAll(), Date.now());
   }
 
   async reconcile(): Promise<PublishSummary> {
