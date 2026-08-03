@@ -5,7 +5,15 @@ import {
   type CalendarEvent,
   type CalendarOccurrence,
 } from './store.js';
-import { isRecurrenceFreq, RECURRENCE_FREQUENCIES, step, type RecurrenceFreq } from './recurrence.js';
+import {
+  countOccurrencesUntil,
+  isRecurrenceFreq,
+  MAX_RECURRENCE_COUNT,
+  RECURRENCE_FREQUENCIES,
+  step,
+  untilFromCount,
+  type RecurrenceFreq,
+} from './recurrence.js';
 import { localParts } from './grid.js';
 import { formatInTimezone } from './time.js';
 import type { CalendarPublisher, PublishSummary } from './publisher.js';
@@ -105,7 +113,9 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_create_event',
         description:
-          'Create an event on the shared server calendar. Only call this once you have a clear TITLE and a START date+time. Resolve relative times against the current local time in the system prompt and pass start_at as ISO 8601 UTC. For a repeating series ("cada miércoles", "every Sunday"), set `recurrence_freq` — never create one event per occurrence. After creating, the affected month PDF(s) + ICS are auto-posted to the output channel.',
+          'Create an event on the shared server calendar. Only call this once you have a clear TITLE and a START date+time. Resolve relative times against the current local time in the system prompt and pass start_at as ISO 8601 UTC. For a repeating series ("cada miércoles", "every Sunday"), set `recurrence_freq` and create ONE row — never one event per occurrence.\n' +
+          'BOUND THE SERIES when the mod gave any hint of how long it runs — pass EITHER `recurrence_count` (how many times: "4 sesiones", "los 3 jueves") OR `recurrence_until_iso` (a last date: "hasta fin de agosto"). "todo julio" / "durante el mes" IS a range — resolve it to a count or an end date instead of creating an open-ended series. Leave both out only for something genuinely indefinite (una asamblea permanente).\n' +
+          'After creating, the affected month PDF(s) + ICS are auto-posted to the output channel.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -122,9 +132,17 @@ export class CalendarToolSource implements ToolSource {
               enum: [...RECURRENCE_FREQUENCIES],
               description: 'Set for repeating series ("daily", "weekly", "monthly"). Omit for one-off.',
             },
+            recurrence_count: {
+              type: 'integer',
+              minimum: 1,
+              maximum: MAX_RECURRENCE_COUNT,
+              description:
+                'How MANY occurrences the series has, counting the first ("cada martes 4 veces" → 4). Requires recurrence_freq. Mutually exclusive with recurrence_until_iso — use whichever the mod expressed. 1 collapses to a one-off.',
+            },
             recurrence_until_iso: {
               type: 'string',
-              description: 'Optional ISO 8601 UTC last allowed occurrence. Omit for open-ended.',
+              description:
+                'ISO 8601 UTC of the LAST allowed occurrence ("hasta el 31 de agosto"). Requires recurrence_freq. Mutually exclusive with recurrence_count. Omit both only for a genuinely open-ended series.',
             },
           },
           required: ['title', 'start_at_iso'],
@@ -137,7 +155,8 @@ export class CalendarToolSource implements ToolSource {
           '• "series" (default) — every occurrence (also use this for one-off events).\n' +
           '• "occurrence" — ONLY the one occurrence named by `occurrence_date_iso` (e.g. move just June 21 to 8:30). A retime must stay on the SAME day; to move it to another day, cancel that occurrence and create a separate event.\n' +
           '• "following" — that occurrence and ALL after it (splits the series; earlier occurrences keep the old values).\n' +
-          'If the mod says "el del 21" / "solo ese día" / "este y los siguientes" pick the matching scope; if it\'s ambiguous whether they mean one day or the whole series, ASK before calling. `recurrence_freq`/`recurrence_until_iso` only apply to scope "series".',
+          'If the mod says "el del 21" / "solo ese día" / "este y los siguientes" pick the matching scope; if it\'s ambiguous whether they mean one day or the whole series, ASK before calling. `recurrence_freq`/`recurrence_count`/`recurrence_until_iso` only apply to scope "series".\n' +
+          'To RE-BOUND an existing series ("que solo dure hasta septiembre", "déjalo en 6 sesiones") use scope "series" with `recurrence_count` or `recurrence_until_iso`; pass `recurrence_until_iso: null` to make it open-ended again.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -156,8 +175,15 @@ export class CalendarToolSource implements ToolSource {
               description: 'Frequency to add/change recurrence, or null to make it one-off again. Only with scope "series".',
               oneOf: [{ type: 'string', enum: [...RECURRENCE_FREQUENCIES] }, { type: 'null' }],
             },
+            recurrence_count: {
+              type: 'integer',
+              minimum: 1,
+              maximum: MAX_RECURRENCE_COUNT,
+              description:
+                'Re-bound the series to exactly N occurrences from its first one. Counted from the series START (its existing one unless you also change start_at_iso). Mutually exclusive with recurrence_until_iso. Only with scope "series".',
+            },
             recurrence_until_iso: {
-              description: 'ISO 8601 UTC end date, or null to clear (open-ended). Only with scope "series".',
+              description: 'ISO 8601 UTC last occurrence, or null to clear the bound (open-ended). Only with scope "series".',
               oneOf: [{ type: 'string' }, { type: 'null' }],
             },
           },
@@ -255,14 +281,16 @@ export class CalendarToolSource implements ToolSource {
     if (endMs !== null && endMs < startMs) {
       return { status: 'error', payload: { error: 'end_at_iso must be after start_at_iso.' } };
     }
-    const recurrenceFreq = parseRecurrenceFreq(obj.recurrence_freq, 'recurrence_freq');
-    const recurrenceUntil = parseOptionalIso(obj.recurrence_until_iso, 'recurrence_until_iso');
-    if (recurrenceUntil !== null && recurrenceFreq === null) {
-      return { status: 'error', payload: { error: 'recurrence_until_iso requires recurrence_freq to also be set.' } };
+    let recurrenceFreq = parseRecurrenceFreq(obj.recurrence_freq, 'recurrence_freq');
+    let range: ResolvedRange;
+    try {
+      range = resolveRecurrenceRange(obj, startMs, recurrenceFreq);
+    } catch (err) {
+      return { status: 'error', payload: { error: err instanceof Error ? err.message : String(err) } };
     }
-    if (recurrenceUntil !== null && recurrenceUntil < startMs) {
-      return { status: 'error', payload: { error: 'recurrence_until_iso must be on or after start_at_iso.' } };
-    }
+    // "repite 1 vez" is a one-off, not a degenerate one-occurrence series.
+    if (range.collapsedToOneOff) recurrenceFreq = null;
+
     const created = this.store.create({
       created_by: this.callerUserId,
       title,
@@ -271,9 +299,16 @@ export class CalendarToolSource implements ToolSource {
       description: asOptionalString(obj.description),
       location: asOptionalString(obj.location),
       recurrence_freq: recurrenceFreq,
-      recurrence_until: recurrenceUntil,
+      recurrence_until: recurrenceFreq === null ? null : range.until,
     });
-    log.info({ tool: 'calendar_create_event', id: created.id, title, recurrence_freq: recurrenceFreq, ms: Date.now() - t0 }, 'tool_call');
+    log.info(
+      {
+        tool: 'calendar_create_event', id: created.id, title,
+        recurrence_freq: recurrenceFreq, recurrence_count: range.requestedCount,
+        recurrence_until: created.recurrence_until, ms: Date.now() - t0,
+      },
+      'tool_call',
+    );
     const published = await this.publishNow();
     return { status: 'success', payload: { event: serializeMaster(created), published } };
   }
@@ -349,8 +384,29 @@ export class CalendarToolSource implements ToolSource {
     if (obj.description !== undefined) patch.description = asOptionalString(obj.description);
     if (obj.location !== undefined) patch.location = asOptionalString(obj.location);
     if (obj.recurrence_freq !== undefined) patch.recurrence_freq = parseRecurrenceFreq(obj.recurrence_freq, 'recurrence_freq');
-    if (obj.recurrence_until_iso !== undefined) {
-      patch.recurrence_until = obj.recurrence_until_iso === null ? null : parseRequiredIso(obj.recurrence_until_iso, 'recurrence_until_iso');
+
+    // Re-bounding the range: `recurrence_count` counts from the series' start
+    // (the new one if this same call moves it) under the effective frequency
+    // (the new one if this same call changes it), so "déjalo en 6 sesiones"
+    // resolves against what the series will BE, not what it was.
+    const effectiveStart = patch.start_at ?? master.start_at;
+    const effectiveFreq = patch.recurrence_freq !== undefined ? patch.recurrence_freq : master.recurrence_freq;
+    if (obj.recurrence_count !== undefined || obj.recurrence_until_iso !== undefined) {
+      let range: ResolvedRange;
+      try {
+        range = resolveRecurrenceRange(obj, effectiveStart, effectiveFreq);
+      } catch (err) {
+        return { status: 'error', payload: { error: err instanceof Error ? err.message : String(err) } };
+      }
+      if (range.collapsedToOneOff) {
+        patch.recurrence_freq = null;
+        patch.recurrence_until = null;
+      } else {
+        patch.recurrence_until = range.until;
+      }
+    } else if (patch.recurrence_freq === null) {
+      // Dropping recurrence leaves no series for a cutoff to bound.
+      patch.recurrence_until = null;
     }
     if (Object.keys(patch).length === 0) return { status: 'error', payload: { error: 'No fields to update.' } };
     // Changing the rhythm invalidates occurrence-keyed overrides.
@@ -359,7 +415,14 @@ export class CalendarToolSource implements ToolSource {
     }
     const updated = this.store.update(id, patch);
     if (!updated) return { status: 'error', payload: { error: `Event #${id} not found.` } };
-    log.info({ tool: 'calendar_update_event', id, scope: 'series', ms: Date.now() - t0 }, 'tool_call');
+    log.info(
+      {
+        tool: 'calendar_update_event', id, scope: 'series',
+        recurrence_freq: updated.recurrence_freq, recurrence_until: updated.recurrence_until,
+        ms: Date.now() - t0,
+      },
+      'tool_call',
+    );
     const published = await this.publishNow();
     return { status: 'success', payload: { updated_scope: 'series', event: serializeMaster(updated), published } };
   }
@@ -427,6 +490,9 @@ function serialize(e: CalendarOccurrence) {
     location: e.location,
     recurrence_freq: e.recurrence_freq,
     recurrence_until_iso: e.recurrence_until !== null ? new Date(e.recurrence_until).toISOString() : null,
+    recurrence_until_local: e.recurrence_until !== null ? formatInTimezone(e.recurrence_until) : null,
+    /** True when the series has no end date — worth flagging to mods on a read. */
+    recurrence_open_ended: e.recurrence_freq !== null && e.recurrence_until === null,
     is_recurring_instance: e.is_recurring_instance,
     occurrence_index: e.occurrence_index,
     created_by: e.created_by,
@@ -434,6 +500,9 @@ function serialize(e: CalendarOccurrence) {
 }
 
 function serializeMaster(e: CalendarEvent) {
+  const occurrenceCount = e.recurrence_freq !== null
+    ? countOccurrencesUntil(e.start_at, e.recurrence_freq, e.recurrence_until)
+    : 1;
   return {
     id: e.id,
     title: e.title,
@@ -445,9 +514,73 @@ function serializeMaster(e: CalendarEvent) {
     location: e.location,
     recurrence_freq: e.recurrence_freq,
     recurrence_until_iso: e.recurrence_until !== null ? new Date(e.recurrence_until).toISOString() : null,
+    /** Last occurrence in local time — echo this when confirming a bounded series. */
+    recurrence_until_local: e.recurrence_until !== null ? formatInTimezone(e.recurrence_until) : null,
+    /** Total occurrences, or null when the series is open-ended ("indefinida"). */
+    occurrence_count: occurrenceCount,
+    /** True when the series has no end date. */
+    recurrence_open_ended: e.recurrence_freq !== null && e.recurrence_until === null,
     created_by: e.created_by,
     created_at_iso: new Date(e.created_at).toISOString(),
   };
+}
+
+/** Outcome of reading the optional range params off a tool call. */
+interface ResolvedRange {
+  /** Concrete cutoff to store in `recurrence_until` (null = open-ended). */
+  until: number | null;
+  /** The `recurrence_count` the caller asked for, if any (for logging). */
+  requestedCount: number | null;
+  /** `recurrence_count: 1` — the caller described a single date, not a series. */
+  collapsedToOneOff: boolean;
+}
+
+/**
+ * Resolve `recurrence_count` / `recurrence_until_iso` into the single
+ * `recurrence_until` cutoff the store holds. The two are alternate spellings of
+ * the same bound ("4 martes" vs "hasta el 28 de julio"), so passing both is a
+ * contradiction we reject rather than silently pick a winner. Throws with a
+ * model-readable message; callers turn that into a tool error.
+ */
+function resolveRecurrenceRange(
+  obj: Record<string, unknown>,
+  startMs: number,
+  freq: RecurrenceFreq | null,
+): ResolvedRange {
+  const hasCount = obj.recurrence_count !== undefined && obj.recurrence_count !== null;
+  const hasUntil = obj.recurrence_until_iso !== undefined && obj.recurrence_until_iso !== null;
+  if (hasCount && hasUntil) {
+    throw new Error(
+      'Pass either recurrence_count OR recurrence_until_iso, not both — they are two ways to bound the same series.',
+    );
+  }
+  if ((hasCount || hasUntil) && freq === null) {
+    throw new Error(
+      `${hasCount ? 'recurrence_count' : 'recurrence_until_iso'} requires recurrence_freq to also be set (a range only means something for a repeating series).`,
+    );
+  }
+  if (hasCount) {
+    const count = asRecurrenceCount(obj.recurrence_count);
+    if (count === 1) return { until: null, requestedCount: 1, collapsedToOneOff: true };
+    return { until: untilFromCount(startMs, freq!, count), requestedCount: count, collapsedToOneOff: false };
+  }
+  if (hasUntil) {
+    const until = parseRequiredIso(obj.recurrence_until_iso, 'recurrence_until_iso');
+    if (until < startMs) {
+      throw new Error('recurrence_until_iso must be on or after the first occurrence.');
+    }
+    return { until, requestedCount: null, collapsedToOneOff: false };
+  }
+  // Explicit null on recurrence_until_iso means "clear the bound"; absent means
+  // "no bound given" — both leave the series open-ended.
+  return { until: null, requestedCount: null, collapsedToOneOff: false };
+}
+
+function asRecurrenceCount(v: unknown): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > MAX_RECURRENCE_COUNT) {
+    throw new Error(`recurrence_count: must be an integer between 1 and ${MAX_RECURRENCE_COUNT} (got ${JSON.stringify(v)})`);
+  }
+  return v;
 }
 
 function parseRecurrenceFreq(v: unknown, field: string): RecurrenceFreq | null {

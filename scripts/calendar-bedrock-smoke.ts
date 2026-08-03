@@ -1,13 +1,19 @@
 /**
- * Calendar capability smoke test against the REAL Bedrock model — replays the
- * Kimi-era Discord conversation (Club de cine recurring series, single-
- * occurrence override, one-off create + delete, duplicate detection, plain
- * chat) to confirm the new model reasons about the calendar at least as well.
+ * Calendar capability smoke test against the REAL text model (Kimi — the
+ * calendar runs on the `high` text tier). Replays real Discord conversations:
+ * a recurring series, a single-occurrence override, one-off create + delete,
+ * duplicate detection, plain chat, and the **bounded-series** scenes added
+ * 2026-08-03 (Scenes 8–10) that guard the regression below.
  *
- * Drives the actual CalendarCapability + ask() (Bedrock Converse) against an
- * in-memory SQLite store. No Discord client → the publisher is a no-op
- * (publishing "disabled"), but every create/update/delete still hits the DB,
- * so we verify the model picked the right tools by inspecting the store.
+ * Scene 9 replays an actual production failure (journal, 2026-07-10): a mod
+ * booked a weekly book club and the bot created FOUR separate one-off rows,
+ * because the tools only offered "weekly → forever". The hard check is
+ * therefore "ONE row, bounded" — not just "some event exists".
+ *
+ * Drives the actual CalendarCapability + ask() against an in-memory SQLite
+ * store. No Discord client → the publisher is a no-op (publishing "disabled"),
+ * but every create/update/delete still hits the DB, so we verify the model
+ * picked the right tools by inspecting the store.
  *
  * Reply-chain fidelity: each `@ChopperBot ...` starts a FRESH chain (empty
  * history — the model must rely on the upcoming-events snapshot baked into the
@@ -20,6 +26,7 @@ import { config } from '../src/config.js';
 import { SqliteMemoryStore, NamespacedMemory } from '../src/memory/store.js';
 import { CalendarCapability } from '../src/capabilities/calendar/capability.js';
 import { CalendarStore } from '../src/capabilities/calendar/store.js';
+import { countOccurrencesUntil } from '../src/capabilities/calendar/recurrence.js';
 import { ask } from '../src/llm/client.js';
 import type { Turn } from '../src/discord/history.js';
 import type { ComposedTools } from '../src/tools/source.js';
@@ -161,6 +168,9 @@ async function main() {
   {
     const say = newChain();
     await say('borra el evento de asamblea ordinaria de mañana');
+    // The prompt REQUIRES confirming the exact event once before deleting, so a
+    // "¿lo borro?" here is correct behavior, not a miss — answer it.
+    if (byTitle(/asamblea/i).length > 0) await say('sí');
     check(byTitle(/asamblea/i).length === 0, 'la asamblea fue eliminada', byTitle(/asamblea/i).map((e) => `#${e.id}`).join(', ') || 'sin eventos de asamblea');
   }
 
@@ -195,6 +205,56 @@ async function main() {
     const touched = [...a.tools, ...b.tools].filter((t) => mutators.includes(t));
     check(touched.length === 0, 'no ejecutó tools que muten el calendario', touched.join(', ') || 'ninguna');
     check(a.reply.length > 0 && b.reply.length > 0, 'respondió en ambos turnos');
+  }
+
+  // ── Scene 8: bounded series from an explicit count ("6 sesiones") ──
+  console.log('\n── Scene 8: serie acotada por número de sesiones ──');
+  {
+    const say = newChain();
+    await say('crea un taller de serigrafía cada jueves a las 7 pm, son 6 sesiones, empieza este jueves');
+    const taller = byTitle(/serigraf/i);
+    check(taller.length === 1, 'creó UNA sola fila (no una por sesión)', taller.map((e) => `#${e.id} ${e.recurrence_freq ?? 'one-off'}`).join('; ') || '(ninguna)');
+    const s = taller.find((e) => e.recurrence_freq === 'weekly');
+    if (!s) check(false, 'es una serie semanal', taller.map((e) => e.recurrence_freq ?? 'one-off').join(', '));
+    else {
+      check(s.recurrence_until !== null, 'la serie quedó ACOTADA (no indefinida)', s.recurrence_until ? localStr(s.recurrence_until) : 'recurrence_until=null');
+      const n = countOccurrencesUntil(s.start_at, 'weekly', s.recurrence_until);
+      check(n === 6, 'son exactamente 6 ocurrencias', `n=${n}`);
+    }
+  }
+
+  // ── Scene 9: "todos los martes de julio" — the 4-one-off-rows regression ──
+  console.log('\n── Scene 9: rango implícito por mes (regresión de las 4 filas) ──');
+  {
+    const say = newChain();
+    await say('crea el círculo de lectura "Raíz que no desaparece" todos los martes de julio a las 8pm');
+    const circ = byTitle(/ra[íi]z que no desaparece/i);
+    check(circ.length === 1, 'creó UNA sola fila, no una por martes', circ.map((e) => `#${e.id} ${e.recurrence_freq ?? 'one-off'} ${localStr(e.start_at)}`).join('; ') || '(ninguna)');
+    const s = circ.find((e) => e.recurrence_freq === 'weekly');
+    if (!s) check(false, 'es una serie semanal', circ.map((e) => e.recurrence_freq ?? 'one-off').join(', '));
+    else {
+      check(s.recurrence_until !== null, '"de julio" se interpretó como RANGO', s.recurrence_until ? `hasta ${localStr(s.recurrence_until)}` : 'recurrence_until=null (quedó indefinida)');
+      const n = countOccurrencesUntil(s.start_at, 'weekly', s.recurrence_until);
+      if (n === 4 || n === 5) check(true, 'cubre los martes de julio', `n=${n}`);
+      else warn('número de martes inesperado', `n=${n}`);
+      if (!/Tuesday/.test(localStr(s.start_at))) warn('no arranca en martes', localStr(s.start_at));
+    }
+  }
+
+  // ── Scene 10: no range hint → asks once, accepts "indefinida" ──
+  console.log('\n── Scene 10: sin pista de rango → pregunta una vez, acepta indefinida ──');
+  {
+    const say = newChain();
+    const first = await say('crea la asamblea permanente todos los sábados a las 8pm');
+    const askedRange = /hasta cu[áa]ndo|cu[áa]ntas sesiones|indefinid/i.test(first.reply);
+    if (askedRange) check(true, 'preguntó por el rango (una vez)');
+    else warn('no preguntó por el rango', 'aceptable si la creó indefinida de una');
+    if (byTitle(/asamblea permanente/i).length === 0) await say('indefinida');
+    const perm = byTitle(/asamblea permanente/i);
+    check(perm.length === 1, 'creó UNA sola fila', perm.map((e) => `#${e.id}`).join('; ') || '(ninguna)');
+    const s = perm.find((e) => e.recurrence_freq === 'weekly');
+    if (!s) check(false, 'es una serie semanal', perm.map((e) => e.recurrence_freq ?? 'one-off').join(', '));
+    else check(s.recurrence_until === null, 'quedó INDEFINIDA (no la bloqueó ni la acotó sola)', `until=${s.recurrence_until}`);
   }
 
   // ── Final calendar state ──

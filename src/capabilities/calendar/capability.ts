@@ -15,11 +15,21 @@ import {
   type CalendarOccurrence,
 } from './store.js';
 import { CalendarToolSource } from './source.js';
-import { OutputChannelPublisher, type CalendarPublisher } from './publisher.js';
+import { OutputChannelPublisher, type CalendarPublisher, type PublishSummary } from './publisher.js';
 import { formatInTimezone, renderTemporalAwareness } from './time.js';
-import { availableMonthKeys } from './render.js';
+import { monthPublishAction } from './publisher.js';
+import { availableMonthKeys, hasTemplateFor } from './render.js';
+import { monthKey, monthKeyOfUtc } from './grid.js';
+import { sendAdminAlert } from '../../discord/admin-alert.js';
 
 const SNAPSHOT_LIMIT = 8;
+
+/**
+ * How often to check whether the local month rolled over. The check is a single
+ * SQLite read, so a tight-ish interval is free; 10 min bounds how late the new
+ * month's board can appear after local midnight.
+ */
+const ROLLOVER_CHECK_MS = 10 * 60_000;
 
 /**
  * Calendar capability: a **global** server calendar (not per-user). Moderators
@@ -36,6 +46,10 @@ export class CalendarCapability implements Capability {
   private store: CalendarStore | null = null;
   private projectRoot = '.';
   private getDiscordClient: CapabilityInitDeps['getDiscordClient'] = undefined;
+  /** Month-rollover watcher (see {@link checkMonthRollover}); cleared on dispose. */
+  private rolloverTimer: NodeJS.Timeout | null = null;
+  /** Operator alerts already sent this process, so a 10-min tick can't spam. */
+  private readonly alertedKeys = new Set<string>();
 
   async init({ memory, projectRoot, getDiscordClient }: CapabilityInitDeps): Promise<void> {
     await memory.migrate(this.id, CALENDAR_MIGRATIONS);
@@ -78,20 +92,100 @@ export class CalendarCapability implements Capability {
   }
 
   /**
-   * Post-login hook: reconcile the output channel once so a month rollover
-   * (or a stale board from older behavior) is corrected without waiting for the
-   * next event edit. Best-effort.
+   * Post-login hook: reconcile the output channel once (so a rollover that
+   * happened while the bot was down, or a stale board from older behavior, is
+   * corrected without waiting for the next event edit), then keep watching for
+   * the month to roll over while we stay up. Best-effort throughout.
    */
   async start({ client }: CapabilityStartDeps): Promise<void> {
     if (!this.store) return;
+    await this.reconcileSafely(client, 'calendar.startup_reconcile');
+    this.rolloverTimer = setInterval(() => {
+      void this.checkMonthRollover(client);
+    }, ROLLOVER_CHECK_MS);
+    this.rolloverTimer.unref?.();
+    // The watcher is otherwise silent until a month actually rolls over, so log
+    // once that it's armed (and what it currently thinks) — that's the only way
+    // to confirm the feature is live without waiting for the 1st of the month.
+    const current = monthKeyOfUtc(Date.now());
+    log.info(
+      {
+        capability: this.id,
+        check_every_min: ROLLOVER_CHECK_MS / 60_000,
+        current_month: current,
+        verdict: monthPublishAction(current, (key) => this.store?.getPublished(key) !== null),
+      },
+      'calendar.rollover_watch_started',
+    );
+  }
+
+  async dispose(): Promise<void> {
+    if (this.rolloverTimer) {
+      clearInterval(this.rolloverTimer);
+      this.rolloverTimer = null;
+    }
+  }
+
+  /**
+   * Publish the new month's board as soon as the local month rolls over, so the
+   * community gets the fresh calendar on day 1 instead of whenever a mod happens
+   * to next edit an event. The decision itself lives in the pure
+   * {@link monthPublishAction} (which documents why it needs no state).
+   */
+  private async checkMonthRollover(client: Client): Promise<void> {
+    const store = this.store;
+    if (!store) return;
+    const current = monthKeyOfUtc(Date.now());
+    const action = monthPublishAction(current, (key) => store.getPublished(key) !== null);
+    if (action === 'already_published') return;
+    if (action === 'no_template') {
+      await this.alertOnce(client, `no_template:${current}`, [
+        `⚠️ **Calendario sin plantilla para ${current}.**`,
+        `No hay un PDF de plantilla para el mes actual, así que no puedo publicar el calendario en el canal de salida.`,
+        `Agrega \`calendar/<Mes> <Año>.pdf\` y vuelve a correr \`scripts/calibrate-calendar-templates.ts\`.`,
+      ]);
+      return;
+    }
+
+    log.info({ capability: this.id, month: current }, 'calendar.rollover.publishing');
+    const summary = await this.reconcileSafely(client, 'calendar.rollover_reconcile');
+    // Publishing a new month is the natural once-a-month moment to check that we
+    // still have a template for what comes next — a missing one is otherwise
+    // invisible until the board silently stops updating.
+    if (summary?.ok) await this.warnIfNextMonthUntemplated(client, current);
+  }
+
+  /** Alert the config channel that templates run out after the current month. */
+  private async warnIfNextMonthUntemplated(client: Client, current: string): Promise<void> {
+    const [y, m] = current.split('-').map(Number);
+    const next = m === 12 ? monthKey(y + 1, 1) : monthKey(y, m + 1);
+    if (hasTemplateFor(next)) return;
+    await this.alertOnce(client, `no_next_template:${next}`, [
+      `📅 **Se acaban las plantillas del calendario.**`,
+      `Ya publiqué **${current}**, pero no hay plantilla para **${next}** — el mes que entra no se va a poder publicar.`,
+      `Agrega \`calendar/<Mes> <Año>.pdf\` y corre \`npx tsx scripts/calibrate-calendar-templates.ts\`.`,
+    ]);
+  }
+
+  /** Send an operator alert at most once per process per distinct key. */
+  private async alertOnce(client: Client, key: string, lines: string[]): Promise<void> {
+    if (this.alertedKeys.has(key)) return;
+    this.alertedKeys.add(key);
+    log.warn({ capability: this.id, alert: key }, 'calendar.alert');
+    await sendAdminAlert(client, lines, 'calendar.alert');
+  }
+
+  private async reconcileSafely(client: Client, logTag: string): Promise<PublishSummary | null> {
     try {
       const summary = await this.makePublisher(client).reconcile();
       log.info(
-        { capability: this.id, posted: summary.posted, removed: summary.removed, ok: summary.ok },
-        'calendar.startup_reconcile',
+        { capability: this.id, posted: summary.posted, removed: summary.removed, ok: summary.ok, error: summary.error },
+        logTag,
       );
+      return summary;
     } catch (err) {
-      log.warn({ capability: this.id, err }, 'calendar.startup_reconcile_failed');
+      log.warn({ capability: this.id, err }, `${logTag}_failed`);
+      return null;
     }
   }
 
@@ -136,6 +230,7 @@ function renderSystemPrompt(
 # Tu rol
 - Ayudas a lxs moderadorxs a registrar eventos (asambleas, círculos de lectura, talleres, convocatorias) en lenguaje natural.
 - Cuando registras un evento, el bot **renderiza automáticamente** el PDF del mes correspondiente y lo publica, junto con un archivo ICS, en el canal de salida ${outputRef}. No tienes que hacer nada extra para publicar — sucede solo al crear/editar/borrar.
+- Además, **al iniciar cada mes el calendario del mes nuevo se publica solo** en ${outputRef}. El canal de salida es un tablero vivo: muestra el mes en curso (y los meses futuros que ya tengan eventos de fecha única), no los meses que ya pasaron. Si alguien pregunta por el calendario de un mes viejo, dile que el tablero solo conserva el mes actual y ofrécele el ICS.
 
 # Conversación de seguimiento (IMPORTANTE)
 Antes de crear un evento necesitas como mínimo:
@@ -146,15 +241,26 @@ Si falta algo REQUERIDO o es ambiguo, **haz UNA pregunta concisa a la vez** hast
 - **¿Se repite?** "cada miércoles", "semanal", "todos los días" → es una **serie**, usa \`recurrence_freq\`. Si no queda claro si es único o recurrente, pregúntalo.
 - Hora de fin o descripción solo si la persona las menciona.
 **Fecha de inicio de una serie:** si dan la cadencia pero no una fecha (p. ej. "todos los jueves a las 8"), **NO la preguntes** — infiere la PRIMERA ocurrencia como el próximo día que cuadre desde la hora local actual.
-**Fin de la serie (\`recurrence_until_iso\`) es OPCIONAL:** la serie es **indefinida** por defecto. **NUNCA preguntes "¿hasta cuándo se repite?"** — solo acótala si la persona da una fecha de término por iniciativa propia.
+**Duración de una serie:** ver "Rango de una serie" más abajo — pregúntalo UNA vez, y si no te dan respuesta clara créala indefinida.
 No inventes el título ni la hora. Si el mensaje ya **nombra** el evento ("el evento de asamblea ordinaria", "club de cine", "crea X") ese ES el título — úsalo tal cual, **no preguntes "¿cuál es el título?"**. En cuanto tengas título + hora + (fecha o cadencia), **créalo sin preguntas innecesarias** (primero revisa duplicados con \`calendar_search_events\` como se indica abajo).
 
 ${renderTemporalAwareness(now)}
 
 # Eventos recurrentes
-- Frecuencias soportadas: \`daily\`, \`weekly\`, \`monthly\`. \`start_at_iso\` es la PRIMERA ocurrencia; opcionalmente \`recurrence_until_iso\` acota la serie. Si no se da, la serie es **indefinida** — no preguntes por una fecha de término.
-- Una sola fila por serie — NUNCA crees un evento por cada semana. El renderizador dibuja cada ocurrencia en su celda automáticamente (un evento semanal aparece en cada semana del PDF).
+- Frecuencias soportadas: \`daily\`, \`weekly\`, \`monthly\`. \`start_at_iso\` es la PRIMERA ocurrencia.
+- **UNA sola fila por serie. NUNCA crees un evento por cada ocurrencia** — ni siquiera cuando la serie tiene pocas fechas ("los 4 martes de julio" son UN evento \`weekly\` con \`recurrence_count: 4\`, **no** 4 eventos). El renderizador dibuja cada ocurrencia en su celda automáticamente. Crear una fila por fecha es un error: obliga a editar/borrar cada una por separado.
 - Frecuencias no soportadas ("cada 15 días", "entre semana"): dilo y ofrece la alternativa semanal.
+
+## Rango de una serie (\`recurrence_count\` / \`recurrence_until_iso\`) — IMPORTANTE
+Una serie puede estar **acotada** o ser **indefinida**. Dos formas equivalentes de acotarla (usa UNA, nunca las dos):
+- \`recurrence_count\` — **cuántas veces** se repite, contando la primera: "4 sesiones", "los 3 jueves", "un mes de talleres" → \`recurrence_count: 4\`.
+- \`recurrence_until_iso\` — **hasta qué fecha**: "hasta el 31 de agosto", "hasta que acabe el semestre" (si dan la fecha).
+Reglas:
+- Si la persona **ya dio un rango**, aplícalo sin preguntar. Frases como "todo julio", "durante agosto", "por un mes", "las próximas 6 semanas", "mientras dure el libro (8 capítulos)" **SON un rango** — resuélvelo a un \`recurrence_count\` o una fecha; no lo dejes indefinido.
+- Si **no dieron ninguna pista**, pregunta **UNA sola vez**, corto y ofreciendo la salida: *"¿Cuántas sesiones son o hasta cuándo se repite? Si no, la dejo indefinida."*
+- **Nunca bloquees la creación por esto.** Si contestan "no sé", "indefinido", "por ahora déjalo así", o simplemente no responden a esa pregunta, **créala indefinida** y sigue.
+- Al confirmar, **di el rango en concreto**: usa \`occurrence_count\` y \`recurrence_until_local\` del resultado ("semanal, 4 sesiones, la última el Tue Jul 28, 8:00 PM"), o di que quedó **indefinida** si \`recurrence_open_ended\` es \`true\`.
+- Para **re-acotar** una serie que ya existe: \`calendar_update_event\` con \`scope:"series"\` y \`recurrence_count\` o \`recurrence_until_iso\`; para volverla indefinida, \`recurrence_until_iso: null\`.
 
 # Editar / borrar una serie: ALCANCE (\`scope\`) — IMPORTANTE
 Al editar o borrar una serie recurrente, decide el alcance con el parámetro \`scope\` de \`calendar_update_event\` / \`calendar_delete_event\`:
