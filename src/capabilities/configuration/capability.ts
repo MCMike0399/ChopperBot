@@ -19,6 +19,7 @@ import { ConfigFileScannerAdminSource } from './filescanner-admin-source.js';
 import { ConfigEventIntakeAdminSource } from './eventintake-admin-source.js';
 import { ConfigDbSource } from './db-source.js';
 import { renderConfigurationPrompt } from './preamble.js';
+import type { SkippedCapability } from './health.js';
 
 /**
  * Admin / config console capability. Lives in a single hardcoded channel and
@@ -44,6 +45,8 @@ export class ConfigurationCapability implements Capability {
   private getUserDirectory: CapabilityInitDeps['getUserDirectory'] = undefined;
   private readonly startedAtMs = Date.now();
   private dbPath = '';
+  /** Capabilities whose `init()` threw at boot, for `config_system action:health`. */
+  private skippedCapabilities: readonly SkippedCapability[] = [];
 
   async init(deps: CapabilityInitDeps): Promise<void> {
     await deps.memory.migrate(this.id, CONFIGURATION_MIGRATIONS);
@@ -65,6 +68,16 @@ export class ConfigurationCapability implements Capability {
   bootStore(): ConfigurationStore {
     if (!this.store) throw new Error('ConfigurationCapability not initialized');
     return this.store;
+  }
+
+  /**
+   * Called by app.ts once the init loop finishes, so the health view can report
+   * *why* a capability is absent instead of the operator inferring it from a
+   * missing id. Safe to call after this capability's own `init()` — it is
+   * initialized first and the value is only read at `buildTurn` time.
+   */
+  recordSkippedCapabilities(skipped: readonly SkippedCapability[]): void {
+    this.skippedCapabilities = [...skipped];
   }
 
   async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
@@ -92,6 +105,7 @@ export class ConfigurationCapability implements Capability {
       callerUserId: ctx.userId,
       startedAtMs: this.startedAtMs,
       dbPath: this.dbPath,
+      skippedCapabilities: this.skippedCapabilities,
     });
     const instagram = new ConfigInstagramAdminSource({
       db: this.db,

@@ -11,6 +11,7 @@ import type { UserDirectory } from '../../users/store.js';
 import { CONFIGURATION_CAPABILITY_ID, CONFIGURATION_CHANNEL_ID } from './constants.js';
 import { GENERAL_CHAT_CAPABILITY_ID } from '../general_chat/constants.js';
 import { ConfigurationStore } from './store.js';
+import { collectHealth, type SkippedCapability } from './health.js';
 
 /**
  * Capability id of the Instagram monitor. Hardcoded here (not imported from
@@ -29,6 +30,8 @@ export interface ConfigurationToolSourceDeps {
   callerUserId: string;
   startedAtMs: number;
   dbPath: string;
+  /** Capabilities whose `init()` threw at boot — surfaced by `action:health`. */
+  skippedCapabilities: readonly SkippedCapability[];
 }
 
 export class ConfigurationToolSource implements ToolSource {
@@ -82,13 +85,14 @@ export class ConfigurationToolSource implements ToolSource {
         name: 'config_system',
         description:
           'Bot health, known users, and destructive per-channel purge. `action`:\n' +
-          '• "bot_info" — uptime, Node version, Bedrock model id + region, max output tokens, data dir, DB size, capabilities, binding/guild counts.\n' +
+          '• "health" — **the cross-capability snapshot: use this for "¿cómo va el bot?", "estado general", "todo bien?".** One call returns an overall `status` (ok/degraded/down) + a `problems` list, plus per-subsystem blocks: LLM (both backends + whether calls are succeeding), which capabilities failed to start, IG monitor kill-switch/budget, calendar publish state, file scanner budget, event intake. Lead with `status` + `problems`; only dig into a block if something is wrong.\n' +
+          '• "bot_info" — narrow runtime facts only (uptime, Node version, model ids, data dir, DB size, capability/binding/guild counts). Prefer "health" for anything about how the bot is DOING.\n' +
           '• "list_users" {limit?} — Discord users the bot has seen (id, tag, first/last seen), most-recent first.\n' +
-          '• "purge_channel_data" {capability, channel_id, confirm} — DESTRUCTIVE. Delete every row `<capability>_*` carries for a channel (tables with a channel_id column). Clears instagram_monitor_seen_posts (per-channel dedup); calendar_events is per-user (no-op — use config_calendar). Refuses configuration_*. Requires confirm:true.',
+          '• "purge_channel_data" {capability, channel_id, confirm} — DESTRUCTIVE. Delete every row `<capability>_*` carries for a channel (tables with a channel_id column). Clears instagram_monitor_seen_posts (per-channel dedup). The calendar is GLOBAL (no channel_id) so it is a no-op there — use config_calendar. Refuses configuration_*. Requires confirm:true.',
         inputSchema: {
           type: 'object',
           properties: {
-            action: { type: 'string', enum: ['bot_info', 'list_users', 'purge_channel_data'] },
+            action: { type: 'string', enum: ['health', 'bot_info', 'list_users', 'purge_channel_data'] },
             limit: { type: 'integer', minimum: 1, maximum: 100, description: 'For "list_users".' },
             capability: { type: 'string', description: 'For "purge_channel_data".' },
             channel_id: { type: 'string', description: 'For "purge_channel_data".' },
@@ -157,8 +161,10 @@ export class ConfigurationToolSource implements ToolSource {
   }
 
   private handleSystem(obj: Record<string, unknown>, t0: number): ToolHandlerResult {
-    const action = asAction(obj.action, ['bot_info', 'list_users', 'purge_channel_data']);
+    const action = asAction(obj.action, ['health', 'bot_info', 'list_users', 'purge_channel_data']);
     switch (action) {
+      case 'health':
+        return this.handleHealth(t0);
       case 'bot_info':
         return this.handleBotInfo();
       case 'list_users':
@@ -341,6 +347,24 @@ export class ConfigurationToolSource implements ToolSource {
     };
   }
 
+  /** The one-call "how is the bot doing?" snapshot (see ./health.ts). */
+  private handleHealth(t0: number): ToolHandlerResult {
+    const report = collectHealth({
+      db: this.deps.db,
+      registry: this.deps.registry,
+      router: this.deps.router,
+      client: this.deps.client,
+      startedAtMs: this.deps.startedAtMs,
+      dbPath: this.deps.dbPath,
+      skipped: this.deps.skippedCapabilities,
+    });
+    log.info(
+      { tool: 'config_system.health', status: report.status, problems: report.problems.length, ms: Date.now() - t0 },
+      'tool_call',
+    );
+    return { status: 'success', payload: report as unknown as Record<string, unknown> };
+  }
+
   private handleBotInfo(): ToolHandlerResult {
     let dbSizeBytes: number | null = null;
     try {
@@ -355,7 +379,12 @@ export class ConfigurationToolSource implements ToolSource {
         uptime_ms: uptimeMs,
         uptime_human: humanDuration(uptimeMs),
         node_version: process.version,
-        bedrock_model_id: config.BEDROCK_MODEL_ID,
+        // The bot runs TWO backends: Kimi for all text, Nova Lite for images
+        // only. `BEDROCK_MODEL_ID` (Sonnet) has been legacy and off every hot
+        // path since 2026-07-13 — reporting it as "the model" told operators the
+        // bot ran on something it never calls, so it is deliberately not here.
+        text_model: config.KIMI_MODEL_ID,
+        vision_model: config.BEDROCK_MODEL_LOW,
         aws_region: config.AWS_REGION,
         max_output_tokens: config.MAX_OUTPUT_TOKENS,
         data_dir: config.CHOPPERBOT_DATA_DIR,
