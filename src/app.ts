@@ -80,15 +80,21 @@ export async function run(): Promise<void> {
     getUserDirectory: () => userDirectory,
   });
 
+  // Init failures are recorded, not just logged: the admin console's
+  // `config_system action:health` reports them so "capability X isn't working"
+  // has an answer without digging through journald.
+  const skippedCapabilities: Array<{ id: string; error: string }> = [];
   for (const cap of candidates) {
     try {
       await cap.init(initDepsFor(cap));
       registry.register(cap);
       log.info({ capability: cap.id, description: cap.description }, 'Capability initialized');
     } catch (err) {
+      skippedCapabilities.push({ id: cap.id, error: err instanceof Error ? err.message : String(err) });
       log.error({ err, capability: cap.id }, 'Capability failed to init — skipping');
     }
   }
+  configCap.recordSkippedCapabilities(skippedCapabilities);
 
   // 3. Bindings: env-var seed (one-time) → DB → force-bind the config channel.
   if (!registry.has(configCap.id)) {

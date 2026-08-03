@@ -17,7 +17,7 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 📅 **El calendario del mes se publica solito, y las series ya pueden tener fecha de término**
 
-Tres mejoras al calendario de la comunidad:
+Tres mejoras al calendario de la comunidad (y una para quienes administran el bot):
 
 **1. Cada que empieza un mes, el calendario nuevo se publica automáticamente.** Antes el calendario del mes solo aparecía cuando algúnx mod agregaba o editaba un evento; si nadie tocaba nada, el canal se quedaba con el mes anterior. Eso justo pasó el 1 de agosto. Ahora ChopperBot se da cuenta del cambio de mes por su cuenta y sube el calendario de agosto (y de septiembre, y del que siga) sin que nadie tenga que pedírselo.
 
@@ -30,6 +30,8 @@ Tres mejoras al calendario de la comunidad:
 - "*asamblea todos los sábados*" → si no dices hasta cuándo, te lo pregunta una vez; si no tienes fecha de término, la deja **indefinida** como siempre.
 
 Al confirmar te dice en concreto cuántas sesiones son y cuál es la última. Y si una serie ya existe, se le puede ajustar después ("déjalo en 6 sesiones", "que solo llegue hasta septiembre") o volverla indefinida otra vez.
+
+**4. Y para quienes administran el bot: ya se le puede preguntar "¿cómo vas?".** ChopperBot ahora responde con un diagnóstico completo de sí mismo en una sola respuesta: si algo está fallando, qué es y cómo se arregla. Antes había que preguntarle por cada cosa por separado, y algunas cosas simplemente no se podían consultar (por ejemplo, si alguna de sus funciones no había arrancado bien).
 
 ---
 
