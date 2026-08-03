@@ -1,11 +1,13 @@
 /**
  * Recurrence expansion for the calendar capability.
  *
- * V1 supports daily / weekly / monthly frequencies anchored to a single
- * master event row (`recurrence_freq` + optional `recurrence_until`). Each
- * call to listUpcoming/search expands the master into virtual occurrences
- * within the requested window. There is no per-instance override yet —
- * update/delete by id always affects the entire series.
+ * Daily / weekly / monthly frequencies anchored to a single master event row
+ * (`recurrence_freq` + optional `recurrence_until`). Each call to
+ * listUpcoming/search expands the master into virtual occurrences within the
+ * requested window. A series is open-ended unless `recurrence_until` bounds it —
+ * see {@link untilFromCount} for how the tools' "N veces" range is stored.
+ * Per-occurrence exceptions (retime/cancel a single instance) come in via the
+ * `overrides` argument; see {@link OccurrenceOverride}.
  *
  * Timezone semantics: daily and weekly are timezone-invariant (we step in
  * fixed ms). Monthly is calendar-aware — Jan 31 + 1 month → Feb 28/29, not
@@ -142,4 +144,42 @@ export function expandOccurrences(
 
 export function isRecurrenceFreq(v: unknown): v is RecurrenceFreq {
   return typeof v === 'string' && (RECURRENCE_FREQUENCIES as readonly string[]).includes(v);
+}
+
+/** Upper bound on a bounded series, so "cada día por N veces" can't explode. */
+export const MAX_RECURRENCE_COUNT = 260;
+
+/**
+ * The `recurrence_until` that bounds a series to exactly `count` occurrences:
+ * the anchor time of the LAST one. `count = 1` returns the anchor itself.
+ *
+ * This is how the tools' `recurrence_count` ("cada martes, 4 veces") is stored —
+ * there is no separate count column. Collapsing a count to a concrete cutoff at
+ * write time means the renderer, the ICS RRULE (`UNTIL=`) and `expandOccurrences`
+ * all keep working off the single `recurrence_until` field they already handle.
+ */
+export function untilFromCount(startMs: number, freq: RecurrenceFreq, count: number): number {
+  return step(startMs, freq, count - 1);
+}
+
+/**
+ * How many occurrences a series actually yields — i.e. how many anchors fall at
+ * or before `untilMs`. Returns null for an open-ended series (no cutoff), so
+ * callers can render "indefinida" instead of a number. Used to confirm a
+ * bounded series back to the mod in concrete terms ("semanal, 4 sesiones").
+ */
+export function countOccurrencesUntil(
+  startMs: number,
+  freq: RecurrenceFreq,
+  untilMs: number | null,
+  cap: number = MAX_RECURRENCE_COUNT,
+): number | null {
+  if (untilMs === null) return null;
+  if (untilMs < startMs) return 0;
+  let n = 0;
+  for (let i = 0; i < cap; i++) {
+    if (step(startMs, freq, i) > untilMs) break;
+    n++;
+  }
+  return n;
 }

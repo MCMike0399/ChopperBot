@@ -2,7 +2,14 @@ import type Database from 'better-sqlite3';
 import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
 import { CalendarStore, type CalendarEvent, type UpdateEventInput } from '../calendar/store.js';
-import { isRecurrenceFreq, RECURRENCE_FREQUENCIES, type RecurrenceFreq } from '../calendar/recurrence.js';
+import {
+  countOccurrencesUntil,
+  isRecurrenceFreq,
+  MAX_RECURRENCE_COUNT,
+  RECURRENCE_FREQUENCIES,
+  untilFromCount,
+  type RecurrenceFreq,
+} from '../calendar/recurrence.js';
 import { formatInTimezone } from '../calendar/time.js';
 import type { UserDirectory } from '../../users/store.js';
 
@@ -37,7 +44,7 @@ export class ConfigCalendarAdminSource implements ToolSource {
         description:
           'Admin of the GLOBAL server calendar from the config channel. `action`:\n' +
           '• "peek" {limit?} — list events (each row shows the creator id + tag).\n' +
-          '• "create" {title, start_at_iso, end_at_iso?, description?, location?, recurrence_freq?, recurrence_until_iso?} — create an event.\n' +
+          '• "create" {title, start_at_iso, end_at_iso?, description?, location?, recurrence_freq?, recurrence_count?, recurrence_until_iso?} — create an event.\n' +
           '• "update" {event_id, confirm, ...same fields} — edit any event (whole series for recurring). Requires confirm:true.\n' +
           '• "delete" {event_id, confirm} — delete any event (whole series for recurring). Requires confirm:true.\n' +
           '• "get_output_channel" — show the channel where month PDFs + ICS are published.\n' +
@@ -60,8 +67,15 @@ export class ConfigCalendarAdminSource implements ToolSource {
               description: 'daily/weekly/monthly, or null to clear recurrence (update).',
               oneOf: [{ type: 'string', enum: [...RECURRENCE_FREQUENCIES] }, { type: 'null' }],
             },
+            recurrence_count: {
+              type: 'integer',
+              minimum: 1,
+              maximum: MAX_RECURRENCE_COUNT,
+              description:
+                'Bound the series to N occurrences counting the first. Requires recurrence_freq; mutually exclusive with recurrence_until_iso.',
+            },
             recurrence_until_iso: {
-              description: 'ISO 8601 UTC last occurrence, or null to clear.',
+              description: 'ISO 8601 UTC last occurrence, or null to clear (open-ended). Mutually exclusive with recurrence_count.',
               oneOf: [{ type: 'string' }, { type: 'null' }],
             },
             channel_id: { type: 'string', description: 'Discord snowflake for "set_output_channel".' },
@@ -118,7 +132,7 @@ export class ConfigCalendarAdminSource implements ToolSource {
       return { status: 'error', payload: { error: 'end_at_iso must be after start_at_iso.' } };
     }
     const recurrenceFreq = parseRecurrenceFreq(obj.recurrence_freq);
-    const recurrenceUntil = parseOptionalIso(obj.recurrence_until_iso, 'recurrence_until_iso');
+    const recurrenceUntil = resolveUntil(obj, startMs, recurrenceFreq);
     if (recurrenceUntil !== null && recurrenceFreq === null) {
       return { status: 'error', payload: { error: 'recurrence_until_iso requires recurrence_freq to also be set.' } };
     }
@@ -153,9 +167,12 @@ export class ConfigCalendarAdminSource implements ToolSource {
     if (obj.description !== undefined) patch.description = asOptionalString(obj.description);
     if (obj.location !== undefined) patch.location = asOptionalString(obj.location);
     if (obj.recurrence_freq !== undefined) patch.recurrence_freq = parseRecurrenceFreq(obj.recurrence_freq);
-    if (obj.recurrence_until_iso !== undefined) {
-      patch.recurrence_until =
-        obj.recurrence_until_iso === null ? null : parseRequiredIso(obj.recurrence_until_iso, 'recurrence_until_iso');
+    if (obj.recurrence_count !== undefined || obj.recurrence_until_iso !== undefined) {
+      const existing = this.store.get(eventId);
+      if (!existing) return { status: 'error', payload: { error: `Event #${eventId} not found.` } };
+      const effectiveStart = patch.start_at ?? existing.start_at;
+      const effectiveFreq = patch.recurrence_freq !== undefined ? patch.recurrence_freq : existing.recurrence_freq;
+      patch.recurrence_until = resolveUntil(obj, effectiveStart, effectiveFreq);
     }
     if (Object.keys(patch).length === 0) {
       return { status: 'error', payload: { error: 'No fields to update.' } };
@@ -201,10 +218,38 @@ export class ConfigCalendarAdminSource implements ToolSource {
       location: e.location,
       recurrence_freq: e.recurrence_freq,
       recurrence_until_iso: e.recurrence_until !== null ? new Date(e.recurrence_until).toISOString() : null,
+      recurrence_until_local: e.recurrence_until !== null ? formatInTimezone(e.recurrence_until) : null,
+      occurrence_count:
+        e.recurrence_freq !== null ? countOccurrencesUntil(e.start_at, e.recurrence_freq, e.recurrence_until) : 1,
       created_by: e.created_by,
       created_by_tag: owner?.discord_tag ?? null,
     };
   }
+}
+
+/**
+ * Resolve the admin console's two range spellings into one `recurrence_until`.
+ * Mirrors the mod-facing tool (`calendar/source.ts`) so a repair from the config
+ * channel bounds a series exactly like the input channel would. An explicit
+ * `recurrence_until_iso: null` clears the bound.
+ */
+function resolveUntil(
+  obj: Record<string, unknown>,
+  startMs: number,
+  freq: RecurrenceFreq | null,
+): number | null {
+  const hasCount = obj.recurrence_count !== undefined && obj.recurrence_count !== null;
+  const hasUntil = obj.recurrence_until_iso !== undefined && obj.recurrence_until_iso !== null;
+  if (hasCount && hasUntil) {
+    throw new Error('Pass either recurrence_count OR recurrence_until_iso, not both.');
+  }
+  if (!hasCount) return hasUntil ? parseRequiredIso(obj.recurrence_until_iso, 'recurrence_until_iso') : null;
+  if (freq === null) throw new Error('recurrence_count requires recurrence_freq to also be set.');
+  const count = obj.recurrence_count;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 1 || count > MAX_RECURRENCE_COUNT) {
+    throw new Error(`recurrence_count: must be an integer between 1 and ${MAX_RECURRENCE_COUNT}`);
+  }
+  return untilFromCount(startMs, freq, count);
 }
 
 function parseRecurrenceFreq(v: unknown): RecurrenceFreq | null {

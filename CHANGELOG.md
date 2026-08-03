@@ -13,6 +13,26 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.5.0 — 2026-08-03
+
+📅 **El calendario del mes se publica solito, y las series ya pueden tener fecha de término**
+
+Tres mejoras al calendario de la comunidad:
+
+**1. Cada que empieza un mes, el calendario nuevo se publica automáticamente.** Antes el calendario del mes solo aparecía cuando algúnx mod agregaba o editaba un evento; si nadie tocaba nada, el canal se quedaba con el mes anterior. Eso justo pasó el 1 de agosto. Ahora ChopperBot se da cuenta del cambio de mes por su cuenta y sube el calendario de agosto (y de septiembre, y del que siga) sin que nadie tenga que pedírselo.
+
+**2. El canal del calendario ya es un tablero al día.** Muestra el mes en curso y los meses que vienen que ya tengan eventos con fecha fija, y quita los meses que ya pasaron. Antes se iban acumulando calendarios viejos hasta arriba. Si quieres los eventos de un mes pasado, el archivo `.ics` sigue teniéndolos todos.
+
+**3. Los eventos que se repiten ya pueden durar un tiempo definido.** Antes, un evento semanal se repetía para siempre, así que para un círculo de lectura de cuatro martes había que crear cuatro eventos separados. Ahora se le puede decir a ChopperBot cuánto dura la serie, como se diga naturalmente:
+
+- "*círculo de lectura todos los martes de julio a las 8*" → una sola serie, los 4 martes de julio.
+- "*taller cada jueves, son 6 sesiones*" → una sola serie, 6 sesiones.
+- "*asamblea todos los sábados*" → si no dices hasta cuándo, te lo pregunta una vez; si no tienes fecha de término, la deja **indefinida** como siempre.
+
+Al confirmar te dice en concreto cuántas sesiones son y cuál es la última. Y si una serie ya existe, se le puede ajustar después ("déjalo en 6 sesiones", "que solo llegue hasta septiembre") o volverla indefinida otra vez.
+
+---
+
 ## 1.4.0 — 2026-07-21
 
 🛰️ **ChopperBot aprende a vivir en AWS (modo nube nativa)**
