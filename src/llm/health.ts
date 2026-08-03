@@ -70,6 +70,20 @@ function errorMessage(err: unknown): string {
   return msg.length > 300 ? `${msg.slice(0, 300)}…` : msg;
 }
 
+/** Read-only view of the watchdog's state, for the admin console's health view. */
+export interface LlmHealthSnapshot {
+  /** Failures since the last success — 0 when healthy. */
+  consecutive_failures: number;
+  /** True while an alert has fired and no success has happened since. */
+  degraded: boolean;
+  last_success_at_iso: string | null;
+  last_failure_at_iso: string | null;
+  /** Last failure's message + class, kept for diagnosis (null if never failed). */
+  last_error: string | null;
+  last_error_kind: LlmErrorKind | null;
+  last_alert_at_iso: string | null;
+}
+
 export class LlmHealthMonitor {
   private sink: LlmAlertSink | null = null;
   private consecutiveFailures = 0;
@@ -77,14 +91,36 @@ export class LlmHealthMonitor {
   /** True while a failure alert has fired and no success has happened since —
    * the state that arms the recovery notice. */
   private alertedThisOutage = false;
+  private lastSuccessAtMs: number | null = null;
+  private lastFailureAtMs: number | null = null;
+  private lastError: string | null = null;
+  private lastErrorKind: LlmErrorKind | null = null;
 
   setSink(sink: LlmAlertSink | null): void {
     this.sink = sink;
   }
 
-  reportSuccess(): void {
+  /**
+   * Current state for `config_system action:health`. Process-local and reset by a
+   * restart — "last success 30 s ago" is the useful signal here, not history.
+   */
+  snapshot(): LlmHealthSnapshot {
+    const iso = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+    return {
+      consecutive_failures: this.consecutiveFailures,
+      degraded: this.alertedThisOutage,
+      last_success_at_iso: iso(this.lastSuccessAtMs),
+      last_failure_at_iso: iso(this.lastFailureAtMs),
+      last_error: this.lastError,
+      last_error_kind: this.lastErrorKind,
+      last_alert_at_iso: iso(this.lastAlertAtMs),
+    };
+  }
+
+  reportSuccess(nowMs = Date.now()): void {
     const failures = this.consecutiveFailures;
     this.consecutiveFailures = 0;
+    this.lastSuccessAtMs = nowMs;
     if (!this.alertedThisOutage) return;
     this.alertedThisOutage = false;
     log.info({ failures }, 'llm.health.recovered');
@@ -98,6 +134,9 @@ export class LlmHealthMonitor {
   reportFailure(err: unknown, nowMs = Date.now()): void {
     this.consecutiveFailures++;
     const kind = classifyLlmError(err);
+    this.lastFailureAtMs = nowMs;
+    this.lastError = errorMessage(err);
+    this.lastErrorKind = kind;
     const shouldAlert =
       kind === 'deterministic' || this.consecutiveFailures >= TRANSIENT_ALERT_THRESHOLD;
     if (!shouldAlert) return;
