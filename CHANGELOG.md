@@ -17,21 +17,19 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 📅 **El calendario del mes se publica solito, y las series ya pueden tener fecha de término**
 
-Tres mejoras al calendario de la comunidad (y una para quienes administran el bot):
+**1. Cada que empieza un mes, el calendario nuevo se publica solo.** Antes solo aparecía cuando algúnx mod agregaba o editaba un evento; si nadie tocaba nada, el canal se quedaba con el mes anterior — justo lo que pasó el 1 de agosto. Ahora ChopperBot nota el cambio de mes por su cuenta y sube el calendario sin que nadie se lo pida.
 
-**1. Cada que empieza un mes, el calendario nuevo se publica automáticamente.** Antes el calendario del mes solo aparecía cuando algúnx mod agregaba o editaba un evento; si nadie tocaba nada, el canal se quedaba con el mes anterior. Eso justo pasó el 1 de agosto. Ahora ChopperBot se da cuenta del cambio de mes por su cuenta y sube el calendario de agosto (y de septiembre, y del que siga) sin que nadie tenga que pedírselo.
+**2. El canal del calendario ya es un tablero al día.** Muestra el mes en curso y los meses que vienen que ya tengan eventos con fecha fija, y quita los que ya pasaron (antes se acumulaban). Si necesitas eventos de un mes pasado, el archivo `.ics` los sigue teniendo todos.
 
-**2. El canal del calendario ya es un tablero al día.** Muestra el mes en curso y los meses que vienen que ya tengan eventos con fecha fija, y quita los meses que ya pasaron. Antes se iban acumulando calendarios viejos hasta arriba. Si quieres los eventos de un mes pasado, el archivo `.ics` sigue teniéndolos todos.
+**3. Los eventos que se repiten ya pueden tener duración.** Antes una serie semanal se repetía para siempre, así que para un círculo de lectura de cuatro martes había que crear cuatro eventos aparte. Ahora se le dice cuánto dura, como se diga naturalmente:
 
-**3. Los eventos que se repiten ya pueden durar un tiempo definido.** Antes, un evento semanal se repetía para siempre, así que para un círculo de lectura de cuatro martes había que crear cuatro eventos separados. Ahora se le puede decir a ChopperBot cuánto dura la serie, como se diga naturalmente:
-
-- "*círculo de lectura todos los martes de julio a las 8*" → una sola serie, los 4 martes de julio.
+- "*círculo de lectura todos los martes de julio a las 8*" → una sola serie, los 4 martes.
 - "*taller cada jueves, son 6 sesiones*" → una sola serie, 6 sesiones.
-- "*asamblea todos los sábados*" → si no dices hasta cuándo, te lo pregunta una vez; si no tienes fecha de término, la deja **indefinida** como siempre.
+- "*asamblea todos los sábados*" → si no dices hasta cuándo, lo pregunta una vez; si no hay fecha de término, la deja **indefinida** como siempre.
 
-Al confirmar te dice en concreto cuántas sesiones son y cuál es la última. Y si una serie ya existe, se le puede ajustar después ("déjalo en 6 sesiones", "que solo llegue hasta septiembre") o volverla indefinida otra vez.
+Al confirmar te dice cuántas sesiones son y cuál es la última. Una serie que ya existe también se puede ajustar después ("déjalo en 6 sesiones") o volverla indefinida.
 
-**4. Y para quienes administran el bot: ya se le puede preguntar "¿cómo vas?".** ChopperBot ahora responde con un diagnóstico completo de sí mismo en una sola respuesta: si algo está fallando, qué es y cómo se arregla. Antes había que preguntarle por cada cosa por separado, y algunas cosas simplemente no se podían consultar (por ejemplo, si alguna de sus funciones no había arrancado bien).
+**4. Para quienes administran el bot: ya se le puede preguntar "¿cómo vas?".** Responde con un diagnóstico completo de sí mismo en una sola respuesta: si algo falla, qué es y cómo se arregla. Antes había que preguntarle cosa por cosa, y algunos detalles no se podían consultar.
 
 ---
 
