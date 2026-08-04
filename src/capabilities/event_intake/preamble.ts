@@ -99,6 +99,7 @@ export function renderTicketConversationPrompt(opts: {
     ? `# Cómo llamar a lxs mods
 - Cuando de verdad haga falta que lxs moderadorxs hagan algo (aprobar el evento, decidir día/hora, apoyar con el flyer o el diseño), escribe **exactamente** ${modMention} una sola vez, al final del mensaje, junto con lo que necesitas de ellxs.
 - Si no hace falta que intervengan, **no lxs menciones**. No repitas la mención solo porque aparece más arriba en la conversación.
+- **Cuando acabas de crear el evento, no lxs menciones tú**: el aviso de "aprobado y agendado" se agrega solo al final de tu confirmación.
 - No inventes menciones de rol: usa solo ${modMention}, tal cual.`
     : `# Cómo llamar a lxs mods
 - No tengo forma de mencionarlxs por rol aquí, así que refiérete a "lxs mods" en palabras cuando haga falta su intervención.`;

@@ -112,17 +112,36 @@ export function sanitizeRoleMentions(text: string, allowedIds: readonly string[]
 }
 
 /**
- * Append the mod call-to-action to a proposal. Deterministic on purpose — the
- * proposal is exactly the moment mods must be notified, so it can't depend on
- * the model remembering to mention them (and the prompt tells it not to).
+ * The two moments the whole team is told about, whatever the model writes:
+ * a request arriving (needs approval) and a request becoming a real event.
  */
-export function appendModPing(text: string, mentions: ModMentions): string {
-  if (!mentions.text) return text;
-  if (hasRoleMention(text, mentions.notifyIds)) return text;
-  const tail = mentions.notifies
+export type ModPingKind = 'proposal' | 'created';
+
+function pingTail(kind: ModPingKind, mentions: ModMentions): string {
+  if (kind === 'created') {
+    return mentions.notifies
+      ? `${mentions.text} ✅ aprobado y agendado — ya está en el calendario.`
+      : `✅ aprobado y agendado — aviso para ${mentions.text}.`;
+  }
+  return mentions.notifies
     ? `${mentions.text} ⬆️ propuesta pendiente de su aprobación.`
     : `⬆️ propuesta pendiente de aprobación por ${mentions.text}.`;
-  return `${text.trimEnd()}\n\n${tail}`;
+}
+
+/**
+ * Append the mod notice. Deterministic on purpose — a request arriving and a
+ * request being approved are exactly the two moments the team must hear about,
+ * so neither can depend on the model remembering to mention anyone (and the
+ * prompts tell it not to).
+ */
+export function appendModPing(
+  text: string,
+  mentions: ModMentions,
+  kind: ModPingKind = 'proposal',
+): string {
+  if (!mentions.text) return text;
+  if (hasRoleMention(text, mentions.notifyIds)) return text;
+  return `${text.trimEnd()}\n\n${pingTail(kind, mentions)}`;
 }
 
 /** Cooldown gate: whether a role ping in this ticket may notify again. */
