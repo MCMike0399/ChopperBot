@@ -13,6 +13,19 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.7.0 — 2026-08-04
+
+✅ **Y cuando el evento queda aprobado, también avisa**
+
+Complemento de la versión anterior: ahora ChopperBot etiqueta a lxs mods en los **dos** momentos que importan de una solicitud por ticket.
+
+- **Cuando llega la solicitud** → "propuesta pendiente de su aprobación" (ya venía en la 1.6.0).
+- **Cuando unx mod dice "créalo"** → ChopperBot crea el evento, sube el calendario del mes y avisa en el ticket: "✅ aprobado y agendado — ya está en el calendario". Así el resto del equipo se entera de que la solicitud se cerró, sin tener que abrir el ticket a ver qué pasó.
+
+Ese aviso de aprobación siempre suena, aunque ya se les hubiera avisado hace un ratito en ese mismo ticket: es el desenlace que todo mundo estaba esperando y pasa una sola vez por solicitud. Fuera de esos dos momentos, ChopperBot sigue sin dar lata.
+
+---
+
 ## 1.6.0 — 2026-08-04
 
 🔔 **Cuando pides un evento por ticket, ahora sí les llega el aviso a lxs mods**

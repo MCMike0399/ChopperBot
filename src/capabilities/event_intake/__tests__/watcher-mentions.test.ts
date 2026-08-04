@@ -251,6 +251,44 @@ describe('conversation ping', () => {
     mem.close();
   });
 
+  test('approving the event tags the team, even inside the cooldown', async () => {
+    let now = Date.parse('2026-08-04T18:00:00Z');
+    const { watcher, store, mem } = await newWatcher({ now: () => now });
+    await seedTicket(store);
+
+    // First, a normal ping so the cooldown is armed…
+    askMock.mockResolvedValue(`ping <@&${MOD_ROLE}>`);
+    const first: Sent[] = [];
+    await watcher.handleMessage(humanMsg(first));
+    expect(first[0].allowedMentions?.roles).toEqual([MOD_ROLE]);
+
+    // …then a MOD approves a minute later: the model calls the real create tool
+    // and writes a plain confirmation with no mention of its own.
+    now += 60_000;
+    askMock.mockImplementation(async (input) => {
+      await input?.tools?.handle('calendar_create_event', {
+        title: 'Conversatorio: DataCenters',
+        start_at_iso: '2026-08-12T02:00:00Z',
+      });
+      return 'Listo, quedó el martes 11 de agosto a las 8:00 PM.';
+    });
+    const sent: Sent[] = [];
+    await watcher.handleMessage(
+      makeMessage({
+        authorId: 'mod-1',
+        bot: false,
+        content: `<@${BOT}> créalo`,
+        sent,
+        memberRoles: [MOD_ROLE],
+      }),
+    );
+
+    expect(sent[0].content).toContain('agendado');
+    expect(sent[0].allowedMentions?.roles).toEqual([ADMIN_ROLE, MOD_ROLE]); // cooldown does not apply
+    expect(store.getTicket(CHANNEL)?.status).toBe('created');
+    mem.close();
+  });
+
   test('an ordinary reply pings nobody', async () => {
     askMock.mockResolvedValue('Listo, queda anotado el martes 11 a las 8pm.');
     const { watcher, store, mem } = await newWatcher();
