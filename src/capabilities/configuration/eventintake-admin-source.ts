@@ -1,9 +1,11 @@
+import { PermissionFlagsBits, type Client } from 'discord.js';
 import type Database from 'better-sqlite3';
 import { config } from '../../config.js';
 import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
 import { EventIntakeStore } from '../event_intake/store.js';
 import { DEFAULT_MOD_ROLES } from '../event_intake/roles.js';
+import { resolveModMentions } from '../event_intake/mentions.js';
 import { parseChannelIdEnv } from '../file_scanner/store.js';
 
 export interface ConfigEventIntakeAdminDeps {
@@ -11,6 +13,8 @@ export interface ConfigEventIntakeAdminDeps {
   callerUserId: string;
   /** Guild the config channel lives in — resolves the "este servidor" keyword. */
   guildId: string | null;
+  /** Resolves the approver roles to see whether the bot can really ping them. */
+  client: Client;
 }
 
 /**
@@ -38,7 +42,7 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
         name: 'config_eventintake',
         description:
           'Admin the ticket event-intake (works from the config channel). `action`:\n' +
-          '• "status" — watched ticket categories, the approver roles, and recent ticket count.\n' +
+          '• "status" — watched ticket categories, the approver roles (and whether the bot can really @-mention them in a ticket), and recent ticket count.\n' +
           '• "list_categories" — the category/channel ids currently watched.\n' +
           '• "set_categories" {channels} — REPLACE the watched set. `channels` may be: comma/space-separated CATEGORY (or channel) ids or a JSON array; "este servidor" to watch every channel the bot sees in THIS server; "todos"/"all"; explicit `guild:<serverId>` tokens; or empty to stop. Takes effect within ~10s (no restart).\n' +
           '• "set_mod_roles" {roles} — REPLACE who can approve. `roles` is a comma-separated list or JSON array of role NAMES (e.g. "Moderador, Administrador, Administradora") or role ids. Empty resets to the defaults.\n' +
@@ -65,6 +69,15 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
     ];
   }
 
+  /** Can we really notify the approver roles from this server? (null = unknown) */
+  private pingability(): ReturnType<typeof pingabilityOf> {
+    try {
+      return pingabilityOf(this.deps.client, this.deps.guildId, this.store.getModRoles());
+    } catch {
+      return null;
+    }
+  }
+
   async handle(toolName: string, input: unknown): Promise<ToolHandlerResult> {
     if (toolName !== 'config_eventintake') {
       return { status: 'error', payload: { error: `Unknown tool: ${toolName}` } };
@@ -81,16 +94,32 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
             status: t.status,
             createdEventId: t.created_event_id,
           }));
+          const ping = this.pingability();
           const lines = [
             '📋 **Event intake (tickets)**',
             categories.length === 0
               ? '• Categorías vigiladas: (ninguna — configúralas con `set_categories`)'
               : `• Categorías vigiladas: ${categories.map((c) => `\`${c}\``).join(', ')}`,
             `• Roles que pueden aprobar: ${(roles.length > 0 ? roles : [...DEFAULT_MOD_ROLES]).join(', ')}`,
+            ping
+              ? `• Aviso a mods en el ticket: ${
+                  ping.pingable.length > 0
+                    ? `sí, se notifica a ${ping.pingable.join(', ')}`
+                    : 'NO se notifica a nadie (ningún rol aprobador es mencionable)'
+                }`
+              : '• Aviso a mods en el ticket: (no pude resolver los roles de este servidor)',
+            ...(ping && ping.silent.length > 0
+              ? [
+                  `• ⚠️ Sin notificación: ${ping.silent.join(', ')} — marca el rol como *mencionable* (Ajustes del rol → “Permitir que cualquiera mencione este rol”) o dale al bot el permiso “Mencionar @everyone, @here y todos los roles”.`,
+                ]
+              : []),
             `• Bot de tickets: \`${config.EVENT_INTAKE_TICKET_BOT_ID}\``,
             `• Tickets recientes: ${recent.length}`,
           ];
-          return { status: 'success', payload: { message: lines.join('\n'), categories, roles, recent } };
+          return {
+            status: 'success',
+            payload: { message: lines.join('\n'), categories, roles, mod_ping: ping, recent },
+          };
         }
         case 'list_categories':
           return { status: 'success', payload: { categories: this.store.getWatchedCategories() } };
@@ -128,11 +157,17 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
           this.store.setModRoles(roles);
           log.info({ tool: toolName, roles, by: this.deps.callerUserId }, 'event_intake.set_mod_roles');
           const effective = roles.length > 0 ? roles : [...DEFAULT_MOD_ROLES];
+          const ping = this.pingability();
+          const warn =
+            ping && ping.pingable.length === 0
+              ? ' ⚠️ Ojo: no puedo NOTIFICAR a ninguno de esos roles en los tickets (ninguno es mencionable). Marca al menos uno como mencionable.'
+              : '';
           return {
             status: 'success',
             payload: {
               roles,
-              note: `Roles que pueden aprobar: ${effective.join(', ')}${roles.length === 0 ? ' (predeterminados)' : ''}.`,
+              mod_ping: ping,
+              note: `Roles que pueden aprobar: ${effective.join(', ')}${roles.length === 0 ? ' (predeterminados)' : ''}.${warn}`,
             },
           };
         }
@@ -154,6 +189,34 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
       return { status: 'error', payload: { error: err instanceof Error ? err.message : String(err) } };
     }
   }
+}
+
+/**
+ * Whether the approver roles of the config channel's guild can actually be
+ * @-mentioned by the bot — the difference between "mods get notified" and "a
+ * chip that pings nobody", which is otherwise invisible from Discord. Uses the
+ * GUILD-level permission (a category override could still grant it in the
+ * tickets themselves, which the watcher resolves per channel).
+ */
+function pingabilityOf(
+  client: Client,
+  guildId: string | null,
+  tokens: string[],
+): { pingable: string[]; silent: string[]; can_mention_any: boolean } | null {
+  if (!guildId) return null;
+  const guild = client.guilds.cache.get(guildId);
+  if (!guild) return null;
+  const canMentionAny = guild.members.me?.permissions.has(PermissionFlagsBits.MentionEveryone) ?? false;
+  const resolved = resolveModMentions(
+    guild.roles.cache.map((r) => ({ id: r.id, name: r.name, mentionable: r.mentionable })),
+    tokens,
+    { canMentionAny },
+  );
+  return {
+    pingable: resolved.notifies ? resolved.matched.filter((r) => !resolved.silent.includes(r)).map((r) => r.name) : [],
+    silent: resolved.silent.map((r) => r.name),
+    can_mention_any: canMentionAny,
+  };
 }
 
 /** Role tokens: JSON array, or comma-separated (so multi-word names survive). */

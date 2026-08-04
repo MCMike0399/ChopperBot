@@ -21,6 +21,14 @@ describe('isModByRole', () => {
     expect(isModByRole(rolesOf(['1', 'Miembro']), [])).toBe(false);
   });
 
+  test('matches an emoji-decorated role name by its plain name', () => {
+    // The live Revolución Z roles are wrapped in emoji; configuring them by the
+    // name a mod would actually type must still work.
+    expect(isModByRole(rolesOf(['1', '🚓Moderación🚓']), ['Moderación'])).toBe(true);
+    expect(isModByRole(rolesOf(['1', '⭐Administrador⭐']), ['administrador'])).toBe(true);
+    expect(isModByRole(rolesOf(['1', '🚓Moderación🚓']), ['Administrador'])).toBe(false);
+  });
+
   test('a plain member is not a mod', () => {
     expect(isModByRole(rolesOf(['1', 'Miembro'], ['2', 'Verificadx']), ['999'])).toBe(false);
   });
