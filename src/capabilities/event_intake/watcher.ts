@@ -17,10 +17,28 @@ import type { CalendarPublisher } from '../calendar/publisher.js';
 import { EventIntakeStore } from './store.js';
 import { isEventForm, parseTicketForm, extractRequesterId, type ParsedForm } from './parse.js';
 import { isModByRole } from './roles.js';
+import {
+  appendModPing,
+  EMPTY_MOD_MENTIONS,
+  mentionedRoleIds,
+  resolveModMentions,
+  sanitizeRoleMentions,
+  shouldNotifyRoles,
+  type ModMentions,
+} from './mentions.js';
 import { renderProposalPrompt, renderTicketConversationPrompt } from './preamble.js';
 
 /** The Message shape the MessageCreate gateway event actually delivers. */
 type GatewayMessage = OmitPartialGroupDMChannel<Message>;
+
+/**
+ * What we let through `allowedMentions`: every user mention the model wrote
+ * (the requester) plus, explicitly, the approver roles we resolved. Never
+ * @everyone/@here — omitting them from `parse` is what blocks them.
+ */
+function mentionPolicy(roleIds: readonly string[], repliedUser: boolean) {
+  return { parse: ['users' as const], roles: [...roleIds], repliedUser };
+}
 
 /** Read-only calendar tools every ticket participant gets (conflict checks). */
 const READ_TOOLS = [
@@ -50,6 +68,10 @@ export interface EventIntakeWatcherDeps {
  */
 export class EventIntakeWatcher {
   private readonly now: () => number;
+  /** Last time we actually NOTIFIED the approver roles, per ticket channel. */
+  private readonly lastModPingAt = new Map<string, number>();
+  /** Guilds we already warned about unpingable approver roles (log once). */
+  private readonly warnedUnpingable = new Set<string>();
 
   constructor(private readonly deps: EventIntakeWatcherDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -97,6 +119,8 @@ export class EventIntakeWatcher {
       this.deps.botUserId,
     ]);
 
+    const mentions = await this.resolveMentions(message);
+
     await message.channel.sendTyping().catch(() => {});
     const system = renderProposalPrompt(new Date(this.now()), parsed, requesterId);
     // Read-only bundle: the proposal must never create anything.
@@ -107,7 +131,13 @@ export class EventIntakeWatcher {
       tools,
     });
 
-    const posted = await this.post(message, proposal);
+    // The proposal is THE message mods must not miss, so the ping is appended
+    // deterministically rather than left to the model.
+    const body = appendModPing(sanitizeRoleMentions(proposal, mentions.notifyIds), mentions);
+    const posted = await this.post(message, body, mentions.notifyIds);
+    if (posted && mentions.notifyIds.length > 0) {
+      this.lastModPingAt.set(message.channelId, this.now());
+    }
     this.deps.store.recordProposal({
       channelId: message.channelId,
       guildId: message.guildId,
@@ -117,7 +147,13 @@ export class EventIntakeWatcher {
       proposalMessageId: posted?.id ?? null,
     });
     log.info(
-      { channelId: message.channelId, requesterId, title: parsed.title },
+      {
+        channelId: message.channelId,
+        requesterId,
+        title: parsed.title,
+        modRolesPinged: mentions.notifyIds.length,
+        modRolesSilent: mentions.silent.length,
+      },
       'event_intake.proposal.posted',
     );
   }
@@ -143,6 +179,7 @@ export class EventIntakeWatcher {
     const { parsed, requesterId } = ctx;
 
     const isMod = await this.isModerator(message);
+    const mentions = await this.resolveMentions(message);
 
     const reaction = await message.react('🔍').catch(() => null);
     await message.channel.sendTyping().catch(() => {});
@@ -157,6 +194,7 @@ export class EventIntakeWatcher {
         parsed,
         requesterId,
         isMod,
+        modMention: mentions.notifies ? mentions.text : '',
       });
       const tools = composeToolSources([this.calendarSource(message, { write: isMod })]);
       log.info(
@@ -171,11 +209,32 @@ export class EventIntakeWatcher {
       }
     }
 
-    const parts = chunkBotReply(reply);
-    let anchor = await message.reply(parts[0]).catch(() => null);
+    // The model decides WHETHER to call the mods; we decide whether that call
+    // actually rings. A ping is suppressed (chip still renders, silently) when
+    // we already notified this ticket inside the cooldown, so a mention echoed
+    // out of conversation history can't turn into repeat pages for the mods.
+    const body = sanitizeRoleMentions(reply, mentions.notifyIds);
+    const wanted = mentionedRoleIds(body, mentions.notifyIds);
+    const notify =
+      wanted.length > 0 &&
+      shouldNotifyRoles(this.lastModPingAt.get(message.channelId), this.now());
+    if (wanted.length > 0) {
+      log.info(
+        { channelId: message.channelId, roles: wanted.length, notified: notify },
+        'event_intake.mod_ping',
+      );
+    }
+    if (notify) this.lastModPingAt.set(message.channelId, this.now());
+
+    const parts = chunkBotReply(body);
+    const roleIds = notify ? wanted : [];
+    let anchor = await message.reply({
+      content: parts[0],
+      allowedMentions: mentionPolicy(roleIds, true),
+    }).catch(() => null);
     for (let i = 1; anchor && i < parts.length; i++) {
       anchor = await anchor
-        .reply({ content: parts[i], allowedMentions: { repliedUser: false } })
+        .reply({ content: parts[i], allowedMentions: mentionPolicy(roleIds, false) })
         .catch(() => null);
     }
   }
@@ -287,6 +346,47 @@ export class EventIntakeWatcher {
     return member.permissions.has(PermissionFlagsBits.Administrator);
   }
 
+  /**
+   * The approver roles as this guild/channel actually allows us to mention them.
+   * Discord only NOTIFIES a role mention when the role is `mentionable` or we
+   * hold MentionEveryone here, so pingability is resolved per channel (a
+   * category override can grant it where the guild default doesn't).
+   */
+  private async resolveMentions(message: GatewayMessage): Promise<ModMentions> {
+    if (!message.inGuild()) return EMPTY_MOD_MENTIONS;
+    try {
+      const guild = message.guild;
+      let roles = guild.roles.cache;
+      if (roles.size === 0) roles = await guild.roles.fetch();
+      const me = guild.members.me;
+      const canMentionAny =
+        me !== null &&
+        (message.channel.permissionsFor(me)?.has(PermissionFlagsBits.MentionEveryone) ?? false);
+      const resolved = resolveModMentions(
+        roles.map((r) => ({ id: r.id, name: r.name, mentionable: r.mentionable })),
+        this.deps.getModRoles(),
+        { canMentionAny },
+      );
+      // An approver role we can't ping is invisible to the operator otherwise —
+      // it just silently never notifies. Say it once per guild per process.
+      if (resolved.silent.length > 0 && !this.warnedUnpingable.has(guild.id)) {
+        this.warnedUnpingable.add(guild.id);
+        log.warn(
+          {
+            guildId: guild.id,
+            roles: resolved.silent.map((r) => r.name),
+            hint: 'marca el rol como mencionable o dale al bot el permiso "Mencionar @everyone, @here y todos los roles"',
+          },
+          'event_intake.mentions.not_pingable',
+        );
+      }
+      return resolved;
+    } catch (err) {
+      log.warn({ err, channelId: message.channelId }, 'event_intake.mentions.resolve_failed');
+      return EMPTY_MOD_MENTIONS;
+    }
+  }
+
   /** Whether the bot can post here (thread/forum needs SendMessagesInThreads). */
   private canPost(message: GatewayMessage): boolean {
     if (!message.inGuild()) return true;
@@ -301,17 +401,25 @@ export class EventIntakeWatcher {
   }
 
   /** Post text as a reply to the source message, falling back to a plain send. */
-  private async post(message: GatewayMessage, content: string): Promise<Message | null> {
+  private async post(
+    message: GatewayMessage,
+    content: string,
+    roleIds: readonly string[] = [],
+  ): Promise<Message | null> {
     const parts = chunkBotReply(content);
     // `reply` and `send` return slightly different Message shapes — widen so both assign.
-    let anchor: Message | null = await message.reply(parts[0]).catch(() => null);
+    let anchor: Message | null = await message
+      .reply({ content: parts[0], allowedMentions: mentionPolicy(roleIds, true) })
+      .catch(() => null);
     if (!anchor && message.channel.isSendable()) {
-      anchor = await message.channel.send(parts[0]).catch(() => null);
+      anchor = await message.channel
+        .send({ content: parts[0], allowedMentions: mentionPolicy(roleIds, true) })
+        .catch(() => null);
     }
     let cursor: Message | null = anchor;
     for (let i = 1; cursor && i < parts.length; i++) {
       cursor = await cursor
-        .reply({ content: parts[i], allowedMentions: { repliedUser: false } })
+        .reply({ content: parts[i], allowedMentions: mentionPolicy(roleIds, false) })
         .catch(() => null);
     }
     return anchor;
