@@ -13,6 +13,20 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.6.0 — 2026-08-04
+
+🔔 **Cuando pides un evento por ticket, ahora sí les llega el aviso a lxs mods**
+
+**1. ChopperBot etiqueta a quienes pueden aprobar.** Antes, al abrir un ticket para pedir un evento, ChopperBot armaba la propuesta y decía "lxs mods pueden aprobarla"… pero nadie recibía notificación: había que pasar por ahí de casualidad. Ahora menciona directamente a los roles que pueden crear el evento (🚓Moderación🚓 y ⭐Administrador⭐), así les llega el aviso y la solicitud no se queda esperando.
+
+**2. También lxs llama cuando hace falta ayuda.** Si en el ticket pides apoyo con el flyer, con el horario o con cualquier cosa que dependa del equipo, ChopperBot lxs etiqueta en ese momento en lugar de preguntar al aire.
+
+**3. Sin spam.** Solo lxs menciona cuando de verdad se necesita algo de ellxs, y no vuelve a sonarles el celular si ya lxs avisó hace ratito en ese mismo ticket.
+
+**4. Para quienes administran el bot:** si un rol aprobador no se puede etiquetar (por la configuración del rol en Discord), ChopperBot lo dice claramente al preguntarle su estado, en vez de simular que avisó. También se puede configurar quién aprueba escribiendo el nombre del rol tal cual se lee, aunque lleve emojis.
+
+---
+
 ## 1.5.0 — 2026-08-03
 
 📅 **El calendario del mes se publica solito, y las series ya pueden tener fecha de término**

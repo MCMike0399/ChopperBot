@@ -37,6 +37,10 @@ ${flyerLine(parsed.flyerSelf)}`;
  * Prompt for the ONE automatic proposal posted when the form lands. The model
  * gets read-only calendar tools; it resolves the fuzzy day/time, checks for
  * conflicts, and writes a single friendly card. It must NOT create anything.
+ *
+ * It must also NOT write role mentions: the watcher appends the mod ping itself
+ * (deterministically, and only for roles Discord will really notify), so the
+ * one message mods must never miss can't depend on the model remembering.
  */
 export function renderProposalPrompt(now: Date, parsed: ParsedForm, requesterId: string | null): string {
   return `Eres ChopperBot ayudando con la **gestión de eventos** de Revolución Z. Acaba de llegar una solicitud de evento por el sistema de tickets y vas a publicar UNA propuesta clara en este canal de ticket.
@@ -56,6 +60,7 @@ ${renderFormBlock(parsed, requesterId)}
 # Reglas
 - **NO crees el evento todavía** — esto es solo una propuesta; la última palabra es de lxs moderadorxs. (No tienes herramienta para crear aquí.)
 - Sé cálido y conciso. No inventes datos que el formulario no da; si falta el título o la hora, dilo y pide que se aclare.
+- **No escribas menciones de rol** (nada de \`<@&…>\`): la mención a lxs mods se agrega sola al final de tu mensaje. Sí puedes mencionar a la persona solicitante.
 - Responde SOLO con el texto de la propuesta (sin prefacios tipo "aquí está").`;
 }
 
@@ -69,8 +74,11 @@ export function renderTicketConversationPrompt(opts: {
   parsed: ParsedForm | null;
   requesterId: string | null;
   isMod: boolean;
+  /** Exact text that pings the approver roles (''/omitted → none resolvable). */
+  modMention?: string;
 }): string {
   const { now, parsed, requesterId, isMod } = opts;
+  const modMention = opts.modMention?.trim() ?? '';
   const formBlock = parsed
     ? renderFormBlock(parsed, requesterId)
     : '# Solicitud del formulario\n(No pude leer el formulario de este ticket; pide los datos que falten.)';
@@ -85,6 +93,16 @@ export function renderTicketConversationPrompt(opts: {
 - **No tienes herramienta para crear el evento** y NO debes decir que lo creaste. Solo lxs moderadorxs aprueban.
 - Ayuda a afinar los detalles (corregir día/hora/título/ponente), responde dudas y actualiza el entendimiento de la solicitud. Si es el solicitante corrigiendo algo, agradécelo y di que un mod lo revisará y aprobará.`;
 
+  // Only advertise the ping when it will actually reach someone; otherwise the
+  // model would emit a chip that notifies nobody (or invent a role id).
+  const mentionSection = modMention
+    ? `# Cómo llamar a lxs mods
+- Cuando de verdad haga falta que lxs moderadorxs hagan algo (aprobar el evento, decidir día/hora, apoyar con el flyer o el diseño), escribe **exactamente** ${modMention} una sola vez, al final del mensaje, junto con lo que necesitas de ellxs.
+- Si no hace falta que intervengan, **no lxs menciones**. No repitas la mención solo porque aparece más arriba en la conversación.
+- No inventes menciones de rol: usa solo ${modMention}, tal cual.`
+    : `# Cómo llamar a lxs mods
+- No tengo forma de mencionarlxs por rol aquí, así que refiérete a "lxs mods" en palabras cuando haga falta su intervención.`;
+
   return `Eres ChopperBot coordinando una solicitud de evento dentro de un canal de **ticket** de Revolución Z. Aquí conversas con el/la solicitante y con lxs moderadorxs para afinar y (cuando un mod apruebe) crear el evento en el calendario. **Todo pasa aquí en el ticket** — no mandes a nadie al canal de gestión del calendario.
 
 ${renderTemporalAwareness(now)}
@@ -92,6 +110,8 @@ ${renderTemporalAwareness(now)}
 ${formBlock}
 
 ${roleSection}
+
+${mentionSection}
 
 # Estilo y reglas generales
 - Responde en **español**, cálido y breve (1–3 frases salvo que haga falta más).

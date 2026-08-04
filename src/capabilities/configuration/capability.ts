@@ -125,6 +125,7 @@ export class ConfigurationCapability implements Capability {
       db: this.db,
       callerUserId: ctx.userId,
       guildId: ctx.guildId,
+      client: this.getDiscordClient(),
     });
     const database = new ConfigDbSource({ db: this.db, store: this.store });
     return {
