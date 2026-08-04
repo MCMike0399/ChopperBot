@@ -186,6 +186,8 @@ export class EventIntakeWatcher {
     const heartbeat = setInterval(() => void message.channel.sendTyping().catch(() => {}), 8000);
 
     let reply: string;
+    /** Set by the tool tap below when THIS turn actually created the event. */
+    let createdEventId: number | null = null;
     try {
       const history = await buildHistory(this.deps.client, message);
       const turns: Turn[] = normalizeTurns([...history, { role: 'user', content: userText }]);
@@ -196,7 +198,14 @@ export class EventIntakeWatcher {
         isMod,
         modMention: mentions.notifies ? mentions.text : '',
       });
-      const tools = composeToolSources([this.calendarSource(message, { write: isMod })]);
+      const tools = composeToolSources([
+        this.calendarSource(message, {
+          write: isMod,
+          onCreated: (id) => {
+            createdEventId = id;
+          },
+        }),
+      ]);
       log.info(
         { channelId: message.channelId, user: message.author?.tag, isMod },
         'event_intake.conversation',
@@ -213,14 +222,26 @@ export class EventIntakeWatcher {
     // actually rings. A ping is suppressed (chip still renders, silently) when
     // we already notified this ticket inside the cooldown, so a mention echoed
     // out of conversation history can't turn into repeat pages for the mods.
-    const body = sanitizeRoleMentions(reply, mentions.notifyIds);
+    //
+    // The approval itself is the exception: when THIS turn created the event,
+    // the team is told deterministically and the cooldown does not apply — it's
+    // the outcome everyone in the ticket was waiting for, and it happens at most
+    // once per ticket.
+    let body = sanitizeRoleMentions(reply, mentions.notifyIds);
+    if (createdEventId !== null) body = appendModPing(body, mentions, 'created');
     const wanted = mentionedRoleIds(body, mentions.notifyIds);
     const notify =
       wanted.length > 0 &&
-      shouldNotifyRoles(this.lastModPingAt.get(message.channelId), this.now());
+      (createdEventId !== null ||
+        shouldNotifyRoles(this.lastModPingAt.get(message.channelId), this.now()));
     if (wanted.length > 0) {
       log.info(
-        { channelId: message.channelId, roles: wanted.length, notified: notify },
+        {
+          channelId: message.channelId,
+          roles: wanted.length,
+          notified: notify,
+          reason: createdEventId !== null ? 'created' : 'requested',
+        },
         'event_intake.mod_ping',
       );
     }
@@ -287,7 +308,10 @@ export class EventIntakeWatcher {
    * plus `calendar_create_event` only when `write` (the author is a mod). A
    * successful create is tapped to mark the ticket resolved.
    */
-  private calendarSource(message: Message, opts: { write: boolean }): ToolSource {
+  private calendarSource(
+    message: Message,
+    opts: { write: boolean; onCreated?: (eventId: number) => void },
+  ): ToolSource {
     const include = opts.write ? [...READ_TOOLS, 'calendar_create_event'] : [...READ_TOOLS];
     const inner = new CalendarToolSource(
       this.deps.calendarStore,
@@ -308,6 +332,7 @@ export class EventIntakeWatcher {
           const eventId = (res.payload as { event?: { id?: number } })?.event?.id;
           if (typeof eventId === 'number') {
             store.markCreated(channelId, eventId);
+            opts.onCreated?.(eventId);
             log.info({ channelId, eventId }, 'event_intake.event_created');
           }
         }

@@ -73,6 +73,8 @@ async function main(): Promise<void> {
 
     console.log('\n— Tail appended to every proposal —');
     console.log(appendModPing('«…texto de la propuesta…»', mentions));
+    console.log('\n— Tail appended when a mod approves (exempt from the cooldown) —');
+    console.log(appendModPing('«…confirmación del evento creado…»', mentions, 'created'));
 
     if (!RUN_MODEL) return;
 

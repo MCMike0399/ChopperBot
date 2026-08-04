@@ -117,6 +117,14 @@ describe('appendModPing', () => {
     const none = resolveModMentions([], [], { canMentionAny: false });
     expect(appendModPing('Propuesta lista.', none)).toBe('Propuesta lista.');
   });
+
+  test('the approval notice is a distinct tail from the pending-approval one', () => {
+    const created = appendModPing('Listo, quedó el martes 11 a las 8pm.', mentions, 'created');
+    expect(created).toContain(`<@&${MOD}>`);
+    expect(created).toContain('agendado');
+    expect(created).not.toContain('pendiente');
+    expect(appendModPing('Propuesta.', mentions, 'proposal')).toContain('pendiente');
+  });
 });
 
 describe('hasRoleMention / mentionedRoleIds', () => {
