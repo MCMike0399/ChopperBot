@@ -13,6 +13,24 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.8.0 — 2026-08-05
+
+📣 **ChopperBot ya avisa en anuncios cuando hay evento el mismo día**
+
+Si hoy hay algo en el calendario, ChopperBot lo anuncia solito **a las 10 de la mañana (hora CDMX)** en 📣│anuncios, con el enlace al evento de Discord para que le puedan dar "Me interesa" de una vez.
+
+- **Escribe el aviso como lo escribimos aquí**: cálido, con "lxs tqm" y "caiganle", diciendo claro que es **hoy** y a qué hora. No es una plantilla fría.
+- **Encuentra el evento de Discord aunque tenga otro nombre.** El calendario dice "Rosario Castellanos | Club de poesía" y el evento de Discord dice "Club de Poesía: Rosario Castellanos": ChopperBot entiende que son la misma cosa y pega el enlace correcto. Si no está seguro, prefiere no poner enlace antes que mandarlos al evento equivocado.
+- **Un solo aviso por evento.** Aunque se reinicie el bot o alguien registre el evento a media tarde, el anuncio sale una vez y nada más.
+- **Y si falta el evento de Discord**, ChopperBot le avisa al equipo de moderación en el canal del calendario, con un día de anticipación: "falta crear el evento de Discord de esto".
+
+🎫 **Los tickets de eventos ahora cierran el círculo completo**
+
+- Cuando unx mod aprueba una solicitud, ChopperBot **también crea el evento de Discord** para que la gente se apunte, y deja el enlace ahí mismo en el ticket.
+- **Ya puede corregir un evento que acaba de crear** (un typo en el título, cambiar la hora) sin tener que pedirle a alguien que lo haga a mano.
+
+---
+
 ## 1.7.0 — 2026-08-04
 
 ✅ **Y cuando el evento queda aprobado, también avisa**

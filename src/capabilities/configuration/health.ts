@@ -26,9 +26,10 @@ import type { MutableCapabilityRouter } from '../routing.js';
 import { InstagramMonitorStore } from '../instagram_monitor/store.js';
 import { FileScannerStore } from '../file_scanner/store.js';
 import { EventIntakeStore } from '../event_intake/store.js';
-import { DEFAULT_MOD_ROLES } from '../event_intake/roles.js';
+import { DEFAULT_MOD_ROLES } from '../../discord/mod-roles.js';
 import { CalendarStore } from '../calendar/store.js';
 import { desiredMonthKeys } from '../calendar/publisher.js';
+import { resolveAnnounceSettings } from '../calendar/announce-settings.js';
 import { countOccurrencesUntil } from '../calendar/recurrence.js';
 
 const DAY_MS = 86_400_000;
@@ -236,8 +237,34 @@ export function collectHealth(deps: HealthDeps): HealthReport {
     const stale = publishedMonths.filter((m) => !desired.includes(m));
     if (!outputChannelId) problems.push('El calendario no tiene canal de salida configurado — no puede publicar.');
     if (missing.length > 0) problems.push(`Calendario: falta publicar ${missing.join(', ')}.`);
+
+    // The daily same-day announcement. Reported here because its two silent
+    // failure modes (no channel configured, and events whose Discord event
+    // nobody created) are otherwise only visible by watching #anuncios.
+    const announce = resolveAnnounceSettings(store);
+    const announceChannelId = announce.channelId;
+    const todayEnd = now + 86_400_000;
+    const upcomingDay = store.listOccurrences(now, todayEnd);
+    const unlinked = upcomingDay.filter((o) => o.discord_event_id === null);
+    if (!announceChannelId) {
+      problems.push('El anuncio diario de eventos no tiene canal configurado (config_calendar set_announce_channel).');
+    }
+    if (unlinked.length > 0) {
+      problems.push(
+        `Sin evento de Discord (el anuncio saldría sin enlace): ${unlinked
+          .map((o) => `#${o.id} ${o.title}`)
+          .join('; ')}.`,
+      );
+    }
+    const lastAnnouncement = store.recentAnnouncements(1)[0] ?? null;
     return {
       output_channel_id: outputChannelId,
+      announce_channel_id: announceChannelId,
+      announce_hour_local: announce.hour,
+      announce_mentions: announce.mentions,
+      announce_last_at_iso: lastAnnouncement ? iso(lastAnnouncement.announced_at) : null,
+      next_24h_total: upcomingDay.length,
+      next_24h_without_discord_event: unlinked.map((o) => ({ id: o.id, title: o.title, start_at_iso: iso(o.start_at) })),
       events_total: events.length,
       one_off: events.length - series.length,
       series_total: series.length,

@@ -8,8 +8,8 @@ import {
   shouldNotifyRoles,
   MOD_PING_COOLDOWN_MS,
   type MentionableRole,
-} from '../mentions.js';
-import { DEFAULT_MOD_ROLES } from '../roles.js';
+  DEFAULT_MOD_ROLES,
+} from '../mod-roles.js';
 
 const MOD = '1436055845392879778'; // 🚓Moderación🚓 — mentionable in the live guild
 const ADMIN = '1436259908222713917'; // ⭐Administrador⭐ — mentionable

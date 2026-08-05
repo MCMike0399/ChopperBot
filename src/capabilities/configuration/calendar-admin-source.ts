@@ -1,4 +1,6 @@
 import type Database from 'better-sqlite3';
+import type { Client } from 'discord.js';
+import { config } from '../../config.js';
 import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
 import { CalendarStore, type CalendarEvent, type UpdateEventInput } from '../calendar/store.js';
@@ -11,12 +13,21 @@ import {
   type RecurrenceFreq,
 } from '../calendar/recurrence.js';
 import { formatInTimezone } from '../calendar/time.js';
+import { CalendarAnnouncer } from '../calendar/announcer.js';
+import { resolveAnnounceSettings } from '../calendar/announce-settings.js';
+import { diagnoseEventAccess, fetchScheduledEvents } from '../calendar/discord-events.js';
+import { parseChannelIdEnv } from '../file_scanner/store.js';
+import { EventIntakeStore } from '../event_intake/store.js';
 import type { UserDirectory } from '../../users/store.js';
 
 export interface ConfigCalendarAdminDeps {
   db: Database.Database;
   userDirectory: UserDirectory;
   callerUserId: string;
+  /** Needed by the announcement + Discord-event actions (absent in unit tests). */
+  client?: Client;
+  /** The guild the console lives in — used for the Discord-event diagnosis. */
+  guildId?: string | null;
 }
 
 /**
@@ -49,13 +60,31 @@ export class ConfigCalendarAdminSource implements ToolSource {
           '• "delete" {event_id, confirm} — delete any event (whole series for recurring). Requires confirm:true.\n' +
           '• "get_output_channel" — show the channel where month PDFs + ICS are published.\n' +
           '• "set_output_channel" {channel_id} — change that output channel.\n' +
-          'NOTE: this does NOT auto-publish; mutations from the config channel only change the DB. Use the input channel (or ask a mod to run `calendar_publish` there) to re-post the rendered PDFs. Pass times as ISO 8601 UTC.',
+          '• "announce_status" — the daily same-day announcement: channel, hour, who it pings, what it would post TODAY (a dry run: resolves each of today\'s events to its Discord event and renders the text) and the last announcements sent.\n' +
+          '• "set_announce_channel" {channel_id} — where the daily announcement posts (the community #anuncios).\n' +
+          '• "set_announce_mentions" {mentions} — who it pings: role ids and/or the word "everyone", comma-separated. Empty string = ping nobody.\n' +
+          '• "announce_now" {confirm} — post today\'s announcement immediately (ignores the hour gate). Requires confirm:true; skips events already announced unless `repost:true`.\n' +
+          '• "discord_events" — Discord scheduled events the bot can see + whether it may create them (diagnoses the "Gestionar eventos" permission and hidden voice channels).\n' +
+          'NOTE: create/update/delete here do NOT auto-publish; mutations from the config channel only change the DB. Use the input channel (or ask a mod to run `calendar_publish` there) to re-post the rendered PDFs. Pass times as ISO 8601 UTC.',
         inputSchema: {
           type: 'object',
           properties: {
             action: {
               type: 'string',
-              enum: ['peek', 'create', 'update', 'delete', 'get_output_channel', 'set_output_channel'],
+              enum: [
+                'peek', 'create', 'update', 'delete', 'get_output_channel', 'set_output_channel',
+                'announce_status', 'set_announce_channel', 'set_announce_mentions', 'announce_now',
+                'discord_events',
+              ],
+            },
+            mentions: {
+              type: 'string',
+              description:
+                'For "set_announce_mentions": comma/space list of role snowflakes and/or the literal "everyone". Empty string clears (announce without pinging).',
+            },
+            repost: {
+              type: 'boolean',
+              description: 'For "announce_now": also re-announce events already announced today.',
             },
             event_id: { type: 'integer', minimum: 1, description: 'Required for "update"/"delete".' },
             title: { type: 'string', minLength: 1, maxLength: 200 },
@@ -97,6 +126,8 @@ export class ConfigCalendarAdminSource implements ToolSource {
       const obj = (input ?? {}) as Record<string, unknown>;
       const action = asAction(obj.action, [
         'peek', 'create', 'update', 'delete', 'get_output_channel', 'set_output_channel',
+        'announce_status', 'set_announce_channel', 'set_announce_mentions', 'announce_now',
+        'discord_events',
       ]);
       switch (action) {
         case 'peek':
@@ -111,6 +142,16 @@ export class ConfigCalendarAdminSource implements ToolSource {
           return { status: 'success', payload: { output_channel_id: this.store.getOutputChannelId() } };
         case 'set_output_channel':
           return this.handleSetOutputChannel(obj);
+        case 'announce_status':
+          return await this.handleAnnounceStatus();
+        case 'set_announce_channel':
+          return this.handleSetAnnounceChannel(obj);
+        case 'set_announce_mentions':
+          return this.handleSetAnnounceMentions(obj);
+        case 'announce_now':
+          return await this.handleAnnounceNow(obj);
+        case 'discord_events':
+          return await this.handleDiscordEvents();
       }
     } catch (err) {
       log.warn({ tool: toolName, err }, 'tool_call_failed');
@@ -206,6 +247,166 @@ export class ConfigCalendarAdminSource implements ToolSource {
     return { status: 'success', payload: { output_channel_id: channelId } };
   }
 
+  // ── Daily announcement ─────────────────────────────────────────────────────
+
+  /**
+   * The announcement's configuration AND a dry run of what it would post today.
+   * Both in one call on purpose: "is the announcement working?" is really the
+   * question "what would it say", and answering it without a preview means the
+   * operator only finds out in the community channel.
+   */
+  private async handleAnnounceStatus(): Promise<ToolHandlerResult> {
+    const settings = resolveAnnounceSettings(this.store);
+    const channelId = settings.channelId;
+    const payload: Record<string, unknown> = {
+      announce_channel_id: channelId,
+      announce_hour_local: settings.hour,
+      timezone: 'America/Mexico_City',
+      mentions: settings.mentions,
+      enabled: channelId !== null,
+      recent: this.store.recentAnnouncements(8).map((r) => ({
+        key: r.announce_key,
+        event_id: r.event_id,
+        when_local: r.occurrence_start_at !== null ? formatInTimezone(r.occurrence_start_at) : null,
+        discord_event_id: r.discord_event_id,
+        announced_at_local: formatInTimezone(r.announced_at),
+      })),
+    };
+    const announcer = this.makeAnnouncer();
+    if (!announcer) {
+      payload.preview = 'No disponible (sin cliente de Discord en este contexto).';
+      return { status: 'success', payload };
+    }
+    const report = await announcer.run({ force: true, dryRun: true, ignoreLedger: true });
+    payload.preview = {
+      reason: report.reason ?? null,
+      today: report.announced.map((a) => ({
+        event_id: a.eventId,
+        title: a.title,
+        start_at_local: a.startAtLocal,
+        discord_event_link: a.link,
+        discord_event_url: a.discordEventUrl,
+        text: a.text,
+      })),
+      missing_discord_event: report.nudged,
+    };
+    return { status: 'success', payload };
+  }
+
+  private handleSetAnnounceChannel(obj: Record<string, unknown>): ToolHandlerResult {
+    const channelId = asSnowflake(obj.channel_id, 'channel_id');
+    this.store.setAnnounceChannelId(channelId);
+    log.info({ tool: 'config_calendar.set_announce_channel', channel_id: channelId }, 'tool_call');
+    return { status: 'success', payload: { announce_channel_id: channelId } };
+  }
+
+  private handleSetAnnounceMentions(obj: Record<string, unknown>): ToolHandlerResult {
+    if (typeof obj.mentions !== 'string') {
+      throw new Error('mentions: pass a string (role ids and/or "everyone", comma-separated; "" to clear)');
+    }
+    const tokens = parseChannelIdEnv(obj.mentions).filter(
+      (t) => /^\d{17,20}$/.test(t) || t.toLowerCase() === 'everyone',
+    );
+    this.store.setAnnounceMentions(tokens);
+    log.info({ tool: 'config_calendar.set_announce_mentions', tokens }, 'tool_call');
+    return { status: 'success', payload: { mentions: tokens } };
+  }
+
+  private async handleAnnounceNow(obj: Record<string, unknown>): Promise<ToolHandlerResult> {
+    if (obj.confirm !== true) {
+      return {
+        status: 'error',
+        payload: { error: 'Publicar en el canal de la comunidad requiere `confirm: true`.' },
+      };
+    }
+    const announcer = this.makeAnnouncer();
+    if (!announcer) {
+      return { status: 'error', payload: { error: 'No hay cliente de Discord disponible en este contexto.' } };
+    }
+    const report = await announcer.run({ force: true, ignoreLedger: obj.repost === true });
+    log.info(
+      { tool: 'config_calendar.announce_now', announced: report.announced.length, reason: report.reason },
+      'tool_call',
+    );
+    return {
+      status: report.ok ? 'success' : 'error',
+      payload: {
+        reason: report.reason ?? null,
+        announced: report.announced.map((a) => ({
+          event_id: a.eventId,
+          title: a.title,
+          posted: a.posted,
+          discord_event_link: a.link,
+          discord_event_url: a.discordEventUrl,
+          error: a.error ?? null,
+        })),
+        missing_discord_event: report.nudged,
+      },
+    };
+  }
+
+  /**
+   * What the bot can see and do with Discord's own scheduled events. Exists
+   * because both failure modes are invisible: without "Gestionar eventos" the
+   * bot can't create events, and events living in voice channels it can't see
+   * are simply absent from the list — indistinguishable from "none exist".
+   */
+  private async handleDiscordEvents(): Promise<ToolHandlerResult> {
+    const client = this.deps.client;
+    const guildId = this.deps.guildId;
+    if (!client || !guildId) {
+      return { status: 'error', payload: { error: 'Sin contexto de servidor para consultar los eventos de Discord.' } };
+    }
+    const [events, diagnosis] = await Promise.all([
+      fetchScheduledEvents(client, guildId),
+      diagnoseEventAccess(client, guildId),
+    ]);
+    const linked = new Map(
+      this.store
+        .listAll()
+        .filter((e) => e.discord_event_id !== null)
+        .map((e) => [e.discord_event_id!, e.id]),
+    );
+    return {
+      status: 'success',
+      payload: {
+        can_create_events: diagnosis.canManageEvents,
+        problems: diagnosis.problems,
+        hidden_voice_channels: diagnosis.hiddenEventChannels.map((c) => c.name),
+        visible_events:
+          events === null
+            ? null
+            : events.map((e) => ({
+                id: e.id,
+                name: e.name,
+                start_at_local: formatInTimezone(e.startAtMs),
+                recurring: e.recurring,
+                url: e.url,
+                linked_calendar_event_id: linked.get(e.id) ?? null,
+              })),
+        linked_count: linked.size,
+      },
+    };
+  }
+
+  /** The announcer, wired exactly as the live watcher wires it. */
+  private makeAnnouncer(): CalendarAnnouncer | null {
+    const client = this.deps.client;
+    if (!client) return null;
+    const store = this.store;
+    return new CalendarAnnouncer({
+      client,
+      store,
+      getAnnounceChannelId: () => resolveAnnounceSettings(store).channelId,
+      getAnnounceMentions: () => resolveAnnounceSettings(store).mentions,
+      getModRoles: () => new EventIntakeStore(this.deps.db).getModRoles(),
+      // Nudges from the console go to the config channel (via the announcer's
+      // own fallback) rather than pinging mods out of an admin dry run.
+      getManagementChannelId: () => null,
+      getAnnounceHour: () => resolveAnnounceSettings(store).hour,
+    });
+  }
+
   private serialize(e: CalendarEvent) {
     const owner = this.deps.userDirectory.get(e.created_by);
     return {
@@ -221,6 +422,7 @@ export class ConfigCalendarAdminSource implements ToolSource {
       recurrence_until_local: e.recurrence_until !== null ? formatInTimezone(e.recurrence_until) : null,
       occurrence_count:
         e.recurrence_freq !== null ? countOccurrencesUntil(e.start_at, e.recurrence_freq, e.recurrence_until) : 1,
+      discord_event_id: e.discord_event_id,
       created_by: e.created_by,
       created_by_tag: owner?.discord_tag ?? null,
     };
