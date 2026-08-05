@@ -17,6 +17,7 @@ import {
 import { localParts } from './grid.js';
 import { formatInTimezone } from './time.js';
 import type { CalendarPublisher, PublishSummary } from './publisher.js';
+import type { DiscordEventSyncer } from './discord-events.js';
 
 /**
  * Tools for the **global** server calendar. Every moderator in the bound input
@@ -30,6 +31,7 @@ const WRITE_TOOL_NAMES = new Set([
   'calendar_update_event',
   'calendar_delete_event',
   'calendar_publish',
+  'calendar_sync_discord_event',
 ]);
 
 /**
@@ -46,6 +48,12 @@ export interface CalendarToolSourceOptions {
    * Defaults to `true` (the calendar capability's full read+write behavior).
    */
   allowWrite?: boolean;
+  /**
+   * Lets `calendar_sync_discord_event` reach Discord. Absent in tests and in any
+   * context without a guild (the tool then reports it can't, instead of failing
+   * mid-call) — see {@link ./discord-events.js createEventSyncer}.
+   */
+  syncer?: DiscordEventSyncer;
 }
 
 export class CalendarToolSource implements ToolSource {
@@ -61,6 +69,11 @@ export class CalendarToolSource implements ToolSource {
     options?: CalendarToolSourceOptions,
   ) {
     this.options = options ?? {};
+  }
+
+  /** Discord-scheduled-event access, when the caller wired it up. */
+  private get syncer(): DiscordEventSyncer | undefined {
+    return this.options.syncer;
   }
 
   async systemPromptSection(): Promise<string> {
@@ -217,6 +230,20 @@ export class CalendarToolSource implements ToolSource {
           'Force a full re-render: re-post every month PDF that has events plus the ICS to the output channel. Use when a mod asks to "republica el calendario" or to seed the channel for the first time. Not needed after a normal create/update/delete (those auto-publish).',
         inputSchema: { type: 'object', properties: {} },
       },
+      {
+        name: 'calendar_sync_discord_event',
+        description:
+          "Create the Discord **Scheduled Event** (the native \"Evento\" members RSVP to, under the server's Eventos tab) for a calendar event that doesn't have one yet, and link the two. Use it when a mod says \"crea el evento de Discord\", \"súbelo a eventos\", \"haz el evento para que se apunten\", or right after creating an event that the community should be able to RSVP to.\n" +
+          'Idempotent: if the event is already linked to a live Discord event it returns that one instead of duplicating it. For a recurring series it schedules the NEXT occurrence. The link is what the daily "hoy hay evento" announcement uses, so this is how you make the announcement carry a clickable event.\n' +
+          'If the bot lacks the "Gestionar eventos" server permission this returns `missing_permission` — relay that so an admin can grant it, and ask the mods to create the event by hand meanwhile.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            event_id: { type: 'integer', minimum: 1, description: 'The calendar event id.' },
+          },
+          required: ['event_id'],
+        },
+      },
     ];
   }
 
@@ -265,6 +292,8 @@ export class CalendarToolSource implements ToolSource {
           return await this.handleDelete(obj, t0);
         case 'calendar_publish':
           return await this.handlePublishAll();
+        case 'calendar_sync_discord_event':
+          return await this.handleSyncDiscordEvent(obj, t0);
         default:
           return { status: 'error', payload: { error: `Unknown tool: ${toolName}` } };
       }
@@ -476,6 +505,48 @@ export class CalendarToolSource implements ToolSource {
     if (!this.publisher) return { ok: false, error: 'publishing_disabled' };
     return this.publisher.reconcile();
   }
+
+  /**
+   * Create + link the Discord scheduled event for a calendar row. The failure
+   * modes are returned as data (not thrown) with Spanish text the model can
+   * relay verbatim, because the most likely one — a missing "Gestionar eventos"
+   * permission — is fixed by a human in the Discord UI, not by retrying.
+   */
+  private async handleSyncDiscordEvent(
+    obj: Record<string, unknown>,
+    t0: number,
+  ): Promise<ToolHandlerResult> {
+    const eventId = asPositiveInt(obj.event_id, 'event_id');
+    if (!this.syncer) {
+      return {
+        status: 'error',
+        payload: {
+          error:
+            'No puedo crear eventos de Discord desde aquí (no tengo el contexto del servidor). ' +
+            'Pídele a un mod que lo cree en Eventos → Crear evento.',
+        },
+      };
+    }
+    const result = await this.syncer.sync(eventId);
+    log.info(
+      { tool: 'calendar_sync_discord_event', eventId, ok: result.ok, ms: Date.now() - t0 },
+      'tool_call',
+    );
+    if (!result.ok) {
+      return { status: 'error', payload: { error: result.message, reason: result.reason } };
+    }
+    return {
+      status: 'success',
+      payload: {
+        discord_event: {
+          id: result.discordEventId,
+          url: result.url,
+          created: result.created,
+          start_at_local: result.startAtLocal,
+        },
+      },
+    };
+  }
 }
 
 function serialize(e: CalendarOccurrence) {
@@ -496,6 +567,8 @@ function serialize(e: CalendarOccurrence) {
     is_recurring_instance: e.is_recurring_instance,
     occurrence_index: e.occurrence_index,
     created_by: e.created_by,
+    /** Set when this event already has a Discord scheduled event to RSVP to. */
+    discord_event_id: e.discord_event_id,
   };
 }
 
@@ -520,6 +593,8 @@ function serializeMaster(e: CalendarEvent) {
     occurrence_count: occurrenceCount,
     /** True when the series has no end date. */
     recurrence_open_ended: e.recurrence_freq !== null && e.recurrence_until === null,
+    /** Set when this event already has a Discord scheduled event to RSVP to. */
+    discord_event_id: e.discord_event_id,
     created_by: e.created_by,
     created_at_iso: new Date(e.created_at).toISOString(),
   };

@@ -52,6 +52,7 @@ async function healthyDeps(over: Partial<HealthDeps> = {}) {
   // the calendar needs an output channel + a published current month.
   const cal = new CalendarStore(memory.db());
   cal.setOutputChannelId('CH_OUT');
+  cal.setAnnounceChannelId('CH_ANNOUNCE');
   cal.setPublished('pdf:2026-08', 'CH_OUT', 'MSG_1');
   const ei = new EventIntakeStore(memory.db());
   ei.setWatchedCategories(['CAT_1']);

@@ -59,6 +59,26 @@ const ConfigSchema = z.object({
     emptyToUndefined,
     z.string().regex(/^\d{17,20}$/, 'CALENDAR_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
   ),
+  // Community channel where the calendar posts the daily "hoy hay evento"
+  // announcement (the server's #anuncios), distinct from both the calendar INPUT
+  // channel and the month-PDF OUTPUT channel. Optional — seeds the calendar's DB
+  // setting on first boot, after which the DB wins (`config_calendar
+  // action:set_announce_channel`). Unset and unseeded → no daily announcement.
+  CALENDAR_ANNOUNCE_CHANNEL_ID: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(/^\d{17,20}$/, 'CALENDAR_ANNOUNCE_CHANNEL_ID must be a Discord snowflake').optional(),
+  ),
+  // Who the daily announcement pings. Comma/space list or JSON array of role
+  // snowflakes, plus the literal token `everyone` for @everyone. Seeds the DB
+  // setting on first boot (DB wins after). Empty → the announcement still posts,
+  // it just pings nobody. Deliberately NOT defaulted to `everyone`: a daily
+  // automated @everyone is a big escalation over what admins did by hand.
+  CALENDAR_ANNOUNCE_MENTIONS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  // Local (America/Mexico_City) hour from which today's events may be announced.
+  // Not an alarm: the watcher opens a window at this hour and the SQLite ledger
+  // guarantees one post per event, so a late boot or a same-day booking still
+  // announces exactly once.
+  CALENDAR_ANNOUNCE_HOUR: z.coerce.number().int().min(0).max(23).default(10),
   // ── Text brain selector ────────────────────────────────────────────────────
   // `kimi` (default, self-hosted/Pi): every text turn runs on Moonshot Kimi 2.7
   // Thinking (KIMI_API_KEY required). `bedrock` (AWS-native deploys, e.g. the

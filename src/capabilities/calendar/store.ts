@@ -25,6 +25,13 @@ export interface CalendarEvent {
   location: string | null;
   recurrence_freq: RecurrenceFreq | null; // null = one-off event
   recurrence_until: number | null;        // unix ms UTC, inclusive cap on expansions
+  /**
+   * The Discord **Scheduled Event** this row corresponds to, if any — the thing
+   * members click to RSVP and what the daily announcement links to. Written by
+   * the bot when it creates one, or learned once by the announcer's matcher
+   * (admins usually create these by hand, with a differently-worded title).
+   */
+  discord_event_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -209,6 +216,40 @@ export const CALENDAR_MIGRATIONS: Migration[] = [
       );
       CREATE INDEX IF NOT EXISTS calendar_event_overrides_master
         ON calendar_event_overrides (master_id);
+    `,
+  },
+  {
+    // v7 — the "same-day announcement" loop. Three additions:
+    //
+    //  1. `discord_event_id` links a calendar row to the Discord **Scheduled
+    //     Event** members click to RSVP. It is either written by the bot (it
+    //     created the event) or LEARNED once, by matching an admin-made Discord
+    //     event to this row — so the match costs a model call at most once per
+    //     event, never once per day.
+    //  2. `calendar_announcements` is the idempotency ledger for the daily job:
+    //     one row per thing already said. Presence of the row IS the "already
+    //     announced" fact, so it survives restarts and a 10-min tick can't
+    //     double-post (same trick `calendar_published` plays for month cards).
+    //  3. the announcement channel + who to mention there, as settings — env
+    //     seeds them on first boot, then the DB wins (like the output channel).
+    version: 7,
+    up: `
+      ALTER TABLE calendar_events ADD COLUMN discord_event_id TEXT;
+
+      CREATE TABLE IF NOT EXISTS calendar_announcements (
+        announce_key        TEXT    PRIMARY KEY,
+        event_id            INTEGER,
+        occurrence_start_at INTEGER,
+        channel_id          TEXT,
+        message_id          TEXT,
+        discord_event_id    TEXT,
+        announced_at        INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS calendar_announcements_at
+        ON calendar_announcements (announced_at DESC);
+
+      ALTER TABLE calendar_settings ADD COLUMN announce_channel_id TEXT;
+      ALTER TABLE calendar_settings ADD COLUMN announce_mentions_json TEXT;
     `,
   },
 ];
@@ -550,6 +591,128 @@ export class CalendarStore {
       )
       .run(channelId, Date.now());
   }
+
+  /** Community channel the daily "hoy hay evento" announcement is posted to. */
+  getAnnounceChannelId(): string | null {
+    const row = this.db
+      .prepare(`SELECT announce_channel_id FROM calendar_settings WHERE id = 1`)
+      .get() as { announce_channel_id: string | null } | undefined;
+    return row?.announce_channel_id ?? null;
+  }
+
+  setAnnounceChannelId(channelId: string | null): void {
+    this.upsertSetting('announce_channel_id', channelId);
+  }
+
+  /**
+   * The mention setting exactly as stored, so callers can tell "never
+   * configured" (null → the env seed still applies) from "configured to ping
+   * nobody" (`"[]"`). See {@link ./announce-settings.js}.
+   */
+  getAnnounceMentionsRaw(): string | null {
+    const row = this.db
+      .prepare(`SELECT announce_mentions_json FROM calendar_settings WHERE id = 1`)
+      .get() as { announce_mentions_json: string | null } | undefined;
+    return row?.announce_mentions_json ?? null;
+  }
+
+  /**
+   * Who the announcement pings: role snowflakes, and/or the literal token
+   * `everyone` (→ `@everyone`). Empty = announce without pinging anyone.
+   */
+  getAnnounceMentions(): string[] {
+    const raw = this.getAnnounceMentionsRaw();
+    if (!raw) return [];
+    try {
+      const arr = JSON.parse(raw);
+      return Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : [];
+    } catch {
+      return [];
+    }
+  }
+
+  setAnnounceMentions(tokens: string[]): void {
+    const clean = [...new Set(tokens.map((t) => t.trim()).filter(Boolean))];
+    this.upsertSetting('announce_mentions_json', JSON.stringify(clean));
+  }
+
+  private upsertSetting(column: 'announce_channel_id' | 'announce_mentions_json', value: string | null): void {
+    this.db
+      .prepare(
+        `INSERT INTO calendar_settings (id, ${column}, updated_at)
+         VALUES (1, ?, ?)
+         ON CONFLICT(id) DO UPDATE SET
+           ${column} = excluded.${column},
+           updated_at = excluded.updated_at`,
+      )
+      .run(value, Date.now());
+  }
+
+  // ── Discord Scheduled Event link ───────────────────────────────────────────
+
+  /** Link (or unlink, with null) a calendar row to a Discord scheduled event. */
+  setDiscordEventId(id: number, discordEventId: string | null): void {
+    this.db
+      .prepare(`UPDATE calendar_events SET discord_event_id = ?, updated_at = ? WHERE id = ?`)
+      .run(discordEventId, Date.now(), id);
+  }
+
+  // ── Announcement ledger (idempotency for the daily job) ────────────────────
+
+  /** Whether this exact thing was already announced (survives restarts). */
+  isAnnounced(announceKey: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 FROM calendar_announcements WHERE announce_key = ?`)
+      .get(announceKey);
+    return row !== undefined;
+  }
+
+  recordAnnouncement(input: {
+    announceKey: string;
+    eventId: number | null;
+    occurrenceStartAt: number | null;
+    channelId: string;
+    messageId: string | null;
+    discordEventId: string | null;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO calendar_announcements
+           (announce_key, event_id, occurrence_start_at, channel_id, message_id,
+            discord_event_id, announced_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(announce_key) DO UPDATE SET
+           message_id       = excluded.message_id,
+           discord_event_id = excluded.discord_event_id,
+           announced_at     = excluded.announced_at`,
+      )
+      .run(
+        input.announceKey,
+        input.eventId,
+        input.occurrenceStartAt,
+        input.channelId,
+        input.messageId,
+        input.discordEventId,
+        Date.now(),
+      );
+  }
+
+  recentAnnouncements(limit: number): AnnouncementRow[] {
+    return this.db
+      .prepare(`SELECT * FROM calendar_announcements ORDER BY announced_at DESC LIMIT ?`)
+      .all(limit) as AnnouncementRow[];
+  }
+}
+
+/** A row of the announcement ledger. */
+export interface AnnouncementRow {
+  announce_key: string;
+  event_id: number | null;
+  occurrence_start_at: number | null;
+  channel_id: string | null;
+  message_id: string | null;
+  discord_event_id: string | null;
+  announced_at: number;
 }
 
 /** Minimum `searchScore` for a master to be considered a match. */
@@ -605,6 +768,7 @@ function toOccurrence(master: CalendarEvent, occ: ExpandedOccurrence): CalendarO
     location: ov?.location ?? master.location,
     recurrence_freq: master.recurrence_freq,
     recurrence_until: master.recurrence_until,
+    discord_event_id: master.discord_event_id,
     created_at: master.created_at,
     updated_at: master.updated_at,
     start_at: occ.start_at,

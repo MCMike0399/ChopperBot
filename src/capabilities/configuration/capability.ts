@@ -115,6 +115,8 @@ export class ConfigurationCapability implements Capability {
       db: this.db,
       userDirectory,
       callerUserId: ctx.userId,
+      client: this.getDiscordClient(),
+      guildId: ctx.guildId,
     });
     const filescanner = new ConfigFileScannerAdminSource({
       db: this.db,
