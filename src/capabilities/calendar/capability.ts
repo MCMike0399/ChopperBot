@@ -1,4 +1,5 @@
 import { type Client } from 'discord.js';
+import type Database from 'better-sqlite3';
 import { config } from '../../config.js';
 import { log } from '../../log.js';
 import { composeToolSources } from '../../tools/source.js';
@@ -21,6 +22,15 @@ import { monthPublishAction } from './publisher.js';
 import { availableMonthKeys, hasTemplateFor } from './render.js';
 import { monthKey, monthKeyOfUtc } from './grid.js';
 import { sendAdminAlert } from '../../discord/admin-alert.js';
+import { CalendarAnnouncer } from './announcer.js';
+import { createEventSyncer, type DiscordEventSyncer } from './discord-events.js';
+import { parseChannelIdEnv } from '../file_scanner/store.js';
+import { EventIntakeStore } from '../event_intake/store.js';
+import { resolveAnnounceSettings } from './announce-settings.js';
+import type { MutableCapabilityRouter } from '../routing.js';
+
+/** Capability id, also the key the router binds the management channel under. */
+export const CALENDAR_CAPABILITY_ID = 'calendar';
 
 const SNAPSHOT_LIMIT = 8;
 
@@ -32,6 +42,14 @@ const SNAPSHOT_LIMIT = 8;
 const ROLLOVER_CHECK_MS = 10 * 60_000;
 
 /**
+ * How often the daily-announcement window is checked. Tighter than the rollover
+ * check because it bounds how late the morning announcement lands, and because
+ * it's what picks up an event a mod books for the same evening. One SQLite read
+ * plus (only when something is actually due) one Discord event fetch.
+ */
+const ANNOUNCE_CHECK_MS = 5 * 60_000;
+
+/**
  * Calendar capability: a **global** server calendar (not per-user). Moderators
  * talk to it in the bound input channel using natural language to create,
  * update and delete events — including weekly/daily/monthly series. Every change
@@ -39,7 +57,7 @@ const ROLLOVER_CHECK_MS = 10 * 60_000;
  * (with a master ICS file) to the configured output channel.
  */
 export class CalendarCapability implements Capability {
-  readonly id = 'calendar';
+  readonly id = CALENDAR_CAPABILITY_ID;
   readonly description =
     'Calendario global del servidor. Los moderadores agregan/editan/eliminan eventos en lenguaje natural; el bot los renderiza en el PDF del mes y los publica (con un ICS) en el canal de salida.';
 
@@ -48,11 +66,18 @@ export class CalendarCapability implements Capability {
   private getDiscordClient: CapabilityInitDeps['getDiscordClient'] = undefined;
   /** Month-rollover watcher (see {@link checkMonthRollover}); cleared on dispose. */
   private rolloverTimer: NodeJS.Timeout | null = null;
+  /** Daily-announcement watcher (see {@link CalendarAnnouncer}); cleared on dispose. */
+  private announceTimer: NodeJS.Timeout | null = null;
+  /** Set in `start()` — used to find the mod-facing channel for nudges. */
+  private router: MutableCapabilityRouter | null = null;
+  /** Shared handle, kept so a nudge can read who event_intake lets approve. */
+  private db: Database.Database | null = null;
   /** Operator alerts already sent this process, so a 10-min tick can't spam. */
   private readonly alertedKeys = new Set<string>();
 
   async init({ memory, projectRoot, getDiscordClient }: CapabilityInitDeps): Promise<void> {
     await memory.migrate(this.id, CALENDAR_MIGRATIONS);
+    this.db = memory.db();
     this.store = new CalendarStore(memory.db());
     this.projectRoot = projectRoot;
     this.getDiscordClient = getDiscordClient;
@@ -62,8 +87,21 @@ export class CalendarCapability implements Capability {
     if (!this.store.getOutputChannelId() && config.CALENDAR_OUTPUT_CHANNEL_ID) {
       this.store.setOutputChannelId(config.CALENDAR_OUTPUT_CHANNEL_ID);
     }
+    // Same seed-then-DB-wins rule for the announcement channel + its mentions.
+    // The mention seed keys off "never written" (SQL NULL), not "empty", so an
+    // operator who deliberately silenced the ping doesn't get it back on reboot.
+    if (!this.store.getAnnounceChannelId() && config.CALENDAR_ANNOUNCE_CHANNEL_ID) {
+      this.store.setAnnounceChannelId(config.CALENDAR_ANNOUNCE_CHANNEL_ID);
+    }
+    if (this.store.getAnnounceMentionsRaw() === null && config.CALENDAR_ANNOUNCE_MENTIONS) {
+      this.store.setAnnounceMentions(parseChannelIdEnv(config.CALENDAR_ANNOUNCE_MENTIONS));
+    }
     log.info(
-      { capability: this.id, output_channel: this.resolveOutputChannel() ?? '(unset)' },
+      {
+        capability: this.id,
+        output_channel: this.resolveOutputChannel() ?? '(unset)',
+        announce_channel: this.resolveAnnounceChannel() ?? '(unset)',
+      },
       'CalendarCapability initialized (global)',
     );
   }
@@ -74,7 +112,7 @@ export class CalendarCapability implements Capability {
 
     const upcoming = store.listUpcoming(ctx.now.getTime(), SNAPSHOT_LIMIT);
     const outputChannelId = this.resolveOutputChannel();
-    const system = renderSystemPrompt(ctx.now, upcoming, outputChannelId);
+    const system = renderSystemPrompt(ctx.now, upcoming, outputChannelId, this.resolveAnnounceChannel());
 
     // Build a publisher only when the Discord client is available (i.e. at
     // runtime post-login). Absent in unit tests → the tools just skip posting.
@@ -87,7 +125,23 @@ export class CalendarCapability implements Capability {
       }
     }
 
-    const source = new CalendarToolSource(store, ctx.userId, ctx.now.getTime(), publisher);
+    // Discord-scheduled-event access needs a guild, so it's only wired up for a
+    // guild turn; in a DM the tool reports that it can't rather than throwing.
+    let syncer: DiscordEventSyncer | undefined;
+    if (ctx.guildId && this.getDiscordClient) {
+      try {
+        syncer = createEventSyncer({
+          client: this.getDiscordClient(),
+          guildId: ctx.guildId,
+          store,
+          formatLocal: formatInTimezone,
+        });
+      } catch {
+        syncer = undefined;
+      }
+    }
+
+    const source = new CalendarToolSource(store, ctx.userId, ctx.now.getTime(), publisher, { syncer });
     return { system, tools: composeToolSources([source]) };
   }
 
@@ -97,13 +151,34 @@ export class CalendarCapability implements Capability {
    * corrected without waiting for the next event edit), then keep watching for
    * the month to roll over while we stay up. Best-effort throughout.
    */
-  async start({ client }: CapabilityStartDeps): Promise<void> {
+  async start({ client, router }: CapabilityStartDeps): Promise<void> {
     if (!this.store) return;
+    this.router = router;
     await this.reconcileSafely(client, 'calendar.startup_reconcile');
     this.rolloverTimer = setInterval(() => {
       void this.checkMonthRollover(client);
     }, ROLLOVER_CHECK_MS);
     this.rolloverTimer.unref?.();
+
+    // The daily "hoy hay evento" announcement. Armed here and driven purely by
+    // the local clock + the SQLite ledger, so it survives restarts without a
+    // cron and can't double-post. Runs immediately once too: a restart at 11:00
+    // should not lose the morning's announcement.
+    this.announceTimer = setInterval(() => {
+      void this.runAnnouncer(client);
+    }, ANNOUNCE_CHECK_MS);
+    this.announceTimer.unref?.();
+    void this.runAnnouncer(client);
+    log.info(
+      {
+        capability: this.id,
+        check_every_min: ANNOUNCE_CHECK_MS / 60_000,
+        announce_channel: this.resolveAnnounceChannel() ?? '(unset)',
+        announce_hour: resolveAnnounceSettings(this.store).hour,
+        mentions: resolveAnnounceSettings(this.store).mentions,
+      },
+      'calendar.announce_watch_started',
+    );
     // The watcher is otherwise silent until a month actually rolls over, so log
     // once that it's armed (and what it currently thinks) — that's the only way
     // to confirm the feature is live without waiting for the 1st of the month.
@@ -123,6 +198,57 @@ export class CalendarCapability implements Capability {
     if (this.rolloverTimer) {
       clearInterval(this.rolloverTimer);
       this.rolloverTimer = null;
+    }
+    if (this.announceTimer) {
+      clearInterval(this.announceTimer);
+      this.announceTimer = null;
+    }
+  }
+
+  /**
+   * Build the announcer against the live client/router. Public-ish so the admin
+   * console (`config_calendar action:announce_now`) and the verify script drive
+   * exactly the same code path the timer does — no second implementation of
+   * "what would we post".
+   */
+  makeAnnouncer(client: Client, router?: MutableCapabilityRouter | null): CalendarAnnouncer {
+    if (!this.store) throw new Error('CalendarCapability not initialized');
+    const store = this.store;
+    return new CalendarAnnouncer({
+      client,
+      store,
+      getAnnounceChannelId: () => resolveAnnounceSettings(store).channelId,
+      getAnnounceMentions: () => resolveAnnounceSettings(store).mentions,
+      getModRoles: () => this.approverRoles(),
+      getManagementChannelId: () => resolveManagementChannel(router ?? this.router),
+      getAnnounceHour: () => resolveAnnounceSettings(store).hour,
+    });
+  }
+
+  /** One announcement pass; failures stay inside the timer. */
+  private async runAnnouncer(client: Client): Promise<void> {
+    try {
+      const report = await this.makeAnnouncer(client).run();
+      // Only speak up when something actually happened — this ticks every 5 min.
+      if (report.announced.length > 0 || report.nudged.length > 0) {
+        log.info(
+          {
+            capability: this.id,
+            announced: report.announced.map((a) => ({
+              id: a.eventId,
+              link: a.link,
+              posted: a.posted,
+              discord_event: a.discordEventId,
+            })),
+            nudged: report.nudged.map((n) => n.eventId),
+          },
+          'calendar.announce_tick',
+        );
+      } else if (report.reason && report.reason !== 'not_yet' && report.reason !== 'nothing_today') {
+        log.warn({ capability: this.id, reason: report.reason, error: report.error }, 'calendar.announce_tick');
+      }
+    } catch (err) {
+      log.warn({ capability: this.id, err }, 'calendar.announce_tick_failed');
     }
   }
 
@@ -202,12 +328,47 @@ export class CalendarCapability implements Capability {
   private resolveOutputChannel(): string | null {
     return this.store?.getOutputChannelId() ?? config.CALENDAR_OUTPUT_CHANNEL_ID ?? null;
   }
+
+  private resolveAnnounceChannel(): string | null {
+    return this.store ? resolveAnnounceSettings(this.store).channelId : null;
+  }
+
+  /**
+   * Who to ping about a missing Discord event: the SAME roles event_intake lets
+   * approve a request. Read from that capability's setting rather than kept
+   * separately, so "who may approve" and "who gets nudged" can't drift apart —
+   * the invariant event_intake already holds internally. Guarded: if
+   * event_intake never migrated, fall back to the built-in defaults.
+   */
+  private approverRoles(): string[] {
+    if (!this.db) return [];
+    try {
+      return new EventIntakeStore(this.db).getModRoles();
+    } catch {
+      return [];
+    }
+  }
+}
+
+/**
+ * The channel where mods already talk to the calendar — the one bound to this
+ * capability in the routing table. That's where a "you still need to create the
+ * Discord event" nudge belongs: mod-facing, but not the admin console. Null when
+ * nothing is bound (the announcer then falls back to the config channel).
+ */
+function resolveManagementChannel(router: MutableCapabilityRouter | null): string | null {
+  if (!router) return null;
+  for (const [channelId, capabilityId] of router.getAllBindings()) {
+    if (capabilityId === CALENDAR_CAPABILITY_ID) return channelId;
+  }
+  return null;
 }
 
 function renderSystemPrompt(
   now: Date,
   upcoming: CalendarOccurrence[],
   outputChannelId: string | null,
+  announceChannelId: string | null,
 ): string {
   const upcomingSection = upcoming.length === 0
     ? 'No hay eventos próximos.'
@@ -224,6 +385,7 @@ function renderSystemPrompt(
 
   const months = availableMonthKeys();
   const outputRef = outputChannelId ? `<#${outputChannelId}>` : '(no configurado)';
+  const announceRef = announceChannelId ? ` <#${announceChannelId}>` : '';
 
   return `Eres ChopperBot en **modo Calendario**. Administras el **calendario GLOBAL** del servidor Revolución Z: un solo calendario compartido por toda la comunidad. Cualquier moderadorx de este canal puede crear, editar o borrar eventos, y todxs ven los mismos.
 
@@ -231,6 +393,16 @@ function renderSystemPrompt(
 - Ayudas a lxs moderadorxs a registrar eventos (asambleas, círculos de lectura, talleres, convocatorias) en lenguaje natural.
 - Cuando registras un evento, el bot **renderiza automáticamente** el PDF del mes correspondiente y lo publica, junto con un archivo ICS, en el canal de salida ${outputRef}. No tienes que hacer nada extra para publicar — sucede solo al crear/editar/borrar.
 - Además, **al iniciar cada mes el calendario del mes nuevo se publica solo** en ${outputRef}. El canal de salida es un tablero vivo: muestra el mes en curso (y los meses futuros que ya tengan eventos de fecha única), no los meses que ya pasaron. Si alguien pregunta por el calendario de un mes viejo, dile que el tablero solo conserva el mes actual y ofrécele el ICS.
+- **Cada mañana (${config.CALENDAR_ANNOUNCE_HOUR}:00 hora CDMX) anuncio solo los eventos del día** en el canal de anuncios${announceRef}, con el enlace al **evento de Discord** para que la gente se apunte. No tienes que hacer nada para eso: sale automático.
+
+# El evento de Discord (importante)
+Un evento del calendario y un **evento de Discord** (los "Eventos" del servidor, donde la gente le da "Me interesa") son dos cosas distintas:
+- El **calendario** es lo que administras aquí: es lo que sale en el PDF del mes y en el ICS.
+- El **evento de Discord** es el que se puede enlazar (\`discord.com/events/…\`) y al que la gente se apunta. Es lo que el anuncio del día enlaza.
+Con \`calendar_sync_discord_event\` puedes crear el evento de Discord de un evento del calendario y dejarlos ligados. Cuándo usarlo:
+- Cuando alguien te lo pida ("crea el evento de Discord", "súbelo a eventos", "haz el evento para que se apunten").
+- **Ofrécelo tú** justo después de crear un evento al que valga la pena que la comunidad se apunte: *"¿quieres que cree también el evento de Discord para que la gente se apunte?"* — una vez, sin insistir.
+- Si la herramienta responde \`missing_permission\`, di claramente que al bot le falta el permiso **Gestionar eventos** del servidor (un admin lo activa en Ajustes del servidor → Roles → ChopperBot) y que mientras tanto lo cree un mod a mano.
 
 # Conversación de seguimiento (IMPORTANTE)
 Antes de crear un evento necesitas como mínimo:

@@ -16,8 +16,7 @@ import { dirname, resolve } from 'node:path';
 import { Client, GatewayIntentBits, PermissionFlagsBits } from 'discord.js';
 import { config } from '../src/config.js';
 import { EventIntakeStore } from '../src/capabilities/event_intake/store.js';
-import { DEFAULT_MOD_ROLES } from '../src/capabilities/event_intake/roles.js';
-import { appendModPing, resolveModMentions } from '../src/capabilities/event_intake/mentions.js';
+import { appendModPing, DEFAULT_MOD_ROLES, resolveModMentions } from '../src/discord/mod-roles.js';
 import { renderTicketConversationPrompt } from '../src/capabilities/event_intake/preamble.js';
 import { ask } from '../src/llm/client.js';
 

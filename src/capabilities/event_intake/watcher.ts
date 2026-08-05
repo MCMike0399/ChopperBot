@@ -14,18 +14,20 @@ import { composeToolSources, type ToolSource } from '../../tools/source.js';
 import { CalendarStore } from '../calendar/store.js';
 import { CalendarToolSource } from '../calendar/source.js';
 import type { CalendarPublisher } from '../calendar/publisher.js';
+import { createEventSyncer, type DiscordEventSyncer } from '../calendar/discord-events.js';
+import { formatInTimezone } from '../calendar/time.js';
 import { EventIntakeStore } from './store.js';
 import { isEventForm, parseTicketForm, extractRequesterId, type ParsedForm } from './parse.js';
-import { isModByRole } from './roles.js';
 import {
   appendModPing,
   EMPTY_MOD_MENTIONS,
+  isModByRole,
   mentionedRoleIds,
   resolveModMentions,
   sanitizeRoleMentions,
   shouldNotifyRoles,
   type ModMentions,
-} from './mentions.js';
+} from '../../discord/mod-roles.js';
 import { renderProposalPrompt, renderTicketConversationPrompt } from './preamble.js';
 
 /** The Message shape the MessageCreate gateway event actually delivers. */
@@ -45,6 +47,23 @@ const READ_TOOLS = [
   'calendar_search_events',
   'calendar_list_upcoming',
   'calendar_get_event',
+] as const;
+
+/**
+ * What a MOD additionally gets in a ticket. `calendar_update_event` is here
+ * because of a real dead end (ticket-0005, 2026-08-04): a mod approved an event
+ * whose title had a typo, asked the bot to fix it, and the bot had to answer
+ * "no tengo herramienta para editar" and hand the job back to a human — for a
+ * one-word change it had every right to make. Correcting what you just approved,
+ * in the ticket where you approved it, is part of approving.
+ *
+ * `calendar_delete_event` is deliberately still absent: fixing your own event is
+ * ticket work, wiping events off the shared calendar is not.
+ */
+const MOD_TOOLS = [
+  'calendar_create_event',
+  'calendar_update_event',
+  'calendar_sync_discord_event',
 ] as const;
 
 export interface EventIntakeWatcherDeps {
@@ -228,7 +247,12 @@ export class EventIntakeWatcher {
     // the outcome everyone in the ticket was waiting for, and it happens at most
     // once per ticket.
     let body = sanitizeRoleMentions(reply, mentions.notifyIds);
-    if (createdEventId !== null) body = appendModPing(body, mentions, 'created');
+    if (createdEventId !== null) {
+      // Close the loop while we're still in the ticket: calendar row → Discord
+      // scheduled event → the link the daily announcement will carry.
+      body += await this.syncDiscordEventFor(message, createdEventId);
+      body = appendModPing(body, mentions, 'created');
+    }
     const wanted = mentionedRoleIds(body, mentions.notifyIds);
     const notify =
       wanted.length > 0 &&
@@ -312,13 +336,13 @@ export class EventIntakeWatcher {
     message: Message,
     opts: { write: boolean; onCreated?: (eventId: number) => void },
   ): ToolSource {
-    const include = opts.write ? [...READ_TOOLS, 'calendar_create_event'] : [...READ_TOOLS];
+    const include = opts.write ? [...READ_TOOLS, ...MOD_TOOLS] : [...READ_TOOLS];
     const inner = new CalendarToolSource(
       this.deps.calendarStore,
       message.author?.id ?? 'event_intake',
       this.now(),
       opts.write ? this.deps.publisher : undefined,
-      { include, allowWrite: opts.write },
+      { include, allowWrite: opts.write, syncer: opts.write ? this.makeSyncer(message) : undefined },
     );
     const store = this.deps.store;
     const channelId = message.channelId;
@@ -339,6 +363,57 @@ export class EventIntakeWatcher {
         return res;
       },
     };
+  }
+
+  /** Discord-scheduled-event access for this ticket's guild (null in a DM). */
+  private makeSyncer(message: Message): DiscordEventSyncer | undefined {
+    if (!message.guildId) return undefined;
+    return createEventSyncer({
+      client: this.deps.client,
+      guildId: message.guildId,
+      store: this.deps.calendarStore,
+      now: this.now,
+      formatLocal: formatInTimezone,
+    });
+  }
+
+  /**
+   * Create the Discord scheduled event for a just-approved request and return
+   * the line to append to the confirmation.
+   *
+   * Done deterministically on approval rather than left to the model, for the
+   * same reason the mod ping is: this is the moment the whole ticket existed
+   * for, and "the event is in the calendar but nobody can RSVP to it" is exactly
+   * the gap the daily announcement then has to apologise for. When the bot lacks
+   * the permission, the line says so and asks the mods — which is strictly
+   * better than silence.
+   */
+  private async syncDiscordEventFor(message: GatewayMessage, eventId: number): Promise<string> {
+    const syncer = this.makeSyncer(message);
+    if (!syncer) return '';
+    const result = await syncer.sync(eventId).catch((err) => {
+      log.warn({ err, eventId }, 'event_intake.discord_event.sync_threw');
+      return null;
+    });
+    if (!result) return '';
+    if (result.ok) {
+      log.info(
+        { eventId, discordEventId: result.discordEventId, created: result.created },
+        'event_intake.discord_event.synced',
+      );
+      return result.created
+        ? `\n\n📅 Ya creé también el **evento de Discord** para que la gente se apunte:\n${result.url}`
+        : `\n\n📅 El evento de Discord ya existía:\n${result.url}`;
+    }
+    log.warn({ eventId, reason: result.reason, message: result.message }, 'event_intake.discord_event.sync_failed');
+    if (result.reason === 'missing_permission') {
+      return (
+        '\n\n⚠️ No pude crear el **evento de Discord** (me falta el permiso *Gestionar eventos* del servidor, ' +
+        'un admin lo activa en Ajustes del servidor → Roles → ChopperBot). ¿Lo crean a mano en **Eventos → Crear evento**? ' +
+        'Es lo que enlaza el anuncio del día para que la gente se apunte.'
+      );
+    }
+    return '\n\n⚠️ No pude crear el evento de Discord; créenlo a mano en **Eventos → Crear evento** para que la gente se apunte.';
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

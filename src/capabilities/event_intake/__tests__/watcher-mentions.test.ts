@@ -9,7 +9,7 @@ import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
 import { EventIntakeStore, EVENT_INTAKE_MIGRATIONS } from '../store.js';
 import { CalendarStore, CALENDAR_MIGRATIONS } from '../../calendar/store.js';
 import { EventIntakeWatcher } from '../watcher.js';
-import { MOD_PING_COOLDOWN_MS } from '../mentions.js';
+import { MOD_PING_COOLDOWN_MS } from '../../../discord/mod-roles.js';
 
 // The watcher swallows its own errors into the log (it must never throw into
 // the gateway), so silence the logger — a swallowed failure surfaces as an

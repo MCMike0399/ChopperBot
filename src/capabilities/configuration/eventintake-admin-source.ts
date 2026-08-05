@@ -4,8 +4,7 @@ import { config } from '../../config.js';
 import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
 import { EventIntakeStore } from '../event_intake/store.js';
-import { DEFAULT_MOD_ROLES } from '../event_intake/roles.js';
-import { resolveModMentions } from '../event_intake/mentions.js';
+import { DEFAULT_MOD_ROLES, resolveModMentions } from '../../discord/mod-roles.js';
 import { parseChannelIdEnv } from '../file_scanner/store.js';
 
 export interface ConfigEventIntakeAdminDeps {

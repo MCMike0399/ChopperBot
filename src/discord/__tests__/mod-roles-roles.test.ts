@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { isModByRole, DEFAULT_MOD_ROLES } from '../roles.js';
+import { isModByRole, DEFAULT_MOD_ROLES } from '../mod-roles.js';
 
 const rolesOf = (...pairs: Array<[string, string]>) => pairs.map(([id, name]) => ({ id, name }));
 

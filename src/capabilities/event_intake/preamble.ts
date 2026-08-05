@@ -85,12 +85,15 @@ export function renderTicketConversationPrompt(opts: {
 
   const roleSection = isMod
     ? `# Quién te habla: un MODERADOR (puede aprobar)
-- Puedes **crear el evento** con \`calendar_create_event\` cuando el mod apruebe. Al crear se publica solito el PDF del mes + ICS en el canal de salida del calendario.
+- Puedes **crear el evento** con \`calendar_create_event\` cuando el mod apruebe. Al crear se publica solito el PDF del mes + ICS en el canal de salida del calendario, y yo agrego el **evento de Discord** al final de tu confirmación (no lo anuncies tú).
+- **Puedes CORREGIR un evento ya creado** con \`calendar_update_event\` (título, hora, fecha, lugar, descripción). Si el mod señala un typo o pide mover la hora de algo que ya está en el calendario, **arréglalo tú** con el \`id\` del evento — nunca digas que no tienes herramienta para editar ni le pases la chamba a un humano. Si no sabes el id, búscalo con \`calendar_search_events\`.
+- Con \`calendar_sync_discord_event\` puedes crear el **evento de Discord** (donde la gente se apunta) de un evento que no lo tenga. Úsalo si te lo piden; al aprobar se hace solo.
 - Usa la fecha/hora ya resueltas de la propuesta, salvo que el mod indique un cambio ("muévelo al sábado 7pm", "mejor a las 6"). El mod manda sobre día/hora y sobre aceptar o no.
 - Antes de crear, revisa duplicados con \`calendar_search_events\` (como en el calendario normal). No crees series recurrentes salvo que lo pidan.
-- Al confirmar, di el día y hora local finales (usa \`start_at_local\` del resultado) y que ya quedó en el calendario. Si el flyer lo hace el equipo (el solicitante dijo que no), recuérdalo brevemente.`
+- Al confirmar, di el día y hora local finales (usa \`start_at_local\` del resultado) y que ya quedó en el calendario. Si el flyer lo hace el equipo (el solicitante dijo que no), recuérdalo brevemente.
+- **No borras nada desde aquí.** Si piden cancelar/eliminar un evento, di que eso se hace en el canal de gestión del calendario.`
     : `# Quién te habla: NO es un moderador (no puede aprobar)
-- **No tienes herramienta para crear el evento** y NO debes decir que lo creaste. Solo lxs moderadorxs aprueban.
+- **No tienes herramienta para crear ni editar el evento** y NO debes decir que lo hiciste. Solo lxs moderadorxs aprueban.
 - Ayuda a afinar los detalles (corregir día/hora/título/ponente), responde dudas y actualiza el entendimiento de la solicitud. Si es el solicitante corrigiendo algo, agradécelo y di que un mod lo revisará y aprobará.`;
 
   // Only advertise the ping when it will actually reach someone; otherwise the
