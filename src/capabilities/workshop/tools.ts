@@ -7,7 +7,20 @@ import { PathEscapeError, type SessionWorkspace } from './workspace.js';
 export const MAX_SEND_FILE_BYTES = 9_500_000;
 /** Output beyond this is cut before reaching the model (context budget). */
 const MODEL_OUTPUT_CAP = 6_000;
-const DEFAULT_READ_BYTES = 16_000;
+const DEFAULT_READ_BYTES = 6_000;
+/** Hard ceiling for a single read, however much the model asks for. */
+const MAX_READ_BYTES = 20_000;
+/**
+ * Total characters of tool payload one turn may pull into the conversation.
+ *
+ * Why (live 2026-08-06): asked to explain a 5.4 MB book chapter by chapter, the
+ * model read chapter files at 16k chars each until the request hit **147k input
+ * tokens** — and at that size Kimi lost the tool-call protocol and started
+ * posting its own scaffolding to Discord. Past this budget, read tools refuse
+ * and tell the model to summarize with Python instead (a file it writes costs
+ * nothing in context), which is the workflow the prompt asks for anyway.
+ */
+export const TURN_PAYLOAD_BUDGET_CHARS = 45_000;
 
 /**
  * Deferred/side-effectful session operations the WATCHER executes (the tool
@@ -45,8 +58,30 @@ export function capOutput(text: string, cap = MODEL_OUTPUT_CAP): string {
 
 export class WorkshopToolSource implements ToolSource {
   readonly name = 'workshop';
+  /** Characters of payload already returned to the model THIS turn. */
+  private payloadChars = 0;
 
   constructor(private readonly deps: WorkshopToolDeps) {}
+
+  /** Charge a payload against the turn budget; true if it still fits. */
+  private budgetAllows(cost: number): boolean {
+    return this.payloadChars + cost <= TURN_PAYLOAD_BUDGET_CHARS;
+  }
+
+  private charge(cost: number): void {
+    this.payloadChars += cost;
+  }
+
+  private budgetExceededResult(what: string): ToolHandlerResult {
+    return {
+      status: 'error',
+      payload: {
+        error:
+          `Se agotó el presupuesto de contexto de esta vuelta (ya leíste ~${Math.round(this.payloadChars / 1000)}k caracteres), así que no puedo devolverte ${what}. ` +
+          'NO sigas leyendo archivos completos: procésalos con workshop_run_python (resume, extrae o escribe el entregable directamente desde el script) e imprime solo lo indispensable.',
+      },
+    };
+  }
 
   async systemPromptSection(): Promise<string> {
     return '';
@@ -88,12 +123,17 @@ export class WorkshopToolSource implements ToolSource {
       },
       {
         name: 'workshop_read_file',
-        description: 'Lee un archivo de texto del workspace (recortado si es muy grande).',
+        description:
+          'Lee un archivo de texto del workspace (recortado si es grande). Para inspeccionar cosas puntuales, no para cargar textos largos: ' +
+          'hay un presupuesto de contexto por vuelta, así que si necesitas trabajar un documento extenso, procésalo con workshop_run_python en vez de leerlo aquí.',
         inputSchema: {
           type: 'object',
           properties: {
             path: { type: 'string' },
-            max_bytes: { type: 'number', description: `Por defecto ${DEFAULT_READ_BYTES}.` },
+            max_bytes: {
+              type: 'number',
+              description: `Por defecto ${DEFAULT_READ_BYTES}, máximo ${MAX_READ_BYTES}.`,
+            },
           },
           required: ['path'],
         },
@@ -161,14 +201,24 @@ export class WorkshopToolSource implements ToolSource {
         }
         case 'workshop_read_file': {
           const path = String(obj.path ?? '');
-          const maxBytes = clampInt(obj.max_bytes, 1, 200_000, DEFAULT_READ_BYTES);
+          const maxBytes = clampInt(obj.max_bytes, 1, MAX_READ_BYTES, DEFAULT_READ_BYTES);
           if (!this.deps.workspace.exists(path)) {
             return { status: 'error', payload: { error: `No existe: ${path}` } };
           }
+          if (!this.budgetAllows(maxBytes)) return this.budgetExceededResult(`el contenido de ${path}`);
           const res = this.deps.workspace.readText(path, maxBytes);
+          this.charge(res.content.length);
           return {
             status: 'success',
-            payload: { path, bytes: res.bytes, truncated: res.truncated, content: res.content },
+            payload: {
+              path,
+              bytes: res.bytes,
+              truncated: res.truncated,
+              content: res.content,
+              ...(res.truncated
+                ? { note: 'Archivo recortado. Para trabajar el texto completo, procésalo con Python en vez de leerlo por partes.' }
+                : {}),
+            },
           };
         }
         case 'workshop_list_files': {
@@ -274,14 +324,17 @@ export class WorkshopToolSource implements ToolSource {
       },
       'workshop.python_run',
     );
+    const stdout = capOutput(result.stdout);
+    const stderr = capOutput(result.stderr);
+    this.charge(stdout.length + stderr.length);
     return {
       status: result.exitCode === 0 && !result.timedOut ? 'success' : 'error',
       payload: {
         exit_code: result.exitCode,
         timed_out: result.timedOut,
         duration_ms: result.durationMs,
-        stdout: capOutput(result.stdout),
-        stderr: capOutput(result.stderr),
+        stdout,
+        stderr,
         files_changed: changed,
         ...(result.timedOut
           ? { note: `Se agotó el tiempo (${Math.floor(timeoutMs / 1000)}s). Divide el trabajo o sube timeout_s.` }

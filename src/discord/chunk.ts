@@ -64,12 +64,28 @@ export function chunkMessage(text: string, limit = DISCORD_LIMIT): string[] {
 }
 
 /**
+ * Hard ceiling on messages one reply may occupy. A legitimate answer fits in a
+ * few; more than this means something went wrong (2026-08-06: a degenerate
+ * model loop filled ~8 messages of a member's taller with tool-call
+ * scaffolding). The tail is dropped with a visible note instead.
+ */
+export const MAX_REPLY_CHUNKS = 5;
+
+/** Appended when the reply was cut at MAX_REPLY_CHUNKS. */
+const TRUNCATION_NOTE = '\n\n_(respuesta recortada — pídeme la parte que falte o dime que te la mande como archivo)_';
+
+/**
  * Chunk a bot reply for Discord. Single-chunk replies pass through
  * unchanged. Multi-chunk replies get `CONTINUATION_FOOTER` appended to
  * every chunk except the last, AND are chunked with a tighter per-chunk
  * limit so each chunk + footer still fits in Discord's 2000-char cap.
+ * Never returns more than `maxChunks` messages.
  */
-export function chunkBotReply(text: string, limit = DISCORD_LIMIT): string[] {
+export function chunkBotReply(
+  text: string,
+  limit = DISCORD_LIMIT,
+  maxChunks = MAX_REPLY_CHUNKS,
+): string[] {
   // First-pass: would this fit in one message?
   const dry = chunkMessage(text, limit);
   if (dry.length <= 1) return dry;
@@ -77,7 +93,15 @@ export function chunkBotReply(text: string, limit = DISCORD_LIMIT): string[] {
   // Multi-chunk: re-chunk with reduced per-chunk budget so the footer fits.
   const reserved = limit - CONTINUATION_FOOTER.length;
   const chunks = chunkMessage(text, reserved);
-  return chunks.map((c, i) => (i < chunks.length - 1 ? c + CONTINUATION_FOOTER : c));
+  if (chunks.length <= maxChunks) {
+    return chunks.map((c, i) => (i < chunks.length - 1 ? c + CONTINUATION_FOOTER : c));
+  }
+  const kept = chunks.slice(0, maxChunks);
+  return kept.map((c, i) =>
+    i < kept.length - 1
+      ? c + CONTINUATION_FOOTER
+      : c.slice(0, reserved - TRUNCATION_NOTE.length) + TRUNCATION_NOTE,
+  );
 }
 
 /**

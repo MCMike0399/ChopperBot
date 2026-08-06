@@ -29,7 +29,12 @@ Y tranquilx: solo te muestra los canales **que tú puedes ver**. Lo que no es pa
 - **Un error ya no lo deja "trabado"**: antes, si una respuesta fallaba, el bot podía quedarse repitiendo el mismo error aunque le volvieras a preguntar. Ahora esos tropiezos se olvidan solos.
 - **Memoria de sesión larga**: en sesiones largas el bot va resumiendo lo trabajado, así que no pierde el hilo aunque lleven horas — y "limpiar" sigue borrando todo de verdad.
 - **Tus archivos viven en el canal**: lo que subes y lo que el bot genera queda como adjuntos en tu taller (por eso "limpiar" conserva los mensajes con archivos), y la Raspberry solo guarda una copia temporal que se limpia sola.
+- **Nunca más "texto raro" en el chat**: si el modelo se atora y empieza a escribir sus propias notas técnicas, ya no se publican — el bot rehace la respuesta. Y ninguna respuesta puede ocupar más de 5 mensajes.
+- **Con libros completos ya no se ahoga**: ahora los procesa con código (2–4 pasos y el archivo listo) en vez de intentar leerse el libro entero de a pedazos.
 - Menos vueltas en general: cuando algo no le sale, lo dice y propone alternativa en vez de insistir.
+
+### En los canales del servidor
+- **Ya se nota cuando está trabajando**: si una respuesta tarda más de 20 segundos, el bot deja un aviso chiquito ("🤔 Pensando… · 25s") que después se convierte en la respuesta. Antes solo se veía "escribiendo…" y si se cortaba parecía que se había trabado.
 
 ---
 
