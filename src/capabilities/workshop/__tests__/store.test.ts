@@ -79,4 +79,42 @@ describe('WorkshopStore sessions', () => {
     expect(store.getSession('c1')?.panel_message_id).toBe('panel-1');
     mem.close();
   });
+
+  test('summary round-trips and a context clear wipes it (borrón total)', async () => {
+    const { store, mem } = await newStore();
+    store.createSession({ ...base, channelId: 'c1' });
+    store.setSummary('c1', 'Trabajando el capítulo 2 de Federici.', 5000);
+    let s = store.getSession('c1')!;
+    expect(s.summary).toContain('Federici');
+    expect(s.summary_covers_until).toBe(5000);
+
+    store.clearContext('c1', 6000);
+    s = store.getSession('c1')!;
+    expect(s.summary).toBeNull();
+    expect(s.summary_covers_until).toBeNull();
+    expect(s.context_cleared_at).toBe(6000);
+    mem.close();
+  });
+});
+
+describe('WorkshopStore file manifest (Discord as durable store)', () => {
+  const base = { guildId: 'g1', userId: 'u1', userTag: 'user#1', nowMs: 1000 };
+
+  test('record → list → upsert → remove → delete-all', async () => {
+    const { store, mem } = await newStore();
+    store.createSession({ ...base, channelId: 'c1' });
+    store.recordFile({ channelId: 'c1', relPath: 'uploads/libro.pdf', messageId: 'm1', bytes: 100, nowMs: 1 });
+    store.recordFile({ channelId: 'c1', relPath: 'ensayo.docx', messageId: 'm2', bytes: 200, nowMs: 2 });
+    expect(store.fileManifest('c1').map((f) => f.rel_path)).toEqual(['ensayo.docx', 'uploads/libro.pdf']);
+
+    // Re-sending the same file updates the carrying message (upsert).
+    store.recordFile({ channelId: 'c1', relPath: 'ensayo.docx', messageId: 'm3', bytes: 250, nowMs: 3 });
+    expect(store.fileManifest('c1').find((f) => f.rel_path === 'ensayo.docx')?.message_id).toBe('m3');
+
+    store.removeFileRecord('c1', 'uploads/libro.pdf');
+    expect(store.fileManifest('c1')).toHaveLength(1);
+    store.deleteFileRecords('c1');
+    expect(store.fileManifest('c1')).toHaveLength(0);
+    mem.close();
+  });
 });

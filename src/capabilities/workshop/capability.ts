@@ -56,6 +56,8 @@ export class WorkshopCapability implements Capability {
   private interactionListener: ((i: Interaction) => void) | null = null;
   private channelDeleteListener: ((c: DMChannel | NonThreadGuildBasedChannel) => void) | null = null;
   private sessionCache: { ids: Set<string>; at: number } | null = null;
+  /** Hourly disk GC (Discord is the durable file store; the Pi is a cache). */
+  private gcTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly turnQueue: TurnQueue) {}
 
@@ -122,6 +124,13 @@ export class WorkshopCapability implements Capability {
     client.on(Events.ChannelDelete, this.channelDeleteListener);
 
     await this.watcher.ensureWelcomeMessage();
+
+    // Hourly disk GC; also one pass shortly after boot to clean leftovers of
+    // sessions closed while the bot was down. TTLs inside gcSweep gate what
+    // is actually dropped, so running it often is safe.
+    this.gcTimer = setInterval(() => void this.watcher?.gcSweep(), 60 * 60 * 1000);
+    setTimeout(() => void this.watcher?.gcSweep(), 60 * 1000);
+
     log.info(
       { capability: this.id, activeSessions: this.store.countSessions().active },
       'WorkshopCapability listeners registered',
@@ -137,6 +146,10 @@ export class WorkshopCapability implements Capability {
   }
 
   async dispose(): Promise<void> {
+    if (this.gcTimer) {
+      clearInterval(this.gcTimer);
+      this.gcTimer = null;
+    }
     if (!this.boundClient) return;
     if (this.messageListener) this.boundClient.off(Events.MessageCreate, this.messageListener);
     if (this.reactionListener) this.boundClient.off(Events.MessageReactionAdd, this.reactionListener);
