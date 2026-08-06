@@ -14,9 +14,15 @@ export function createClient(): Client {
     // not. What is lost without the intent: content of messages that do NOT
     // mention the bot (passive listeners, reply-chains without a ping).
     ...(config.DISCORD_MESSAGE_CONTENT_INTENT !== 'false' ? [GatewayIntentBits.MessageContent] : []),
+    // Reactions drive the workshop onboarding (react on the welcome message →
+    // get a private session channel). NOT privileged — no portal toggle needed.
+    GatewayIntentBits.GuildMessageReactions,
   ];
   return new Client({
     intents,
-    partials: [Partials.Channel, Partials.Message],
+    // Reaction + User partials: reactions on messages posted before this boot
+    // arrive partial (the welcome message usually predates the process), so the
+    // workshop listener must be able to `fetch()` them.
+    partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
   });
 }

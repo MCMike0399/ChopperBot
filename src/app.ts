@@ -1,6 +1,6 @@
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import type { Client } from 'discord.js';
+import type { Client, Message } from 'discord.js';
 import { config, getChannelCapabilityMap } from './config.js';
 import { log } from './log.js';
 import { SqliteMemoryStore, NamespacedMemory } from './memory/store.js';
@@ -14,6 +14,8 @@ import { GeneralChatCapability } from './capabilities/general_chat/capability.js
 import { InstagramMonitorCapability } from './capabilities/instagram_monitor/capability.js';
 import { FileScannerCapability } from './capabilities/file_scanner/capability.js';
 import { EventIntakeCapability } from './capabilities/event_intake/capability.js';
+import { WorkshopCapability } from './capabilities/workshop/capability.js';
+import { TurnQueue } from './discord/turn-queue.js';
 // NOTE: redacted-opsCapability (src/capabilities/redacted-ops/) is intentionally NOT
 // registered in this deployment. It's a read-only ops copilot for a specific
 // external platform — out of scope for the RevZ bot, and keeping it registered
@@ -60,12 +62,17 @@ export async function run(): Promise<void> {
   // event_intake reuses the calendar's tables/tools, so it must init AFTER the
   // calendar capability (whose migrations create calendar_events et al.).
   const eventIntakeCap = new EventIntakeCapability();
+  // One queue for ALL message-driven turns (main handler + workshop sessions):
+  // strict FIFO per channel, MAX_CONCURRENT_TURNS across channels.
+  const turnQueue = new TurnQueue({ maxConcurrent: config.MAX_CONCURRENT_TURNS });
+  const workshopCap = new WorkshopCapability(turnQueue);
   const candidates: Capability[] = [
     configCap,
     new CalendarCapability(),
     new InstagramMonitorCapability(),
     new FileScannerCapability(),
     eventIntakeCap,
+    workshopCap,
     new GeneralChatCapability(),
   ];
 
@@ -128,15 +135,27 @@ export async function run(): Promise<void> {
 
   // 4. Discord.
   client = createClient();
+  // Channels owned by a passive capability's own listener (event_intake's
+  // ticket categories, workshop's private session channels): the main
+  // mention handler stays out — no double-reply.
+  const claimGuards: Array<(message: Message) => boolean> = [];
+  if (registry.has(eventIntakeCap.id)) {
+    claimGuards.push((message) => eventIntakeCap.isClaimedChannel(message));
+  }
+  if (registry.has(workshopCap.id)) {
+    claimGuards.push((message) => workshopCap.isSessionChannel(message.channelId));
+    configCap.attachWorkshopAdmin({
+      adminCloseSession: (channelId) => workshopCap.adminCloseSession(channelId),
+      adminEnsureWelcome: () => workshopCap.adminEnsureWelcome(),
+    });
+  }
   registerHandlers(client, {
     registry,
     router,
     userDirectory,
-    // Let event_intake own its ticket categories (its own listener replies
-    // there) so the main mention handler doesn't also answer — no double-reply.
-    claimedChannel: registry.has(eventIntakeCap.id)
-      ? (message) => eventIntakeCap.isClaimedChannel(message)
-      : undefined,
+    turnQueue,
+    claimedChannel:
+      claimGuards.length > 0 ? (message) => claimGuards.some((g) => g(message)) : undefined,
   });
 
   const shutdown = async (signal: string) => {
