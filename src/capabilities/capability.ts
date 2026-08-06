@@ -4,6 +4,7 @@ import type { MemoryStore } from '../memory/store.js';
 import type { UserDirectory } from '../users/store.js';
 import type { CapabilityRegistry } from './registry.js';
 import type { MutableCapabilityRouter } from './routing.js';
+import type { ImageAttachmentRef } from '../attachments/resolver.js';
 
 /**
  * A Capability bundles one coherent mode of the bot: a system prompt, a set
@@ -90,6 +91,12 @@ export interface CapabilityTurnContext {
   userTag: string;
   /** Injected (not Date.now()) so capabilities are testable with frozen time. */
   now: Date;
+  /**
+   * Image attachments on the triggering message as URL references (no bytes —
+   * vision bytes ride the Turn separately). Lets a capability act on the image
+   * itself, e.g. the calendar setting it as a Discord event's cover image.
+   */
+  attachments?: ImageAttachmentRef[];
 }
 
 /** What a Capability returns to the orchestrator each turn. */

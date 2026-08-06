@@ -16,6 +16,7 @@ import { CalendarToolSource } from '../calendar/source.js';
 import type { CalendarPublisher } from '../calendar/publisher.js';
 import { createEventSyncer, type DiscordEventSyncer } from '../calendar/discord-events.js';
 import { formatInTimezone } from '../calendar/time.js';
+import { listImageAttachments } from '../../attachments/resolver.js';
 import { EventIntakeStore } from './store.js';
 import { isEventForm, parseTicketForm, extractRequesterId, type ParsedForm } from './parse.js';
 import {
@@ -199,6 +200,11 @@ export class EventIntakeWatcher {
 
     const isMod = await this.isModerator(message);
     const mentions = await this.resolveMentions(message);
+    // The newest image posted in the ticket is almost always the event flyer
+    // (requesters attach it right after opening — the Calibán ticket pattern).
+    // Only mod turns can do anything with it (the sync tool is mod-only), so
+    // non-mod turns skip the fetch.
+    const flyer = isMod ? await this.findLatestTicketImage(message) : null;
 
     const reaction = await message.react('🔍').catch(() => null);
     await message.channel.sendTyping().catch(() => {});
@@ -216,6 +222,7 @@ export class EventIntakeWatcher {
         requesterId,
         isMod,
         modMention: mentions.notifies ? mentions.text : '',
+        flyer,
       });
       const tools = composeToolSources([
         this.calendarSource(message, {
@@ -223,6 +230,7 @@ export class EventIntakeWatcher {
           onCreated: (id) => {
             createdEventId = id;
           },
+          imageUrls: flyer ? [flyer.url] : [],
         }),
       ]);
       log.info(
@@ -334,7 +342,7 @@ export class EventIntakeWatcher {
    */
   private calendarSource(
     message: Message,
-    opts: { write: boolean; onCreated?: (eventId: number) => void },
+    opts: { write: boolean; onCreated?: (eventId: number) => void; imageUrls?: readonly string[] },
   ): ToolSource {
     const include = opts.write ? [...READ_TOOLS, ...MOD_TOOLS] : [...READ_TOOLS];
     const inner = new CalendarToolSource(
@@ -342,7 +350,12 @@ export class EventIntakeWatcher {
       message.author?.id ?? 'event_intake',
       this.now(),
       opts.write ? this.deps.publisher : undefined,
-      { include, allowWrite: opts.write, syncer: opts.write ? this.makeSyncer(message) : undefined },
+      {
+        include,
+        allowWrite: opts.write,
+        syncer: opts.write ? this.makeSyncer(message) : undefined,
+        allowedImageUrls: opts.imageUrls ?? [],
+      },
     );
     const store = this.deps.store;
     const channelId = message.channelId;
@@ -387,23 +400,29 @@ export class EventIntakeWatcher {
    * the gap the daily announcement then has to apologise for. When the bot lacks
    * the permission, the line says so and asks the mods — which is strictly
    * better than silence.
+   *
+   * The newest image posted in the ticket (the flyer requesters attach right
+   * after opening) becomes the event's cover image automatically — before this,
+   * a mod had to open the Discord event and upload it by hand.
    */
   private async syncDiscordEventFor(message: GatewayMessage, eventId: number): Promise<string> {
     const syncer = this.makeSyncer(message);
     if (!syncer) return '';
-    const result = await syncer.sync(eventId).catch((err) => {
+    const flyer = await this.findLatestTicketImage(message);
+    const result = await syncer.sync(eventId, { imageUrl: flyer?.url ?? null }).catch((err) => {
       log.warn({ err, eventId }, 'event_intake.discord_event.sync_threw');
       return null;
     });
     if (!result) return '';
     if (result.ok) {
       log.info(
-        { eventId, discordEventId: result.discordEventId, created: result.created },
+        { eventId, discordEventId: result.discordEventId, created: result.created, imageSet: result.imageSet === true },
         'event_intake.discord_event.synced',
       );
+      const withBanner = result.imageSet === true;
       return result.created
-        ? `\n\n📅 Ya creé también el **evento de Discord** para que la gente se apunte:\n${result.url}`
-        : `\n\n📅 El evento de Discord ya existía:\n${result.url}`;
+        ? `\n\n📅 Ya creé también el **evento de Discord**${withBanner ? ' (con la portada que compartieron)' : ''} para que la gente se apunte:\n${result.url}`
+        : `\n\n📅 El evento de Discord ya existía${withBanner ? '; le puse la portada que compartieron' : ''}:\n${result.url}`;
     }
     log.warn({ eventId, reason: result.reason, message: result.message }, 'event_intake.discord_event.sync_failed');
     if (result.reason === 'missing_permission') {
@@ -414,6 +433,31 @@ export class EventIntakeWatcher {
       );
     }
     return '\n\n⚠️ No pude crear el evento de Discord; créenlo a mano en **Eventos → Crear evento** para que la gente se apunte.';
+  }
+
+  /**
+   * The newest image attachment anywhere in this ticket's recent history —
+   * almost always the event flyer (requesters attach it right after the
+   * welcome, before any approval). Our own posts and the ticket bot's are
+   * skipped. Null when there's none or the fetch fails (non-fatal everywhere).
+   */
+  private async findLatestTicketImage(
+    message: GatewayMessage,
+  ): Promise<{ url: string; name: string; authorId: string | null } | null> {
+    try {
+      const msgs = await message.channel.messages.fetch({ limit: 25 });
+      const newestFirst = [...msgs.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+      for (const m of newestFirst) {
+        if (m.author?.id === this.deps.botUserId || m.author?.id === this.deps.ticketBotId) continue;
+        const images = listImageAttachments(m);
+        if (images.length > 0) {
+          return { url: images[0]!.url, name: images[0]!.name, authorId: m.author?.id ?? null };
+        }
+      }
+    } catch (err) {
+      log.warn({ err, channelId: message.channelId }, 'event_intake.flyer_scan_failed');
+    }
+    return null;
   }
 
   // ── Helpers ───────────────────────────────────────────────────────────────

@@ -43,6 +43,29 @@ async function downloadBytes(url: string): Promise<Uint8Array> {
   }
 }
 
+/** An image attachment as a plain reference (no download) — for capabilities
+ * that can use the URL itself, e.g. setting a Discord event's cover image. */
+export interface ImageAttachmentRef {
+  url: string;
+  name: string;
+  contentType: string | null;
+}
+
+/**
+ * The image attachments on a message, WITHOUT downloading them — the same
+ * detection rule as {@link resolveAttachments} (content-type first, then file
+ * extension), so a file the vision path would reject is never advertised as a
+ * usable image either.
+ */
+export function listImageAttachments(message: Message): ImageAttachmentRef[] {
+  const out: ImageAttachmentRef[] = [];
+  for (const attachment of message.attachments.values()) {
+    if (!detectFormat(attachment)) continue;
+    out.push({ url: attachment.url, name: attachment.name, contentType: attachment.contentType ?? null });
+  }
+  return out;
+}
+
 /**
  * Resolve Discord message attachments into LLM-compatible Attachables. Only
  * image formats (png/jpeg/gif/webp) are supported — PDFs, csv, docx, etc.

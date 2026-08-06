@@ -13,6 +13,28 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.9.0 — 2026-08-06
+
+🖼️ **El evento de Discord queda completo solo: con su sala y su portada**
+
+Cuando se crea el evento de Discord (desde un ticket o desde el canal de gestión), ChopperBot ahora lo deja listo para que la gente se apunte, sin que lxs mods tengan que arreglarlo a mano:
+
+- **Portada automática.** Si en el ticket lxs compañerxs subieron el flyer, el evento de Discord se crea con esa imagen de portada. En el canal de gestión también pueden adjuntar una imagen y decir "pon esta portada" — incluso para un evento que ya existía.
+- **La sala se adivina.** Si el evento no dice dónde es, ChopperBot lo ubica por el título: "… | Club de poesía" cae en la Sala de Club de Poesía, "club de cine" en la Sala de Cineclub, y así. En los tickets ahora también pregunta una vez "¿en qué sala será?" para que quede bien enlazado.
+
+🔄 **El evento de Discord ya no se queda viejo**
+
+Antes, si movían la fecha o corregían el título de un evento, el evento de Discord se quedaba con los datos viejos y había que editarlo a mano. Ya no:
+
+- **Editar el calendario actualiza el evento de Discord solo** — nueva fecha/hora, título corregido, otra sala.
+- **Borrar un evento del calendario también elimina su evento de Discord**, para que nadie se apunte a algo que ya no va.
+
+📣 **El anuncio del día ahora sale con el flyer**
+
+El anuncio de las 10 de la mañana en 📣│anuncios ya no es solo texto con enlace: si el evento de Discord tiene portada, el anuncio la lleva adjunta, como cuando lxs admins lo anuncian a mano.
+
+---
+
 ## 1.8.0 — 2026-08-05
 
 📣 **ChopperBot ya avisa en anuncios cuando hay evento el mismo día**

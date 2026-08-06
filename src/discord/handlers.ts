@@ -3,7 +3,7 @@ import { log } from '../log.js';
 import { ask } from '../llm/client.js';
 import { chunkBotReply } from './chunk.js';
 import { buildHistory, normalizeTurns, type Turn } from './history.js';
-import { resolveAttachments } from '../attachments/resolver.js';
+import { resolveAttachments, listImageAttachments } from '../attachments/resolver.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { CapabilityRouter } from '../capabilities/routing.js';
 import { GENERAL_CHAT_CAPABILITY_ID } from '../capabilities/general_chat/constants.js';
@@ -107,6 +107,7 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
           userId: message.author.id,
           userTag: message.author.tag,
           now: new Date(),
+          attachments: listImageAttachments(message),
         });
 
         log.info(

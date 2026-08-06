@@ -28,6 +28,7 @@ import { parseChannelIdEnv } from '../file_scanner/store.js';
 import { EventIntakeStore } from '../event_intake/store.js';
 import { resolveAnnounceSettings } from './announce-settings.js';
 import type { MutableCapabilityRouter } from '../routing.js';
+import type { ImageAttachmentRef } from '../../attachments/resolver.js';
 
 /** Capability id, also the key the router binds the management channel under. */
 export const CALENDAR_CAPABILITY_ID = 'calendar';
@@ -112,7 +113,16 @@ export class CalendarCapability implements Capability {
 
     const upcoming = store.listUpcoming(ctx.now.getTime(), SNAPSHOT_LIMIT);
     const outputChannelId = this.resolveOutputChannel();
-    const system = renderSystemPrompt(ctx.now, upcoming, outputChannelId, this.resolveAnnounceChannel());
+    // Images the mod attached to THIS message — offered to the model as banner
+    // candidates, and the exact allowlist the sync tool validates against.
+    const imageAttachments = ctx.attachments ?? [];
+    const system = renderSystemPrompt(
+      ctx.now,
+      upcoming,
+      outputChannelId,
+      this.resolveAnnounceChannel(),
+      imageAttachments,
+    );
 
     // Build a publisher only when the Discord client is available (i.e. at
     // runtime post-login). Absent in unit tests → the tools just skip posting.
@@ -141,7 +151,10 @@ export class CalendarCapability implements Capability {
       }
     }
 
-    const source = new CalendarToolSource(store, ctx.userId, ctx.now.getTime(), publisher, { syncer });
+    const source = new CalendarToolSource(store, ctx.userId, ctx.now.getTime(), publisher, {
+      syncer,
+      allowedImageUrls: imageAttachments.map((a) => a.url),
+    });
     return { system, tools: composeToolSources([source]) };
   }
 
@@ -369,6 +382,7 @@ function renderSystemPrompt(
   upcoming: CalendarOccurrence[],
   outputChannelId: string | null,
   announceChannelId: string | null,
+  imageAttachments: ImageAttachmentRef[] = [],
 ): string {
   const upcomingSection = upcoming.length === 0
     ? 'No hay eventos próximos.'
@@ -387,6 +401,15 @@ function renderSystemPrompt(
   const outputRef = outputChannelId ? `<#${outputChannelId}>` : '(no configurado)';
   const announceRef = announceChannelId ? ` <#${announceChannelId}>` : '';
 
+  const attachmentsSection = imageAttachments.length === 0
+    ? ''
+    : `
+# Imágenes adjuntas en ESTE mensaje
+La persona adjuntó ${imageAttachments.length === 1 ? 'una imagen' : `${imageAttachments.length} imágenes`} en su mensaje. Si la quiere como **portada del evento de Discord** ("pon esta imagen de portada", "usa este flyer"), llama \`calendar_sync_discord_event\` pasando \`image_url\` EXACTAMENTE una de estas (no inventes ni modifiques ninguna):
+${imageAttachments.map((a) => `- ${a.url} (${a.name})`).join('\n')}
+Si acaba de crear un evento y subió la imagen en el mismo mensaje, ofrécelo tú una vez: *"¿la pongo de portada del evento de Discord?"*
+`;
+
   return `Eres ChopperBot en **modo Calendario**. Administras el **calendario GLOBAL** del servidor Revolución Z: un solo calendario compartido por toda la comunidad. Cualquier moderadorx de este canal puede crear, editar o borrar eventos, y todxs ven los mismos.
 
 # Tu rol
@@ -402,6 +425,9 @@ Un evento del calendario y un **evento de Discord** (los "Eventos" del servidor,
 Con \`calendar_sync_discord_event\` puedes crear el evento de Discord de un evento del calendario y dejarlos ligados. Cuándo usarlo:
 - Cuando alguien te lo pida ("crea el evento de Discord", "súbelo a eventos", "haz el evento para que se apunten").
 - **Ofrécelo tú** justo después de crear un evento al que valga la pena que la comunidad se apunte: *"¿quieres que cree también el evento de Discord para que la gente se apunte?"* — una vez, sin insistir.
+- **Portada:** si la persona adjuntó una imagen (mira "Imágenes adjuntas" más abajo, cuando exista), pásala como \`image_url\` para que quede de portada. También sirve para ponerle o cambiarle la portada a un evento de Discord que ya existía.
+- **La sala se resuelve sola:** si el evento tiene \`location\` ("sala de cineclub", "Asamblea-Z"), el evento de Discord se crea en ese canal de voz/escenario; si no tiene, intento adivinarla por el título ("… | Club de poesía" cae en la Sala de Club de Poesía). Si la persona menciona dónde será, guárdalo como \`location\` del evento del calendario y se usará.
+- **Sincronía automática (nuevo):** cuando EDITES o BORRES un evento que ya tiene un evento de Discord ligado, el evento de Discord **se actualiza o se elimina solo** (mover fecha/hora, corregir título, cancelar). El resultado de la herramienta trae \`discord_event\` con lo que pasó — menciónalo en tu confirmación ("también actualicé el evento de Discord", "también eliminé el evento de Discord").
 - Si la herramienta responde \`missing_permission\`, di claramente que al bot le falta el permiso **Gestionar eventos** del servidor (un admin lo activa en Ajustes del servidor → Roles → ChopperBot) y que mientras tanto lo cree un mod a mano.
 
 # Conversación de seguimiento (IMPORTANTE)
@@ -464,7 +490,7 @@ Un agradecimiento o cierre social ("gracias", "va", "ok", "listo", "perfecto", "
 
 # Antes de crear: revisa duplicados
 Llama \`calendar_search_events\` con el título (o parte) antes de crear, y si ya existe algo muy parecido el mismo día, avísale a la persona en vez de duplicar.
-
+${attachmentsSection}
 # Próximos eventos (calendario global)
 ${upcomingSection}
 `;
