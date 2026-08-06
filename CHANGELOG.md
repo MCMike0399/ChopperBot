@@ -13,6 +13,23 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.10.0 — 2026-08-06
+
+🧠 **ChopperBot ahora es el asistente de la comunidad en cualquier canal**
+
+Antes, si le hablabas fuera de sus canales de chamba, solo se presentaba y te mandaba a otro lado. Ahora es un compa más: en cualquier canal donde no tenga una tarea especializada pueden hablarle de lo que sea.
+
+- **Conoce Revolución Z.** Sabe quiénes somos, qué dicen los estatutos, cómo se organizan las comisiones y los clubs, y para qué sirve cada canal. Pregúntenle "¿cómo me uno a una comisión?", "¿dónde propongo un círculo de estudio?" o "¿qué es el FUP?" y los orienta.
+- **Opina como compa, no como robot de oficina.** Habla desde los principios del colectivo que aprobamos en asamblea, con argumentos y sin tibiezas — se acabó eso de "no tengo opiniones personales". Y sí, aguanta el cotorreo.
+- **Sabe qué eventos vienen.** Si le preguntan "¿qué hay esta semana?" o "¿cuándo es el club de poesía?", consulta el calendario del servidor y responde con datos reales.
+- Sigue sin hacer chamba de moderación: denuncias y apelaciones van por ticket, y agendar eventos es en 🗓️│chat-gestión o por ticket. Y ya no presume funciones ajenas al servidor.
+
+🔧 **Adiós al "I couldn't generate a response"**
+
+Cuando le llegaban dos mensajes casi al mismo tiempo, a veces contestaba ese mensajote en inglés en vez de responder. Ahora reintenta solo y, si de plano no puede, avisa en español.
+
+---
+
 ## 1.9.0 — 2026-08-06
 
 🖼️ **El evento de Discord queda completo solo: con su sala y su portada**

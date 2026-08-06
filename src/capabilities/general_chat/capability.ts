@@ -1,6 +1,9 @@
+import type Database from 'better-sqlite3';
 import type { Client, Guild } from 'discord.js';
 import { log } from '../../log.js';
-import { composeToolSources } from '../../tools/source.js';
+import { composeToolSources, type ToolSource } from '../../tools/source.js';
+import { CalendarStore } from '../calendar/store.js';
+import { CalendarToolSource } from '../calendar/source.js';
 import type {
   Capability,
   CapabilityInitDeps,
@@ -10,42 +13,62 @@ import type {
 import { CONFIGURATION_CAPABILITY_ID } from '../configuration/constants.js';
 import { GENERAL_CHAT_CAPABILITY_ID } from './constants.js';
 import {
+  renderAssistantPrompt,
   renderGeneralChatPrompt,
   type CapabilityBindingSnapshot,
   type CapabilitySnapshotEntry,
 } from './preamble.js';
+import { guildProfileFor } from './profile.js';
+
+/** Read-only calendar tools the assistant gets in guilds with a profile, so
+ * "¿qué eventos hay esta semana?" is answerable from any channel. Writes stay
+ * in the calendar channel / ticket funnel — never here. */
+const ASSISTANT_CALENDAR_TOOLS = [
+  'calendar_list_upcoming',
+  'calendar_search_events',
+  'calendar_get_event',
+] as const;
 
 /**
- * Baseline conversational mode for ChopperBot. Not bound to any channel —
- * runs as the fallback whenever the bot is @-mentioned in a channel that has
- * no specialized capability bound, inside a guild the bot is already in.
+ * Baseline mode for ChopperBot — the community assistant. Not bound to any
+ * channel: runs as the fallback whenever the bot is @-mentioned in a channel
+ * with no specialized capability bound, inside a guild the bot is already in.
  *
- * Has no tools. Its system prompt embeds a per-turn snapshot of the other
- * registered capabilities and the channels they live in, so the LLM can
- * redirect users to the right place (e.g. "ese capability vive en #ig-monitor:
- * https://discord.com/channels/.../...").
+ * In a guild WITH a profile (see profile.ts — today: Revolución Z) it answers
+ * as a member of the collective: the system prompt carries the curated
+ * community primer (identity, Estatutos, structure, key channels) and the turn
+ * gets read-only calendar tools. In any other guild it keeps the original
+ * behavior: a generic intro + redirect prompt with no tools.
  *
- * The `configuration` capability is intentionally excluded from the snapshot
- * (admin-only), and this capability never lists itself.
+ * Both variants embed a per-turn snapshot of the other registered capabilities
+ * and the channels they live in, so the LLM can redirect users to the right
+ * place (e.g. "eso vive en #chat-gestión"). The `configuration` capability is
+ * intentionally excluded from the snapshot (admin-only), and this capability
+ * never lists itself.
  */
 export class GeneralChatCapability implements Capability {
   readonly id = GENERAL_CHAT_CAPABILITY_ID;
   readonly description =
-    'Conversación base de ChopperBot. Presenta el bot y redirige al canal correcto cuando el usuario pide algo que vive en otra capacidad.';
+    'Asistente de la comunidad y conversación base de ChopperBot. Responde desde los principios del servidor, orienta a los canales correctos y consulta el calendario en solo lectura.';
 
   private getDiscordClient: CapabilityInitDeps['getDiscordClient'] = undefined;
   private getRegistry: CapabilityInitDeps['getRegistry'] = undefined;
   private getRouter: CapabilityInitDeps['getRouter'] = undefined;
+  /** Shared DB handle for the read-only calendar tools. The calendar tables
+   * are created by CalendarCapability's own migrations, which init()s earlier
+   * in app.ts's candidates list — same reuse pattern as event_intake. */
+  private db: Database.Database | null = null;
 
   async init(deps: CapabilityInitDeps): Promise<void> {
     await deps.memory.migrate(this.id, []);
     this.getDiscordClient = deps.getDiscordClient;
     this.getRegistry = deps.getRegistry;
     this.getRouter = deps.getRouter;
+    this.db = deps.memory.db();
     log.info({ capability: this.id }, 'GeneralChatCapability initialized');
   }
 
-  async buildTurn(_ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
+  async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
     if (!this.getDiscordClient || !this.getRegistry || !this.getRouter) {
       throw new Error(
         'GeneralChatCapability missing handles (registry/router/client). Was init() called?',
@@ -56,10 +79,44 @@ export class GeneralChatCapability implements Capability {
       this.getRouter(),
       this.getDiscordClient(),
     );
+
+    const profile = guildProfileFor(ctx.guildId);
+    if (!profile) {
+      return {
+        system: renderGeneralChatPrompt(ctx.now, snapshot),
+        tools: composeToolSources([]),
+      };
+    }
+
+    const sources: ToolSource[] = [];
+    if (profile.calendarReadTools && this.db) {
+      sources.push(
+        new CalendarToolSource(new CalendarStore(this.db), ctx.userId, ctx.now.getTime(), undefined, {
+          include: ASSISTANT_CALENDAR_TOOLS,
+          allowWrite: false,
+        }),
+      );
+    }
     return {
-      system: renderGeneralChatPrompt(_ctx.now, snapshot),
-      tools: composeToolSources([]),
+      system: renderAssistantPrompt(
+        profile,
+        ctx.now,
+        snapshot,
+        this.resolveChannelName(ctx.channelId),
+      ),
+      tools: composeToolSources(sources),
     };
+  }
+
+  /** Channel name for the "estás hablando en #…" tone cue; null on cache miss
+   * (the prompt just omits the line — never block a turn on it). */
+  private resolveChannelName(channelId: string): string | null {
+    try {
+      const channel = this.getDiscordClient?.().channels.cache.get(channelId);
+      return channel && 'name' in channel && channel.name ? (channel.name as string) : null;
+    } catch {
+      return null;
+    }
   }
 
   private buildCapabilitySnapshot(
