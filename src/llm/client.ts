@@ -319,6 +319,8 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
   // 2026-08-05: the user got the fallback string as the reply). Retry the
   // completion a bounded number of times before giving up.
   let emptyRetries = 0;
+  /** Set when visible text was discarded as scaffolding — forces a clean pass. */
+  let degenerate = false;
 
   // Per-turn dedup cache: identical (toolName, inputJson) returns the cached
   // result. Only cache successes; errors get retried (the model usually fixes
@@ -373,7 +375,18 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
     });
 
     if (choice.finish_reason !== 'tool_calls' || toolCalls.length === 0) {
-      finalText = extractText(typeof assistantMsg.content === 'string' ? assistantMsg.content : '');
+      const raw = typeof assistantMsg.content === 'string' ? assistantMsg.content : '';
+      finalText = extractText(raw);
+      // Degenerate scaffolding is worse than nothing: treat it as empty so the
+      // retry / forcing path produces real prose instead of showing the loop.
+      if (finalText && isDegenerateOutput(finalText)) {
+        log.warn(
+          { chars: finalText.length, finishReason: lastFinishReason },
+          'llm.degenerate_output_discarded',
+        );
+        finalText = '';
+        degenerate = true;
+      }
       if (!finalText) {
         // Empty content on a non-tool finish: drop the empty assistant echo so
         // the retry resends the same convo, and give the model another shot.
@@ -440,13 +453,23 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
     }
   }
 
-  // Forcing pass: out of iterations while still calling tools → one more
-  // completion WITHOUT `tools` so the model synthesizes a text answer.
-  if (!finalText && lastFinishReason === 'tool_calls') {
+  // Forcing pass without `tools` so the model must synthesize prose. Runs when
+  // we ran out of iterations mid-tool-calling, OR when the model lost the
+  // tool-call protocol and emitted scaffolding as text (removing the tools is
+  // exactly what un-sticks that).
+  if (!finalText && (lastFinishReason === 'tool_calls' || degenerate)) {
     log.info(
-      { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
-      'Forcing final answer without tools (iteration cap reached)',
+      { iterations: trace.iterations, toolCalls: trace.toolCalls.length, degenerate },
+      'Forcing final answer without tools',
     );
+    if (degenerate) {
+      convo.push({
+        role: 'user',
+        content:
+          'Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. ' +
+          'Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea.',
+      });
+    }
     safePhase(onPhase, 'thinking');
     try {
       const forced = await observedCompletion(() =>
@@ -465,6 +488,10 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
       lastFinishReason = forced.choices?.[0]?.finish_reason ?? lastFinishReason;
       const forcedContent = forced.choices?.[0]?.message?.content;
       finalText = typeof forcedContent === 'string' ? extractText(forcedContent) : '';
+      if (finalText && isDegenerateOutput(finalText)) {
+        log.warn('llm.degenerate_output_discarded_on_forcing');
+        finalText = '';
+      }
     } catch (err) {
       log.error({ err }, 'Forcing pass failed');
     }
@@ -708,7 +735,8 @@ function extractTextBlocks(blocks: ContentBlock[]): string {
  * inlines into visible text (some models — e.g. Amazon Nova — leak it) so raw
  * chain-of-thought never reaches Discord, then trim. Kimi returns reasoning in a
  * separate `reasoning_content` field, so its visible content is already clean —
- * this is defensive. */
+ * this is defensive. `<tool_call>` blocks are stripped for the same reason: a
+ * confused model sometimes writes the call as TEXT instead of emitting it. */
 function extractText(text: string): string {
   return text
     // Well-formed <thinking>…</thinking> / <think>…</think> blocks.
@@ -717,7 +745,40 @@ function extractText(text: string): string {
     // opening tag to the first blank line, then any stray lone tags.
     .replace(/^\s*<think(?:ing)?>[\s\S]*?(?:\n\s*\n|$)/i, '')
     .replace(/<\/?think(?:ing)?>/gi, '')
+    // Tool-call scaffolding written as prose (see isDegenerateOutput).
+    .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/gi, '')
+    .replace(/<\/?tool_call>/gi, '')
     .trim();
+}
+
+/**
+ * Whether visible model text is DEGENERATE — self-directed scaffolding rather
+ * than an answer for the user. Live 2026-08-06: after a 147k-input-token turn,
+ * Kimi lost the tool-call protocol and posted ~8 Discord messages of
+ * "Use the tool. Done. Now. {"name": "workshop_read_file", "arguments": …}"
+ * into a member's private taller. Such text must never be shown; the caller
+ * retries and then forces a tools-free pass to get real prose.
+ *
+ * Deliberately narrow (a legitimate answer may quote a tool name or JSON):
+ * requires either a raw tool-call envelope, or several distinct scaffolding
+ * tells at once.
+ */
+export function isDegenerateOutput(text: string): boolean {
+  const t = text.trim();
+  if (!t) return false;
+  // A bare tool-call envelope written as text.
+  if (/<tool_call>|<\|tool_call/i.test(t)) return true;
+  if (/^\{\s*"(?:tool_)?name"\s*:\s*"[\w.]+"\s*,\s*"(?:arguments|parameters)"\s*:/i.test(t)) {
+    return true;
+  }
+  const tells = [
+    /\buse (?:the )?tool\b/gi,
+    /\b(?:tool_name|"arguments"|"parameters")\b/gi,
+    /\b(?:let'?s go|i'?ll output|now\.? end|stop\.? use)\b/gi,
+  ];
+  const hits = tells.reduce((acc, re) => acc + (t.match(re)?.length ?? 0), 0);
+  // Loop-y self-talk repeats its tells many times; prose does not.
+  return hits >= 5;
 }
 
 function buildMessage(turn: Turn): Message {

@@ -69,7 +69,8 @@ ${filesBlock}${uploadsLine}
 # Reglas
 - Entregables SIEMPRE como archivo real (workshop_run_python → workshop_send_file), no como bloque de texto gigante — a menos que el usuario prefiera el texto.
 - **NUNCA anuncies trabajo futuro** ("ahora te armo el documento", "en un momento lo genero"): el documento se crea EN ESTA MISMA VUELTA con tus herramientas, o explicas qué te falta para crearlo. Tu respuesta final llega cuando el archivo ya está enviado.
-- **Textos largos (libros, apuntes extensos): NO los cargues completos leyéndolos con workshop_read_file.** Procesa con Python: extrae con código las partes que necesitas (primeras páginas de cada capítulo, búsquedas de términos, conteos) e imprime SOLO esos extractos. Para un entregable por capítulos, genera el documento incrementalmente en UN script (leer capítulo → escribir sección → siguiente), no metiendo todo el libro a la conversación.
+- **Textos largos (libros, apuntes extensos): NO los cargues leyéndolos con workshop_read_file** — hay un presupuesto de contexto por vuelta y si lo agotas te quedas sin poder responder. Procesa con Python: extrae por código lo que necesitas e imprime SOLO extractos cortos. Para un entregable por capítulos, hazlo en UN script que recorra los capítulos y escriba el documento (leer capítulo → escribir sección → siguiente); el texto del libro nunca tiene que pasar por la conversación.
+- Con un libro completo lo esperado son ~2–4 ejecuciones de Python y un archivo entregado, no diez lecturas de archivos.
 - Si un código falla, corrige y reintenta tú (hasta 2 veces) antes de reportar el error.
 - No inventes contenido de archivos que no has leído; usa workshop_read_file / Python.
 - Este es un espacio de apoyo académico honesto: ayuda a ENTENDER y a producir; si te piden hacer trampa en un examen en vivo, sugiere mejor prepararlo juntos.
