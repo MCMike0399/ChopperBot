@@ -3,6 +3,8 @@ import { log } from '../log.js';
 import { ask } from '../llm/client.js';
 import { chunkBotReply } from './chunk.js';
 import { buildHistory, normalizeTurns, type Turn } from './history.js';
+import { StatusReactor } from './status-reactions.js';
+import { QueueBusyError, type TurnQueue } from './turn-queue.js';
 import { resolveAttachments, listImageAttachments } from '../attachments/resolver.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { CapabilityRouter } from '../capabilities/routing.js';
@@ -14,6 +16,12 @@ export interface HandlerDeps {
   router: CapabilityRouter;
   userDirectory: UserDirectory;
   /**
+   * Orders turns per channel (strict FIFO) and caps how many run at once
+   * globally — the "two messages at the same time" fix. Shared with the
+   * workshop watcher so private-session turns count against the same cap.
+   */
+  turnQueue: TurnQueue;
+  /**
    * Optional guard for channels "claimed" by a passive capability that runs its
    * own MessageCreate listener (e.g. event_intake owns the ticket categories).
    * When it returns true, the main mention-gated handler stays out so the
@@ -21,6 +29,10 @@ export interface HandlerDeps {
    */
   claimedChannel?: (message: Message) => boolean;
 }
+
+/** Reply when a channel's queue is already packed (anti-spam backstop). */
+export const QUEUE_BUSY_REPLY =
+  'Tengo varias respuestas pendientes en este canal — dame un momento y vuelve a intentarlo.';
 
 /** Last-resort reply when the turn threw. Spanish and user-facing — the reader
  * is a community member, so it says what happened and invites a retry rather
@@ -71,73 +83,95 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
       // rank by recency.
       deps.userDirectory.upsert(message.author.id, message.author.tag, Date.now());
 
-      // Visible "I heard you and I'm working" signal: a 🔍 reaction on the
-      // user's message during the search+synth phase. Discord's typing
-      // indicator covers the writing tail, but is too subtle for the long
-      // tool-call phase. Reactions are instant and don't add a message
-      // to the channel. Removed in `finally` so success/failure both
-      // clean up; if removal fails (rate limit, perms), it's a no-op.
-      const reaction = await message.react('🔍').catch(() => null);
-      await message.channel.sendTyping().catch(() => {});
-      const typingHeartbeat = setInterval(() => {
-        message.channel.sendTyping().catch(() => {});
-      }, 8000);
+      // Visible progress on the user's message: ⏳ queued → 🤔 thinking → 🛠️
+      // tools → removed on success / ❌ on failure. Reactions are instant and
+      // don't add messages; the typing indicator still covers the writing tail.
+      const reactor = new StatusReactor(message, client.user?.id);
 
       let reply: string;
       try {
-        const capabilityId = deps.router.resolve(message.channelId);
-        let capability = capabilityId ? deps.registry.get(capabilityId) : undefined;
-        if (!capability) {
-          // Fallback: any unbound channel in a guild the bot is in falls
-          // through to general_chat for a conversational intro + redirect.
-          capability = deps.registry.get(GENERAL_CHAT_CAPABILITY_ID);
-        }
-        if (!capability) {
-          log.error(
-            { channelId: message.channelId, capabilityId },
-            'No capability resolvable for channel (general_chat not registered either) — refusing to answer',
-          );
+        // Per-channel FIFO + global cap. History is built INSIDE the queued
+        // task, so a message queued behind another sees the earlier reply.
+        reply = await deps.turnQueue.run(
+          message.channelId,
+          async () => {
+            reactor.set('thinking');
+            await message.channel.sendTyping().catch(() => {});
+            const typingHeartbeat = setInterval(() => {
+              message.channel.sendTyping().catch(() => {});
+            }, 8000);
+            try {
+              const capabilityId = deps.router.resolve(message.channelId);
+              let capability = capabilityId ? deps.registry.get(capabilityId) : undefined;
+              if (!capability) {
+                // Fallback: any unbound channel in a guild the bot is in falls
+                // through to general_chat for a conversational intro + redirect.
+                capability = deps.registry.get(GENERAL_CHAT_CAPABILITY_ID);
+              }
+              if (!capability) {
+                log.error(
+                  { channelId: message.channelId, capabilityId },
+                  'No capability resolvable for channel (general_chat not registered either) — refusing to answer',
+                );
+                return '';
+              }
+
+              const history = await buildHistory(client, message);
+              const attachments = await resolveAttachments(message);
+              const turns: Turn[] = normalizeTurns([
+                ...history,
+                { role: 'user', content: userText, attachments },
+              ]);
+
+              const turn = await capability.buildTurn({
+                channelId: message.channelId,
+                guildId: message.guildId,
+                userId: message.author.id,
+                userTag: message.author.tag,
+                now: new Date(),
+                attachments: listImageAttachments(message),
+              });
+
+              log.info(
+                {
+                  capability: capability.id,
+                  user: message.author.tag,
+                  len: userText.length,
+                  historyTurns: history.length,
+                  attachments: attachments.length,
+                },
+                'Answering question',
+              );
+
+              return ask({
+                system: turn.system,
+                messages: turns,
+                tools: turn.tools,
+                onPhase: (phase) => reactor.set(phase),
+              });
+            } finally {
+              clearInterval(typingHeartbeat);
+            }
+          },
+          { onQueued: () => reactor.set('queued') },
+        );
+      } catch (err) {
+        reactor.fail();
+        if (err instanceof QueueBusyError) {
+          await message.reply(QUEUE_BUSY_REPLY).catch(() => {});
           return;
         }
-
-        const history = await buildHistory(client, message);
-        const attachments = await resolveAttachments(message);
-        const turns: Turn[] = normalizeTurns([
-          ...history,
-          { role: 'user', content: userText, attachments },
-        ]);
-
-        const turn = await capability.buildTurn({
-          channelId: message.channelId,
-          guildId: message.guildId,
-          userId: message.author.id,
-          userTag: message.author.tag,
-          now: new Date(),
-          attachments: listImageAttachments(message),
-        });
-
-        log.info(
-          {
-            capability: capability.id,
-            user: message.author.tag,
-            len: userText.length,
-            historyTurns: history.length,
-            attachments: attachments.length,
-          },
-          'Answering question',
-        );
-
-        reply = await ask({ system: turn.system, messages: turns, tools: turn.tools });
-      } finally {
-        clearInterval(typingHeartbeat);
-        if (reaction && client.user) {
-          await reaction.users.remove(client.user.id).catch(() => {});
-        }
+        throw err;
+      }
+      if (!reply) {
+        reactor.resolve();
+        return;
       }
 
       const parts = chunkBotReply(reply);
 
       let anchor = await message.reply(parts[0]);
+      reactor.resolve();
       for (let i = 1; i < parts.length; i++) {
         anchor = await anchor.reply({
           content: parts[i],
