@@ -22,6 +22,12 @@ export interface HandlerDeps {
   claimedChannel?: (message: Message) => boolean;
 }
 
+/** Last-resort reply when the turn threw. Spanish and user-facing — the reader
+ * is a community member, so it says what happened and invites a retry rather
+ * than telling them to read the logs. */
+export const GENERIC_ERROR_REPLY =
+  'Se me atravesó un error al responder eso. Inténtalo de nuevo en un momento.';
+
 export function registerHandlers(client: Client, deps: HandlerDeps): void {
   client.once(Events.ClientReady, (c) => {
     log.info(
@@ -140,9 +146,13 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
       }
     } catch (err) {
       log.error({ err }, 'Failed to handle message');
-      await message
-        .reply('Sorry, I hit an error answering that — check the logs.')
-        .catch(() => {});
+      // Spanish, and free of operator instructions: this lands in a community
+      // channel, not in the config channel. (2026-08-06: a member asked a
+      // political question, the provider's risk filter refused the prompt, and
+      // the channel got the English "check the logs" — which read as the bot
+      // brushing the question off. The filter case now recovers inside ask();
+      // this is the generic last resort.)
+      await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
     }
   });
 }

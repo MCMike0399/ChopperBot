@@ -18,6 +18,11 @@ import { log } from '../log.js';
  *   self-heal, so alert on the FIRST one.
  * - **Transient errors** (429/5xx/network/timeouts) can self-heal, so alert
  *   only after `TRANSIENT_ALERT_THRESHOLD` consecutive failures.
+ * - **Content-filter rejections** (the provider's own risk/moderation filter
+ *   refusing ONE prompt) are neither: the service is healthy and every other
+ *   prompt still works, so they NEVER alert and never count toward the
+ *   consecutive-failure streak. They're counted separately and surfaced in
+ *   `config_system action:health` so a spike is still visible.
  * - At most one failure alert per `ALERT_COOLDOWN_MS` (the error text can
  *   change while the underlying outage is the same).
  * - One recovery notice when a request succeeds after an alerted streak.
@@ -30,7 +35,45 @@ export type LlmAlertSink = (lines: string[]) => Promise<void>;
 export const TRANSIENT_ALERT_THRESHOLD = 3;
 export const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
-export type LlmErrorKind = 'deterministic' | 'transient';
+export type LlmErrorKind = 'deterministic' | 'transient' | 'content_filter';
+
+/**
+ * The provider's own risk/moderation filter refused this prompt.
+ *
+ * Motivating incident (2026-08-06 09:57 CST): a member asked general_chat what
+ * the server should do about people who support China, and Moonshot answered
+ * `400 The request was rejected because it was considered high risk`
+ * (`param: "prompt"`). Under the old rules that was a *deterministic* 400 —
+ * i.e. "API key inválida / modelo sin acceso, no se va a resolver solo" — so it
+ * paged the admin channel and flipped health to degraded, when in fact the
+ * backend was perfectly healthy: every other prompt that minute answered fine,
+ * and the SAME prompt answered on a re-run (the filter is probabilistic).
+ *
+ * Recognizing this is worth the string match precisely because the failure is
+ * per-prompt: it must not be retried as a config fix, must not page anyone,
+ * and — see ask() in client.ts — is the one case where a retry (and then the
+ * Bedrock path) is the right recovery instead of surfacing an error.
+ *
+ * Kept deliberately narrow: a genuine bad-parameter 400 (`temperature`,
+ * unknown field, bad model id) has none of these phrases and must keep its
+ * first-failure page.
+ */
+export function isContentFilterRejection(err: unknown): boolean {
+  const e = err as { status?: unknown; $metadata?: { httpStatusCode?: unknown } };
+  const status =
+    typeof e?.status === 'number'
+      ? e.status
+      : typeof e?.$metadata?.httpStatusCode === 'number'
+        ? e.$metadata.httpStatusCode
+        : undefined;
+  // Moderation refusals come back as a client error (Moonshot: 400; some
+  // gateways use 403/451). Never treat a 5xx or a throttle as one.
+  if (status !== undefined && status !== 400 && status !== 403 && status !== 451) return false;
+  const msg = err instanceof Error ? err.message : String(err ?? '');
+  return /considered high risk|high[\s_-]?risk|risk[\s_-]?control|content[\s_-]?filter|content_policy|moderation|blocked by (?:the )?(?:safety|content)|safety (?:filter|policy)|输入不合法|敏感/i.test(
+    msg,
+  );
+}
 
 /**
  * Classify an error from either backend. OpenAI SDK errors (Kimi) carry the
@@ -41,8 +84,12 @@ export type LlmErrorKind = 'deterministic' | 'transient';
  * identically on every retry. As a fallback when no status is present, a few
  * AWS exception `name`s are mapped explicitly (Throttling is transient; the
  * Validation/AccessDenied/ResourceNotFound family is deterministic).
+ *
+ * Content-filter refusals are checked FIRST: they arrive as a 400 but say
+ * nothing about the bot's configuration.
  */
 export function classifyLlmError(err: unknown): LlmErrorKind {
+  if (isContentFilterRejection(err)) return 'content_filter';
   const e = err as { status?: unknown; $metadata?: { httpStatusCode?: unknown }; name?: unknown };
   const status =
     typeof e?.status === 'number'
@@ -82,6 +129,12 @@ export interface LlmHealthSnapshot {
   last_error: string | null;
   last_error_kind: LlmErrorKind | null;
   last_alert_at_iso: string | null;
+  /** Prompts the provider's risk/moderation filter refused. NOT an outage — the
+   * backend is healthy — but a spike means members are hitting the filter, so
+   * it's counted and reported instead of being silently swallowed. */
+  content_filter_rejections: number;
+  last_content_filter_at_iso: string | null;
+  last_content_filter_error: string | null;
 }
 
 export class LlmHealthMonitor {
@@ -95,6 +148,9 @@ export class LlmHealthMonitor {
   private lastFailureAtMs: number | null = null;
   private lastError: string | null = null;
   private lastErrorKind: LlmErrorKind | null = null;
+  private contentFilterRejections = 0;
+  private lastContentFilterAtMs: number | null = null;
+  private lastContentFilterError: string | null = null;
 
   setSink(sink: LlmAlertSink | null): void {
     this.sink = sink;
@@ -114,6 +170,9 @@ export class LlmHealthMonitor {
       last_error: this.lastError,
       last_error_kind: this.lastErrorKind,
       last_alert_at_iso: iso(this.lastAlertAtMs),
+      content_filter_rejections: this.contentFilterRejections,
+      last_content_filter_at_iso: iso(this.lastContentFilterAtMs),
+      last_content_filter_error: this.lastContentFilterError,
     };
   }
 
@@ -132,8 +191,23 @@ export class LlmHealthMonitor {
   }
 
   reportFailure(err: unknown, nowMs = Date.now()): void {
-    this.consecutiveFailures++;
     const kind = classifyLlmError(err);
+    // A moderated prompt is not an outage. Counting it would (a) page the
+    // channel as a config error, (b) arm the "✅ LLM recuperado" notice on the
+    // next ordinary reply — both happened on 2026-08-06 — and (c) let a run of
+    // moderated prompts mask a real failure streak. Count it on its own axis
+    // and leave the health state alone.
+    if (kind === 'content_filter') {
+      this.contentFilterRejections++;
+      this.lastContentFilterAtMs = nowMs;
+      this.lastContentFilterError = errorMessage(err);
+      log.info(
+        { total: this.contentFilterRejections, err: errorMessage(err) },
+        'llm.health.content_filter_rejected',
+      );
+      return;
+    }
+    this.consecutiveFailures++;
     this.lastFailureAtMs = nowMs;
     this.lastError = errorMessage(err);
     this.lastErrorKind = kind;

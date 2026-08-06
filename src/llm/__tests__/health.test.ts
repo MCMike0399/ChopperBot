@@ -2,6 +2,7 @@ import { describe, test, expect } from 'vitest';
 import {
   LlmHealthMonitor,
   classifyLlmError,
+  isContentFilterRejection,
   ALERT_COOLDOWN_MS,
   TRANSIENT_ALERT_THRESHOLD,
 } from '../health.js';
@@ -9,6 +10,15 @@ import {
 function apiError(status: number, message: string): Error {
   const err = new Error(message) as Error & { status: number };
   err.status = status;
+  return err;
+}
+
+/** The exact error Moonshot returned on 2026-08-06 for a political question. */
+function highRiskError(): Error {
+  const err = apiError(400, '400 The request was rejected because it was considered high risk') as
+    Error & { status: number; param: string; code: number };
+  err.param = 'prompt';
+  err.code = 400;
   return err;
 }
 
@@ -34,6 +44,29 @@ describe('classifyLlmError', () => {
     expect(classifyLlmError(apiError(500, 'oops'))).toBe('transient');
     expect(classifyLlmError(apiError(408, 'timeout'))).toBe('transient');
     expect(classifyLlmError(new Error('ECONNRESET'))).toBe('transient'); // no .status
+  });
+
+  test('a provider moderation refusal is its own kind, not a config error', () => {
+    // The 2026-08-06 incident: classifying this as deterministic paged the
+    // admin channel with "no se va a resolver solo" while the backend was fine.
+    expect(classifyLlmError(highRiskError())).toBe('content_filter');
+    expect(isContentFilterRejection(highRiskError())).toBe(true);
+    expect(classifyLlmError(apiError(403, 'blocked by the safety system'))).toBe('content_filter');
+    expect(classifyLlmError(apiError(400, 'content_filter triggered'))).toBe('content_filter');
+  });
+
+  test('genuine bad-parameter 4xx keep their deterministic classification', () => {
+    // The match must stay narrow: these are real config breakage and must keep
+    // paging on the first failure.
+    expect(classifyLlmError(apiError(400, 'invalid temperature: only 1 is allowed'))).toBe(
+      'deterministic',
+    );
+    expect(classifyLlmError(apiError(401, 'Invalid Authentication'))).toBe('deterministic');
+    expect(
+      classifyLlmError(apiError(403, 'Kimi For Coding is currently only available for Coding Agents')),
+    ).toBe('deterministic');
+    expect(isContentFilterRejection(apiError(429, 'high risk of throttling'))).toBe(false);
+    expect(isContentFilterRejection(apiError(500, 'content filter service down'))).toBe(false);
   });
 });
 
@@ -90,6 +123,34 @@ describe('LlmHealthMonitor', () => {
     monitor.reportSuccess(); // no duplicate
     expect(alerts).toHaveLength(2);
     expect(alerts[1].join('\n')).toContain('recuperado');
+  });
+
+  test('a content-filter rejection never alerts and never touches the health state', () => {
+    const { monitor, alerts } = harness();
+    for (let i = 1; i <= TRANSIENT_ALERT_THRESHOLD + 2; i++) {
+      monitor.reportFailure(highRiskError(), i * 1_000);
+    }
+    expect(alerts).toHaveLength(0);
+    const snap = monitor.snapshot();
+    expect(snap.consecutive_failures).toBe(0);
+    expect(snap.degraded).toBe(false);
+    expect(snap.content_filter_rejections).toBe(TRANSIENT_ALERT_THRESHOLD + 2);
+    expect(snap.last_content_filter_error).toContain('high risk');
+    // …and it must not arm the recovery notice on the next ordinary reply,
+    // which is how "🚨 config error" + "✅ LLM recuperado" both fired for a
+    // single moderated prompt on 2026-08-06.
+    monitor.reportSuccess();
+    expect(alerts).toHaveLength(0);
+  });
+
+  test('moderated prompts do not mask a real failure streak', () => {
+    const { monitor, alerts } = harness();
+    monitor.reportFailure(apiError(500, 'a'), 1_000);
+    monitor.reportFailure(highRiskError(), 2_000); // must not reset the streak
+    monitor.reportFailure(apiError(500, 'b'), 3_000);
+    monitor.reportFailure(apiError(500, 'c'), 4_000);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0].join('\n')).toContain('transitorio');
   });
 
   test('a rejecting or missing sink never throws into the caller', () => {
