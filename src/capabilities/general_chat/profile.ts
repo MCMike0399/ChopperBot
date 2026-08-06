@@ -16,6 +16,13 @@ export interface GuildProfile {
   /** Whether turns in this guild get the read-only calendar tools. */
   calendarReadTools: boolean;
   /**
+   * Whether turns in this guild get the live channel-directory tools
+   * (server_list_channels / server_channel_info). Member-visibility-filtered —
+   * see server-tools.ts. Lets the assistant answer about channels created
+   * after the primer's curated list was written.
+   */
+  serverDirectoryTools: boolean;
+  /**
    * Capability ids whose bound-channel info is HIDDEN from the assistant's
    * capability snapshot. Use for capabilities living in staff-only channels:
    * the capability is still described, but the model never sees (and so never
@@ -64,8 +71,11 @@ Espacio **autogestivo** de formación política y cultural, por y para jóvenes 
 - <#1438980667957575730> alianzas — servidores aliados
 - <#1436255397265670195> ticket — denuncias, apelaciones, soporte y propuestas de evento (llega a moderación)
 - <#1438782260865273937> votaciones — aquí se vota la peli del cineclub cada semana
+- <#1534976853910229082> bienvenidx (categoría Escuela/trabajo) — reacciona con 🎓 al mensaje de ChopperBot ahí y se te abre un **taller privado**: un canal personal con asistente de IA completo para escuela/chamba (genera Excel/Word/PowerPoint/gráficas de verdad, ejecuta Python, procesa archivos que le subas)
 
-Para agendar un evento, lxs compas abren un ticket en <#1436255397265670195> y la comisión de gestión lo sube al calendario.`;
+Para agendar un evento, lxs compas abren un ticket en <#1436255397265670195> y la comisión de gestión lo sube al calendario.
+
+La lista de arriba es la curada de canales clave, no el mapa completo: tienes herramientas (\`server_list_channels\`, \`server_channel_info\`) para consultar EN VIVO cualquier canal del servidor que la persona pueda ver.`;
 
 const PROFILES = new Map<string, GuildProfile>([
   [
@@ -74,6 +84,7 @@ const PROFILES = new Map<string, GuildProfile>([
       guildId: REVZ_GUILD_ID,
       primer: REVZ_PRIMER,
       calendarReadTools: true,
+      serverDirectoryTools: true,
       // The calendar capability lives in the Gestión comisión's channel —
       // staff-only. Members see the PUBLISHED calendar in #calendario and
       // propose events via ticket; the input channel is never mentioned.
