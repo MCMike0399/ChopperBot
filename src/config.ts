@@ -135,6 +135,13 @@ const ConfigSchema = z.object({
   // the low tier; medium and high are Kimi." MUST be image-capable.
   BEDROCK_MODEL_LOW: z.string().min(1).default('us.amazon.nova-lite-v1:0'),
   MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
+  // Output budget for the KIMI path specifically. K2.7 Thinking's
+  // reasoning_content counts against max_tokens, so 4096 starves complex
+  // multi-step turns — live 2026-08-06: a workshop turn hit stopReason
+  // 'length' after 8 file reads and the visible reply was cut mid-sentence
+  // ("Ahora te armo un documento Word…") with the promised docx never created.
+  // The coding endpoint accepts ≥24k (probed); the subscription is flat-rate.
+  KIMI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(16384),
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
   // Max Kimi HTTP requests in flight at once (a semaphore inside llm/client.ts,
   // NOT whole turns — two agent loops interleave their requests). Default 1: the

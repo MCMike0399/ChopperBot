@@ -24,10 +24,11 @@ type GatewayMessage = OmitPartialGroupDMChannel<Message>;
 import { basename, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { log } from '../../log.js';
-import { ask, TurnAbortedError } from '../../llm/client.js';
+import { ask, TurnAbortedError, type AskPhase } from '../../llm/client.js';
 import { chunkBotReply } from '../../discord/chunk.js';
 import { normalizeTurns, type Turn } from '../../discord/history.js';
 import { StatusReactor } from '../../discord/status-reactions.js';
+import { LiveStatusMessage, composeStatusText } from '../../discord/status-message.js';
 import { QueueBusyError, type TurnQueue } from '../../discord/turn-queue.js';
 import { QUEUE_BUSY_REPLY, GENERIC_ERROR_REPLY } from '../../discord/handlers.js';
 import { resolveAttachments } from '../../attachments/resolver.js';
@@ -349,9 +350,26 @@ export class WorkshopWatcher {
   ): Promise<void> {
     // Interrupted while still waiting in the queue → don't even start.
     if (abortFlag.aborted) throw new TurnAbortedError();
-    reactor.set('thinking');
-    await message.channel.sendTyping().catch(() => {});
+
+    // Web-LLM-style progress: ONE subtext status line, edited in place as the
+    // turn advances, that finally morphs into the reply itself. The queued-⏳
+    // reaction (set by handleMessage) is cleared as soon as the line exists.
+    const status = new LiveStatusMessage(message.channel);
+    const progress = {
+      phase: 'thinking' as AskPhase,
+      toolName: undefined as string | undefined,
+      step: 0,
+      startedAt: this.now(),
+    };
+    const statusText = (): string =>
+      composeStatusText({ ...progress, elapsedMs: this.now() - progress.startedAt });
+    await status.start(statusText());
+    reactor.resolve();
+
     const heartbeat = setInterval(() => void message.channel.sendTyping().catch(() => {}), 8000);
+    // Keep the elapsed-time suffix ticking even when no phase changes arrive
+    // (a single long Kimi request can take a minute+).
+    const ticker = setInterval(() => status.update(statusText()), 10_000);
 
     const workspace = new SessionWorkspace(workspaceDirFor(this.deps.dataDir, session.channel_id));
     workspace.ensure();
@@ -420,28 +438,39 @@ export class WorkshopWatcher {
         system,
         messages: turns,
         tools,
-        onPhase: (phase) => reactor.set(phase),
+        onPhase: (phase, detail) => {
+          progress.phase = phase;
+          if (phase === 'tool') {
+            progress.toolName = detail;
+            progress.step += 1;
+          }
+          status.update(statusText());
+        },
         shouldAbort: () => abortFlag.aborted,
       });
+    } catch (err) {
+      if (err instanceof TurnAbortedError) {
+        // Superseded: the status line vanishes; the newer turn takes over.
+        await status.discard();
+        throw err;
+      }
+      log.error({ err, channelId: session.channel_id }, 'workshop.turn_failed');
+      await status.fail(GENERIC_ERROR_REPLY);
+      return;
     } finally {
       clearInterval(heartbeat);
+      clearInterval(ticker);
     }
 
     // Interrupted after the loop finished but before posting: discard — the
     // newer turn answers with full context (web-LLM interrupt semantics).
-    if (abortFlag.aborted) throw new TurnAbortedError();
+    if (abortFlag.aborted) {
+      await status.discard();
+      throw new TurnAbortedError();
+    }
 
-    const parts = chunkBotReply(reply);
-    let anchor: Message | null = await message.reply(parts[0]).catch(() => null);
-    if (!anchor && message.channel.isSendable()) {
-      anchor = await message.channel.send(parts[0]).catch(() => null);
-    }
-    reactor.resolve();
-    for (let i = 1; anchor && i < parts.length; i++) {
-      anchor = await anchor
-        .reply({ content: parts[i], allowedMentions: { repliedUser: false } })
-        .catch(() => null);
-    }
+    // The status line becomes the reply (first chunk edits it in place).
+    const anchor = await status.finishAsReply(chunkBotReply(reply));
 
     // Deferred effects, in a safe order: files → purge → close.
     for (const f of pendingFiles) {
