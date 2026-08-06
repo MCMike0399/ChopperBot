@@ -54,11 +54,24 @@ export function composeStatusText(input: {
   return `-# ${parts.join(' · ')}`;
 }
 
-type SendableChannel = {
+/**
+ * How the status message reaches the channel. `post` places the FIRST message
+ * (public channels pass a reply-sender so the bot's answer stays in the user's
+ * reply chain — `buildHistory` walks it); `send` places follow-up chunks.
+ */
+export interface StatusMessageTarget {
+  post: (content: string) => Promise<Message>;
   send: (content: string) => Promise<Message>;
-};
+}
+
+type SendableChannel = StatusMessageTarget | { send: (content: string) => Promise<Message> };
+
+function asTarget(channel: SendableChannel): StatusMessageTarget {
+  return 'post' in channel ? channel : { post: channel.send, send: channel.send };
+}
 
 export class LiveStatusMessage {
+  private readonly target: StatusMessageTarget;
   private message: Message | null = null;
   private lastEditAt = 0;
   private pendingText: string | null = null;
@@ -66,13 +79,22 @@ export class LiveStatusMessage {
   private lastShownText = '';
   private finished = false;
 
-  constructor(private readonly channel: SendableChannel) {}
+  constructor(channel: SendableChannel) {
+    this.target = asTarget(channel);
+  }
 
   /** Post the initial status line. Failure → the instance degrades to no-op. */
   async start(text: string): Promise<void> {
+    if (this.finished) return; // the turn already ended (fast turn won the race)
     this.lastShownText = text;
     this.lastEditAt = Date.now();
-    this.message = await this.channel.send(text).catch(() => null);
+    this.message = await this.target.post(text).catch(() => null);
+    // If the turn finished while the post was in flight, don't leave it behind.
+    if (this.finished && this.message) {
+      const stale = this.message;
+      this.message = null;
+      void stale.delete().catch(() => {});
+    }
   }
 
   get active(): boolean {
@@ -118,11 +140,11 @@ export class LiveStatusMessage {
       anchor = await this.message.edit(parts[0]).catch(() => null);
     }
     if (!anchor) {
-      // Status message missing (perms, deleted) → plain send.
-      anchor = await this.channel.send(parts[0]).catch(() => null);
+      // No status message (never posted, perms, deleted) → normal first post.
+      anchor = await this.target.post(parts[0]).catch(() => null);
     }
     for (let i = 1; anchor && i < parts.length; i++) {
-      anchor = await this.channel.send(parts[i]).catch(() => anchor);
+      anchor = await this.target.send(parts[i]).catch(() => anchor);
     }
     return anchor;
   }
@@ -134,7 +156,7 @@ export class LiveStatusMessage {
     if (this.message) {
       await this.message.edit(text).catch(() => {});
     } else {
-      await this.channel.send(text).catch(() => {});
+      await this.target.post(text).catch(() => {});
     }
   }
 

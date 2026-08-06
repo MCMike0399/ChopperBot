@@ -1,9 +1,10 @@
 import { Client, Events, Message, type CloseEvent } from 'discord.js';
 import { log } from '../log.js';
-import { ask } from '../llm/client.js';
+import { ask, type AskPhase } from '../llm/client.js';
 import { chunkBotReply } from './chunk.js';
 import { buildHistory, normalizeTurns, type Turn } from './history.js';
 import { StatusReactor } from './status-reactions.js';
+import { LiveStatusMessage, composeStatusText } from './status-message.js';
 import { QueueBusyError, type TurnQueue } from './turn-queue.js';
 import { resolveAttachments, listImageAttachments } from '../attachments/resolver.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
@@ -33,6 +34,23 @@ export interface HandlerDeps {
 /** Reply when a channel's queue is already packed (anti-spam backstop). */
 export const QUEUE_BUSY_REPLY =
   'Tengo varias respuestas pendientes en este canal — dame un momento y vuelve a intentarlo.';
+
+/**
+ * Discord's typing indicator expires ~10 s after each `sendTyping()`, so the
+ * refresh must have real margin: at 8 s a busy event loop on the Pi let it
+ * lapse mid-turn and a member read the stopped animation as "se trabó" (live
+ * 2026-08-06, #chat-poesía — the answer did arrive). 5 s leaves ~2× headroom.
+ */
+const TYPING_REFRESH_MS = 5_000;
+
+/**
+ * After this long, a public-channel turn also posts the live status line (the
+ * same one talleres use). Fast turns stay clean — no extra message — while a
+ * slow one gets an explicit, durable "estoy trabajando" that then becomes the
+ * answer itself. Typing alone can't do that: it's ephemeral and invisible to
+ * anyone who looks a second later.
+ */
+const SLOW_TURN_STATUS_MS = 20_000;
 
 /** Last-resort reply when the turn threw. Spanish and user-facing — the reader
  * is a community member, so it says what happened and invites a retry rather
@@ -85,8 +103,22 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
 
       // Visible progress on the user's message: ⏳ queued → 🤔 thinking → 🛠️
       // tools → removed on success / ❌ on failure. Reactions are instant and
-      // don't add messages; the typing indicator still covers the writing tail.
+      // don't add messages; the typing indicator covers the writing tail, and a
+      // SLOW turn escalates to the live status line (see SLOW_TURN_STATUS_MS).
       const reactor = new StatusReactor(message, client.user?.id);
+      // Posted as a REPLY so the answer stays in the user's reply chain
+      // (buildHistory walks message.reference) even when it morphs from status.
+      const status = new LiveStatusMessage({
+        post: (content) => message.reply(content),
+        send: (content) =>
+          message.channel.send({ content, allowedMentions: { repliedUser: false } }),
+      });
+      const progress = { phase: 'thinking' as AskPhase, toolName: undefined as string | undefined, step: 0 };
+      const startedAt = Date.now();
+      const statusText = (): string =>
+        composeStatusText({ ...progress, elapsedMs: Date.now() - startedAt });
+      let slowTimer: NodeJS.Timeout | null = null;
+      let statusTicker: NodeJS.Timeout | null = null;
 
       let reply: string;
       try {
@@ -99,7 +131,12 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
             await message.channel.sendTyping().catch(() => {});
             const typingHeartbeat = setInterval(() => {
               message.channel.sendTyping().catch(() => {});
-            }, 8000);
+            }, TYPING_REFRESH_MS);
+            // Escalate to the visible status line only if this turn is slow.
+            slowTimer = setTimeout(() => {
+              void status.start(statusText());
+              statusTicker = setInterval(() => status.update(statusText()), 10_000);
+            }, SLOW_TURN_STATUS_MS);
             try {
               const capabilityId = deps.router.resolve(message.channelId);
               let capability = capabilityId ? deps.registry.get(capabilityId) : undefined;
@@ -147,9 +184,19 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                 system: turn.system,
                 messages: turns,
                 tools: turn.tools,
-                onPhase: (phase) => reactor.set(phase),
+                onPhase: (phase, detail) => {
+                  reactor.set(phase);
+                  progress.phase = phase;
+                  if (phase === 'tool') {
+                    progress.toolName = detail;
+                    progress.step += 1;
+                  }
+                  status.update(statusText());
+                },
               });
             } finally {
+              // Typing stays alive until the reply is actually posted (below):
+              // clearing it here is what left the gap members read as "stuck".
               clearInterval(typingHeartbeat);
             }
           },
@@ -157,27 +204,29 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
         );
       } catch (err) {
         reactor.fail();
+        if (slowTimer) clearTimeout(slowTimer);
+        if (statusTicker) clearInterval(statusTicker);
         if (err instanceof QueueBusyError) {
+          await status.discard();
           await message.reply(QUEUE_BUSY_REPLY).catch(() => {});
           return;
         }
+        await status.discard();
         throw err;
+      } finally {
+        if (slowTimer) clearTimeout(slowTimer);
+        if (statusTicker) clearInterval(statusTicker);
       }
       if (!reply) {
         reactor.resolve();
+        await status.discard();
         return;
       }
 
-      const parts = chunkBotReply(reply);
-
-      let anchor = await message.reply(parts[0]);
+      // A slow turn's status line morphs into the answer; a fast turn (no
+      // status line posted) just replies normally — finishAsReply handles both.
+      await status.finishAsReply(chunkBotReply(reply));
       reactor.resolve();
-      for (let i = 1; i < parts.length; i++) {
-        anchor = await anchor.reply({
-          content: parts[i],
-          allowedMentions: { repliedUser: false },
-        });
-      }
     } catch (err) {
       log.error({ err }, 'Failed to handle message');
       // Spanish, and free of operator instructions: this lands in a community
