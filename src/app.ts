@@ -14,7 +14,12 @@ import { GeneralChatCapability } from './capabilities/general_chat/capability.js
 import { InstagramMonitorCapability } from './capabilities/instagram_monitor/capability.js';
 import { FileScannerCapability } from './capabilities/file_scanner/capability.js';
 import { EventIntakeCapability } from './capabilities/event_intake/capability.js';
-import { redacted-opsCapability } from './capabilities/redacted-ops/capability.js';
+// NOTE: redacted-opsCapability (src/capabilities/redacted-ops/) is intentionally NOT
+// registered in this deployment. It's a read-only ops copilot for a specific
+// external platform — out of scope for the RevZ bot, and keeping it registered
+// leaks it into general_chat's capability snapshot (the LLM then advertises it
+// to users). The code stays in the repo for that separate deploy; do not add
+// it back to `candidates` here.
 import { createClient } from './discord/client.js';
 import { registerHandlers } from './discord/handlers.js';
 import { sendAdminAlert } from './discord/admin-alert.js';
@@ -61,7 +66,6 @@ export async function run(): Promise<void> {
     new InstagramMonitorCapability(),
     new FileScannerCapability(),
     eventIntakeCap,
-    new redacted-opsCapability(),
     new GeneralChatCapability(),
   ];
 

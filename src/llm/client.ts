@@ -131,6 +131,14 @@ type ToolCall = {
   function: { name: string; arguments: string };
 };
 
+/** Retries when the model returns a non-tool finish with empty text. */
+const MAX_EMPTY_RESPONSE_RETRIES = 2;
+
+/** Posted when every attempt came back empty — Spanish, matching the bot's
+ * voice (the old English "I couldn't generate a response." was jarring). */
+const EMPTY_RESPONSE_FALLBACK =
+  'No pude generar una respuesta esta vez — inténtalo de nuevo en un momento.';
+
 type ChatMessage =
   | { role: 'system'; content: string }
   | { role: 'user'; content: string }
@@ -172,6 +180,11 @@ async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): 
   const trace: AgentTrace = { iterations: 0, toolCalls: [], inputTokens: 0, outputTokens: 0 };
   let finalText = '';
   let lastFinishReason: string | undefined;
+  // K2.7 Thinking occasionally spends every output token on reasoning_content
+  // and returns empty `content` with finish_reason 'stop' (observed live
+  // 2026-08-05: the user got the fallback string as the reply). Retry the
+  // completion a bounded number of times before giving up.
+  let emptyRetries = 0;
 
   // Per-turn dedup cache: identical (toolName, inputJson) returns the cached
   // result. Only cache successes; errors get retried (the model usually fixes
@@ -221,6 +234,19 @@ async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): 
 
     if (choice.finish_reason !== 'tool_calls' || toolCalls.length === 0) {
       finalText = extractText(typeof assistantMsg.content === 'string' ? assistantMsg.content : '');
+      if (!finalText) {
+        // Empty content on a non-tool finish: drop the empty assistant echo so
+        // the retry resends the same convo, and give the model another shot.
+        convo.pop();
+        emptyRetries += 1;
+        if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
+          log.warn(
+            { finishReason: lastFinishReason, attempt: emptyRetries },
+            'Kimi returned empty text on a non-tool finish — retrying',
+          );
+          continue;
+        }
+      }
       break;
     }
 
@@ -304,7 +330,7 @@ async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): 
       { finishReason: lastFinishReason, iterations: trace.iterations },
       'Kimi loop ended without final text',
     );
-    finalText = "I couldn't generate a response.";
+    finalText = EMPTY_RESPONSE_FALLBACK;
   }
 
   log.info(
@@ -474,7 +500,7 @@ async function askBedrock({
       { stopReason: lastStopReason, iterations: trace.iterations },
       'Bedrock loop ended without final text',
     );
-    finalText = "I couldn't generate a response.";
+    finalText = EMPTY_RESPONSE_FALLBACK;
   }
 
   log.info(
