@@ -13,6 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.10.2 — 2026-08-06
+
+🗣️ **Ya no se raja con las preguntas políticas**
+
+Hoy en el 💠Club de Cine alguien le preguntó qué hacer con quienes apoyan a China en el servidor, y ChopperBot contestó con un error en inglés ("Sorry, I hit an error…"). No fue que se negara a opinar: el filtro de contenido de la empresa que le presta el cerebro bloqueó la pregunta por considerarla "de riesgo".
+
+- **Ahora lo reintenta y, si el filtro insiste, responde por su otro cerebro.** El bloqueo es medio azaroso — la misma pregunta pasa sin problema al segundo intento —, así que en vez de rendirse, vuelve a intentar y tiene un plan B. La respuesta sale igual, desde los principios de los Estatutos.
+- **Si de plano no se puede, lo dice en español y de frente:** avisa que el filtro del proveedor bloqueó la pregunta e invita a plantearla de otra forma. Ya nunca más ese mensajote en inglés pidiendo "revisar los logs" en un canal de la comunidad.
+- **Y deja de asustar a quien administra.** Ese bloqueo mandaba una alarma de "el bot está roto" al canal de configuración, cuando en realidad estaba funcionando perfecto.
+
+---
+
 ## 1.10.1 — 2026-08-06
 
 🎭 **Ajustes finos al asistente de la comunidad**

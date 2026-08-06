@@ -34,6 +34,11 @@ import { countOccurrencesUntil } from '../calendar/recurrence.js';
 
 const DAY_MS = 86_400_000;
 
+/** Content-filter rejections worth mentioning in `problems`. One is normal
+ * noise on a political server; a handful means the text provider is refusing
+ * this community's subject matter often enough for an operator to know. */
+const CONTENT_FILTER_NOTICE_THRESHOLD = 3;
+
 /** A capability that was expected at boot but whose `init()` threw. */
 export interface SkippedCapability {
   id: string;
@@ -150,6 +155,14 @@ export function collectHealth(deps: HealthDeps): HealthReport {
     problems.push(`LLM degradado: ${llmSnapshot.consecutive_failures} fallos consecutivos (${llmSnapshot.last_error ?? 'sin detalle'}).`);
   } else if (llmSnapshot.consecutive_failures > 0) {
     problems.push(`LLM con ${llmSnapshot.consecutive_failures} fallo(s) consecutivo(s) sin alcanzar el umbral de alerta.`);
+  }
+  // Not a problem in itself (the backend is fine and the turn recovers on the
+  // retry / the other backend), but a spike means members are repeatedly
+  // hitting the provider's risk filter — worth naming, not silently counting.
+  if (llmSnapshot.content_filter_rejections >= CONTENT_FILTER_NOTICE_THRESHOLD) {
+    problems.push(
+      `El filtro de contenido del proveedor de texto rechazó ${llmSnapshot.content_filter_rejections} prompt(s) desde el arranque (último: ${llmSnapshot.last_content_filter_error ?? 'sin detalle'}). No es una falla del bot: reintenta y, si insiste, responde por el backend de imágenes.`,
+    );
   }
 
   // ── Capabilities & routing ────────────────────────────────────────────────
