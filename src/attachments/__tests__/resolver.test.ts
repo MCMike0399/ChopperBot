@@ -1,5 +1,5 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
-import { resolveAttachments } from '../resolver.js';
+import { resolveAttachments, listImageAttachments } from '../resolver.js';
 import { ImageAttachable } from '../attachable.js';
 import type { Message, Attachment } from 'discord.js';
 
@@ -160,5 +160,26 @@ describe('resolveAttachments', () => {
     const result = await resolveAttachments(msg);
 
     expect(result).toHaveLength(3);
+  });
+});
+
+describe('listImageAttachments — URL refs without downloading', () => {
+  test('keeps images (by content-type or extension), drops the rest, fetches nothing', async () => {
+    const fetchSpy = vi.fn();
+    vi.stubGlobal('fetch', fetchSpy);
+    try {
+      const msg = makeMessage([
+        makeAttachment({ name: 'flyer.png', contentType: 'image/png' }),
+        makeAttachment({ name: 'photo', contentType: null }), // no mime, no ext → not an image
+        makeAttachment({ name: 'notes.pdf', contentType: 'application/pdf' }),
+        makeAttachment({ name: 'banner.jpg', contentType: null }), // extension fallback
+      ]);
+      const refs = listImageAttachments(msg);
+      expect(refs.map((r) => r.name)).toEqual(['flyer.png', 'banner.jpg']);
+      expect(refs[0]!.url).toContain('cdn.discordapp.com');
+      expect(fetchSpy).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

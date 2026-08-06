@@ -62,6 +62,12 @@ type MentionParseType = 'everyone' | 'roles' | 'users';
 interface AnnouncePayload {
   content: string;
   allowedMentions: { parse: MentionParseType[]; roles: string[] };
+  /**
+   * The linked Discord event's cover image, attached so the announcement looks
+   * like the admins' manual posts (they always paste the flyer). A CDN URL —
+   * discord.js downloads and re-uploads it as a real attachment.
+   */
+  files?: string[];
 }
 
 /** The bit of a fetched message the duplicate sweep needs. */
@@ -96,6 +102,8 @@ export interface AnnouncementResult {
   discordEventUrl: string | null;
   /** The exact text posted (or that would be posted, in a dry run). */
   text: string;
+  /** Cover image attached to the post (the Discord event's banner), if any. */
+  imageUrl: string | null;
   posted: boolean;
   messageId: string | null;
   error?: string;
@@ -385,6 +393,7 @@ export class CalendarAnnouncer {
       discordEventId: target.discordEvent?.id ?? null,
       discordEventUrl: target.discordEventUrl,
       text,
+      imageUrl: target.discordEvent?.imageUrl ?? null,
       posted: false,
       messageId: null,
     };
@@ -398,6 +407,7 @@ export class CalendarAnnouncer {
         parse: mentions.everyone ? ['everyone'] : [],
         roles: mentions.roleIds,
       },
+      files: result.imageUrl ? [result.imageUrl] : undefined,
     });
     if (!sent.ok) {
       result.error = sent.error;
@@ -424,6 +434,7 @@ export class CalendarAnnouncer {
         duplicatesRemoved: sent.duplicatesRemoved,
         link: result.link,
         discordEventId: result.discordEventId,
+        hasImage: result.imageUrl !== null,
       },
       'calendar.announce.posted',
     );
