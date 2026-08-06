@@ -15,6 +15,13 @@ export interface GuildProfile {
   primer: string;
   /** Whether turns in this guild get the read-only calendar tools. */
   calendarReadTools: boolean;
+  /**
+   * Capability ids whose bound-channel info is HIDDEN from the assistant's
+   * capability snapshot. Use for capabilities living in staff-only channels:
+   * the capability is still described, but the model never sees (and so never
+   * leaks) the staff channel's name or link to regular members.
+   */
+  hiddenBindingCapabilityIds?: readonly string[];
 }
 
 export const REVZ_GUILD_ID = '1435843683541979248';
@@ -56,12 +63,22 @@ Espacio **autogestivo** de formación política y cultural, por y para jóvenes 
 - <#1436255754373038140> sugerencias-del-servidor — foro de mejoras
 - <#1438980667957575730> alianzas — servidores aliados
 - <#1436255397265670195> ticket — denuncias, apelaciones, soporte y propuestas de evento (llega a moderación)
-- <#1483675563871961248> chat-gestión — canal del calendario: lxs mods agregan/editan eventos aquí hablando con el bot`;
+- <#1438782260865273937> votaciones — aquí se vota la peli del cineclub cada semana
+
+Para agendar un evento, lxs compas abren un ticket en <#1436255397265670195> y la comisión de gestión lo sube al calendario.`;
 
 const PROFILES = new Map<string, GuildProfile>([
   [
     REVZ_GUILD_ID,
-    { guildId: REVZ_GUILD_ID, primer: REVZ_PRIMER, calendarReadTools: true },
+    {
+      guildId: REVZ_GUILD_ID,
+      primer: REVZ_PRIMER,
+      calendarReadTools: true,
+      // The calendar capability lives in the Gestión comisión's channel —
+      // staff-only. Members see the PUBLISHED calendar in #calendario and
+      // propose events via ticket; the input channel is never mentioned.
+      hiddenBindingCapabilityIds: ['calendar'],
+    },
   ],
 ]);
 

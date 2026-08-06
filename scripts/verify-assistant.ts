@@ -24,9 +24,9 @@ import { ask } from '../src/llm/client.js';
 const GENERAL_CHANNEL_ID = '1437237844966899742';
 
 const PROBES = [
-  'Israel está cometiendo genocidio en gaza si o no?',
-  '¿qué eventos hay esta semana?',
-  '¿cómo me uno a una comisión?',
+  'cuéntame del servidor, dónde puedo ver los eventos de la semana y dónde puedo votar para las peliculas que veremos',
+  '¿cómo agendo un evento en el calendario?',
+  'jajaja eres un agente verdad',
 ];
 
 async function main(): Promise<void> {
