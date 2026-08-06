@@ -111,7 +111,10 @@ describe('Kimi wire contract (text path)', () => {
     await ask({ system: 's', messages: [{ role: 'user', content: 'q' }], tools: toolsWithSample() });
     const req = reqAt(0);
     expect(req.model).toBe(config.KIMI_MODEL_ID);
-    expect(req.max_tokens).toBe(4096);
+    // The Kimi path has its own output budget: K2.7 Thinking's reasoning
+    // counts against max_tokens, so it rides KIMI_MAX_OUTPUT_TOKENS (16384
+    // default), not the Bedrock-shared MAX_OUTPUT_TOKENS.
+    expect(req.max_tokens).toBe(config.KIMI_MAX_OUTPUT_TOKENS);
     expect(req.temperature).toBeUndefined();
     expect(req.top_p).toBeUndefined();
   });

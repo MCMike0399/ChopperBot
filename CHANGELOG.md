@@ -24,6 +24,8 @@ Y tranquilx: solo te muestra los canales **que tú puedes ver**. Lo que no es pa
 ### Mejoras a los talleres (gracias al primer taller de hoy 📖)
 - **Lee PDFs bien**: si le subes un PDF (apuntes, un libro, un paper) ahora lo procesa a la primera, sin dar vueltas.
 - **Puedes interrumpirlo**: si está tardando y le escribes otro mensaje, suelta lo que estaba haciendo y atiende lo nuevo — como en los chats de IA de página web.
+- **Ves lo que está haciendo en vivo**: una línea de estado que se va actualizando ("🐍 Ejecutando código · paso 3 · 45s") y que al terminar se convierte en la respuesta.
+- **Ya no promete y se queda a medias**: le dimos mucho más aire para pensar en tareas largas, así que "te armo un documento Word" ahora termina con el documento de verdad en el chat.
 - Menos vueltas en general: cuando algo no le sale, lo dice y propone alternativa en vez de insistir.
 
 ---
