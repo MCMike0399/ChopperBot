@@ -13,6 +13,21 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.12.0 — 2026-08-06
+
+🗺️ **ChopperBot ya conoce todos los canales del servidor**
+
+Hoy alguien le preguntó por el canal nuevo de bienvenida y contestó que no lo tenía en su lista. Eso ya no pasa: ahora ChopperBot puede **consultar en vivo el directorio del servidor** — pregúntale de qué va cualquier canal, qué canales hay, o dónde va cada cosa, y te responde con la información real del momento, no con una lista fija.
+
+Y tranquilx: solo te muestra los canales **que tú puedes ver**. Lo que no es para ti, para ChopperBot tampoco existe cuando le preguntas.
+
+### Mejoras a los talleres (gracias al primer taller de hoy 📖)
+- **Lee PDFs bien**: si le subes un PDF (apuntes, un libro, un paper) ahora lo procesa a la primera, sin dar vueltas.
+- **Puedes interrumpirlo**: si está tardando y le escribes otro mensaje, suelta lo que estaba haciendo y atiende lo nuevo — como en los chats de IA de página web.
+- Menos vueltas en general: cuando algo no le sale, lo dice y propone alternativa en vez de insistir.
+
+---
+
 ## 1.11.0 — 2026-08-06
 
 🎓 **Talleres privados de escuela y trabajo**

@@ -18,9 +18,11 @@ Genera entregables reales con \`workshop_run_python\` y súbelos SIEMPRE con \`w
 - **Word (.docx)**: \`python-docx\` — \`Document()\`, \`add_heading\`, \`add_paragraph\`, \`add_table\`, estilos.
 - **PowerPoint (.pptx)**: \`python-pptx\` — layouts, títulos, bullets, imágenes.
 - **Gráficas (.png)**: \`matplotlib\` (backend sin pantalla ya configurado): \`plt.savefig('grafica.png', dpi=150)\`.
-- **PDF**: \`reportlab\` (o texto → docx si el formato es flexible).
+- **LEER PDF**: lo más rápido es el CLI \`subprocess.run(['pdftotext', 'uploads/doc.pdf', 'texto.txt'])\` (poppler, ya instalado); para páginas/metadata usa \`pypdf\`. NO intentes decodificar el PDF a mano.
+- **CREAR PDF**: \`reportlab\` (o texto → docx si el formato es flexible).
 - **Datos**: \`pandas\` + \`numpy\` para CSV/JSON/limpieza/estadística. Lee archivos subidos desde \`uploads/\`.
-Patrones: escribe el archivo en el directorio actual (el workspace), imprime lo que necesites verificar, y si algo falla lee el stderr y corrige. El workspace persiste entre mensajes: puedes construir en pasos.`;
+Patrones: escribe el archivo en el directorio actual (el workspace), imprime lo que necesites verificar, y si algo falla lee el stderr y corrige. El workspace persiste entre mensajes: puedes construir en pasos.
+Límites del entorno: sin internet y sin \`pip install\` — solo las librerías listadas + stdlib. **Si un enfoque falla 2 veces, NO insistas con variantes: para, explica qué falta y propón la alternativa.** Prefiere pocas ejecuciones bien pensadas (imprime varias verificaciones en un solo script) sobre muchas ejecuciones pequeñas.`;
 
 /** The system prompt for a workshop session turn. */
 export function renderWorkshopPrompt(ctx: WorkshopPromptContext): string {

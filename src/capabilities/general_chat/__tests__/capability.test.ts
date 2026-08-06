@@ -206,13 +206,15 @@ describe('GeneralChatCapability — RevZ guild profile', () => {
     h.memory.close();
   });
 
-  test('RevZ turns get the read-only calendar tools and nothing else', async () => {
+  test('RevZ turns get the read-only calendar tools + the live channel directory, nothing else', async () => {
     const h = await buildHarness();
     const turn = await callBuildTurn(h, REVZ_GUILD_ID);
     expect(turn.tools.tools.map((t) => t.name).sort()).toEqual([
       'calendar_get_event',
       'calendar_list_upcoming',
       'calendar_search_events',
+      'server_channel_info',
+      'server_list_channels',
     ]);
     h.memory.close();
   });

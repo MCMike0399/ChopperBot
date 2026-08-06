@@ -19,6 +19,7 @@ import {
   type CapabilitySnapshotEntry,
 } from './preamble.js';
 import { guildProfileFor } from './profile.js';
+import { createDiscordDirectoryProvider, ServerDirectoryToolSource } from './server-tools.js';
 
 /** Read-only calendar tools the assistant gets in guilds with a profile, so
  * "¿qué eventos hay esta semana?" is answerable from any channel. Writes stay
@@ -95,6 +96,14 @@ export class GeneralChatCapability implements Capability {
           include: ASSISTANT_CALENDAR_TOOLS,
           allowWrite: false,
         }),
+      );
+    }
+    if (profile.serverDirectoryTools && ctx.guildId) {
+      const getClient = this.getDiscordClient;
+      sources.push(
+        new ServerDirectoryToolSource(
+          createDiscordDirectoryProvider(() => getClient(), ctx.guildId, ctx.userId),
+        ),
       );
     }
     return {

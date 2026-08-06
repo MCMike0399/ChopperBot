@@ -89,6 +89,23 @@ export interface AskInput {
   effort?: Effort;
   /** Optional progress hook for user-visible status (see {@link AskPhase}). */
   onPhase?: (phase: AskPhase, detail?: string) => void;
+  /**
+   * Optional cooperative cancellation, checked between steps of the agent
+   * loop (before each model request and before each tool execution — never
+   * mid-tool, so a create/write is never half-applied). When it returns true
+   * the loop stops and {@link TurnAbortedError} is thrown. Used by workshop
+   * sessions: a new message from the session owner interrupts the running
+   * turn instead of queueing behind it for minutes.
+   */
+  shouldAbort?: () => boolean;
+}
+
+/** Thrown by ask() when the caller's `shouldAbort` interrupted the loop. */
+export class TurnAbortedError extends Error {
+  constructor() {
+    super('Turn aborted by caller');
+    this.name = 'TurnAbortedError';
+  }
 }
 
 /**
@@ -274,7 +291,7 @@ type ChatMessage =
  * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Text-only — image
  * turns never reach here (see ask()).
  */
-async function askKimi({ system, messages, tools, effort = 'high', onPhase }: AskInput): Promise<string> {
+async function askKimi({ system, messages, tools, effort = 'high', onPhase, shouldAbort }: AskInput): Promise<string> {
   if (!kimi) {
     throw new Error(
       'Kimi text backend selected but KIMI_API_KEY is not set — set the key, or LLM_TEXT_BACKEND=bedrock for AWS-native runs',
@@ -307,6 +324,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase }: As
 
   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
     trace.iterations = i + 1;
+    if (shouldAbort?.()) throw abortTurn(trace, 'kimi');
 
     safePhase(onPhase, 'thinking');
     // No `temperature`: the kimi-for-coding endpoint rejects any value except 1
@@ -371,6 +389,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase }: As
     // Run every tool_call, then append one role:'tool' message per result
     // (OpenAI's contract: one message per tool result).
     for (const tc of toolCalls) {
+      if (shouldAbort?.()) throw abortTurn(trace, 'kimi');
       const name = tc.function?.name;
       const rawArgs = tc.function?.arguments ?? '{}';
       if (!tc.id || !name) {
@@ -500,6 +519,7 @@ async function askBedrock({
   effort = 'low',
   modelId = config.BEDROCK_MODEL_LOW,
   onPhase,
+  shouldAbort,
 }: AskInput & { modelId?: string }): Promise<string> {
   const convo: Message[] = messages.map(buildMessage);
 
@@ -513,6 +533,7 @@ async function askBedrock({
 
   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
     trace.iterations = i + 1;
+    if (shouldAbort?.()) throw abortTurn(trace, 'bedrock');
 
     safePhase(onPhase, 'thinking');
     const response = await observedCompletion(() =>
@@ -554,6 +575,7 @@ async function askBedrock({
 
     const resultBlocks: ContentBlock[] = [];
     for (const { toolUse } of toolUses) {
+      if (shouldAbort?.()) throw abortTurn(trace, 'bedrock');
       const id = toolUse.toolUseId;
       const name = toolUse.name;
       const input = toolUse.input ?? {};
@@ -644,6 +666,16 @@ async function askBedrock({
   );
 
   return finalText;
+}
+
+/** Log + build the abort error (the turn's partial work is already durable —
+ * tools either ran fully or not at all; nothing is half-applied). */
+function abortTurn(trace: AgentTrace, backend: string): TurnAbortedError {
+  log.info(
+    { backend, iterations: trace.iterations, toolCalls: trace.toolCalls.length },
+    'agent_turn_aborted',
+  );
+  return new TurnAbortedError();
 }
 
 /** Invoke the caller's progress hook without letting it break the loop. */
