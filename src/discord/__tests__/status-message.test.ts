@@ -112,6 +112,31 @@ describe('LiveStatusMessage', () => {
     expect(ops).toContain('edit:Se rompió algo.');
   });
 
+  test('the channel send is invoked as a METHOD (regression: unbound send dropped every reply)', async () => {
+    // Discord.js channels need `this`; a detached `channel.send` reference
+    // throws inside the library. Live 2026-08-06 that silently dropped every
+    // workshop reply, so this fake fails loudly if `this` is lost.
+    const posted: string[] = [];
+    class FakeChannel {
+      readonly id = 'chan-1';
+      async send(content: string): Promise<Message> {
+        if (this?.id !== 'chan-1') throw new TypeError('send called without its channel');
+        posted.push(content);
+        return { edit: async (t: string) => ({}) as Message } as unknown as Message;
+      }
+    }
+    const status = new LiveStatusMessage(new FakeChannel());
+    await status.start('-# 🤔 Pensando…');
+    expect(posted).toEqual(['-# 🤔 Pensando…']);
+    expect(status.active).toBe(true);
+
+    // …and the same holds for the reply path when no status line exists.
+    const bare = new LiveStatusMessage(new FakeChannel());
+    const anchor = await bare.finishAsReply(['la respuesta']);
+    expect(posted).toContain('la respuesta');
+    expect(anchor).not.toBeNull();
+  });
+
   test('a failed start degrades to plain sends on finish', async () => {
     const ops: string[] = [];
     const channel = {

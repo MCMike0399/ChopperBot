@@ -1,4 +1,5 @@
 import type { Message } from 'discord.js';
+import { log } from '../log.js';
 import type { AskPhase } from '../llm/client.js';
 
 /**
@@ -66,8 +67,18 @@ export interface StatusMessageTarget {
 
 type SendableChannel = StatusMessageTarget | { send: (content: string) => Promise<Message> };
 
+/**
+ * Normalize either shape into a target. The channel's `send` MUST be invoked as
+ * a method — passing `channel.send` as a bare reference loses `this` and every
+ * call throws inside discord.js (live 2026-08-06: that bug silently dropped
+ * every workshop reply, because the failure was swallowed by a `.catch`).
+ */
 function asTarget(channel: SendableChannel): StatusMessageTarget {
-  return 'post' in channel ? channel : { post: channel.send, send: channel.send };
+  if ('post' in channel) return channel;
+  return {
+    post: (content) => channel.send(content),
+    send: (content) => channel.send(content),
+  };
 }
 
 export class LiveStatusMessage {
@@ -88,7 +99,12 @@ export class LiveStatusMessage {
     if (this.finished) return; // the turn already ended (fast turn won the race)
     this.lastShownText = text;
     this.lastEditAt = Date.now();
-    this.message = await this.target.post(text).catch(() => null);
+    this.message = await this.target.post(text).catch((err) => {
+      // A missing permission is expected; anything else is a real defect and
+      // must not stay invisible (see asTarget's note).
+      log.warn({ err }, 'status_message.start_failed');
+      return null;
+    });
     // If the turn finished while the post was in flight, don't leave it behind.
     if (this.finished && this.message) {
       const stale = this.message;
@@ -137,11 +153,18 @@ export class LiveStatusMessage {
     if (parts.length === 0) return null;
     let anchor: Message | null = null;
     if (this.message) {
-      anchor = await this.message.edit(parts[0]).catch(() => null);
+      anchor = await this.message.edit(parts[0]).catch((err) => {
+        log.warn({ err }, 'status_message.finish_edit_failed');
+        return null;
+      });
     }
     if (!anchor) {
       // No status message (never posted, perms, deleted) → normal first post.
-      anchor = await this.target.post(parts[0]).catch(() => null);
+      anchor = await this.target.post(parts[0]).catch((err) => {
+        // The turn produced an answer and we failed to deliver it — never silent.
+        log.error({ err }, 'status_message.reply_delivery_failed');
+        return null;
+      });
     }
     for (let i = 1; anchor && i < parts.length; i++) {
       anchor = await this.target.send(parts[i]).catch(() => anchor);
