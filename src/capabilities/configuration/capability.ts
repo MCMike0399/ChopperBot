@@ -17,6 +17,7 @@ import { ConfigInstagramAdminSource } from './instagram-admin-source.js';
 import { ConfigCalendarAdminSource } from './calendar-admin-source.js';
 import { ConfigFileScannerAdminSource } from './filescanner-admin-source.js';
 import { ConfigEventIntakeAdminSource } from './eventintake-admin-source.js';
+import { ConfigWorkshopAdminSource, type ConfigWorkshopAdminDeps } from './workshop-admin-source.js';
 import { ConfigDbSource } from './db-source.js';
 import { renderConfigurationPrompt } from './preamble.js';
 import type { SkippedCapability } from './health.js';
@@ -45,8 +46,11 @@ export class ConfigurationCapability implements Capability {
   private getUserDirectory: CapabilityInitDeps['getUserDirectory'] = undefined;
   private readonly startedAtMs = Date.now();
   private dbPath = '';
+  private dataDir = '';
   /** Capabilities whose `init()` threw at boot, for `config_system action:health`. */
   private skippedCapabilities: readonly SkippedCapability[] = [];
+  /** Live workshop hooks (close session / repost welcome), set by app.ts. */
+  private workshopHooks: ConfigWorkshopAdminDeps['workshop'] = null;
 
   async init(deps: CapabilityInitDeps): Promise<void> {
     await deps.memory.migrate(this.id, CONFIGURATION_MIGRATIONS);
@@ -57,6 +61,7 @@ export class ConfigurationCapability implements Capability {
     this.getRouter = deps.getRouter;
     this.getUserDirectory = deps.getUserDirectory;
     this.dbPath = resolve(deps.projectRoot, config.CHOPPERBOT_DATA_DIR, 'chopperbot.db');
+    this.dataDir = resolve(deps.projectRoot, config.CHOPPERBOT_DATA_DIR);
     log.info({ capability: this.id }, 'ConfigurationCapability initialized');
   }
 
@@ -78,6 +83,15 @@ export class ConfigurationCapability implements Capability {
    */
   recordSkippedCapabilities(skipped: readonly SkippedCapability[]): void {
     this.skippedCapabilities = [...skipped];
+  }
+
+  /**
+   * Called by app.ts when the workshop capability registered, so the
+   * `config_workshop` admin tool can close sessions / repost the welcome
+   * message against the LIVE instance (not just the DB).
+   */
+  attachWorkshopAdmin(hooks: NonNullable<ConfigWorkshopAdminDeps['workshop']>): void {
+    this.workshopHooks = hooks;
   }
 
   async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
@@ -129,10 +143,16 @@ export class ConfigurationCapability implements Capability {
       guildId: ctx.guildId,
       client: this.getDiscordClient(),
     });
+    const workshop = new ConfigWorkshopAdminSource({
+      db: this.db,
+      callerUserId: ctx.userId,
+      dataDir: this.dataDir,
+      workshop: this.workshopHooks,
+    });
     const database = new ConfigDbSource({ db: this.db, store: this.store });
     return {
       system: renderConfigurationPrompt(ctx.now),
-      tools: composeToolSources([core, instagram, calendar, filescanner, eventintake, database]),
+      tools: composeToolSources([core, instagram, calendar, filescanner, eventintake, workshop, database]),
     };
   }
 }

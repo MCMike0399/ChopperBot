@@ -13,6 +13,30 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.11.0 — 2026-08-06
+
+🎓 **Talleres privados de escuela y trabajo**
+
+Estrenamos la categoría **Escuela/trabajo**: reacciona con 🎓 al mensaje de ChopperBot en el canal de bienvenida y se te abre un **canal privado** — solo tú y la moderación pueden verlo — con un asistente de IA completo para tu escuela o tu chamba.
+
+### Qué puedes hacer en tu taller
+- Hablarle **directo, sin mencionarlo** — funciona como los chats de IA de página web.
+- Pedirle **archivos de verdad, listos para descargar**: Excel (.xlsx), Word (.docx), PowerPoint (.pptx), PDFs y gráficas.
+- Que **ejecute código Python** para ti: análisis de datos, matemáticas, automatizaciones.
+- **Subirle archivos** (CSV, texto, código…) para que los procese y trabaje con ellos.
+- Explicaciones de temas, revisión de ensayos, preparación de exámenes, CVs…
+- Todo lo que generen queda en el espacio de tu sesión y persiste entre mensajes.
+
+### El control es tuyo
+- Tu taller tiene un panel fijado con botones: 🧹 **Limpiar** (borra la conversación y empieza de cero) y 🔒 **Cerrar** (elimina el canal cuando termines). También se lo puedes pedir con palabras.
+- Puedes tener hasta 2 talleres abiertos a la vez.
+
+### Mejoras generales
+- Ahora ves **qué está haciendo el bot** con emojis en tu mensaje: ⏳ en cola, 🤔 pensando, 🛠️ trabajando con herramientas, y ❌ si algo falló.
+- El bot **ya no se traba cuando varias personas le escriben a la vez**: atiende en orden y le responde a todo el mundo.
+
+---
+
 ## 1.10.2 — 2026-08-06
 
 🗣️ **Ya no se raja con las preguntas políticas**

@@ -9,6 +9,7 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 import { config } from '../config.js';
 import { log } from '../log.js';
+import { Semaphore } from './gate.js';
 import { isContentFilterRejection, llmHealth } from './health.js';
 import type { Turn } from '../discord/history.js';
 import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source.js';
@@ -73,6 +74,12 @@ const bedrock = new BedrockRuntimeClient({
  */
 export type Effort = 'high' | 'medium' | 'low';
 
+/** Progress signal emitted by the agent loop: `thinking` right before each
+ * model request, `tool` right before each tool handler runs (with the tool's
+ * name). Callers use it to drive the status reaction on the user's message.
+ * Callbacks must not throw (they're invoked inside the loop). */
+export type AskPhase = 'thinking' | 'tool';
+
 export interface AskInput {
   system: string;
   messages: Turn[];
@@ -80,7 +87,17 @@ export interface AskInput {
   /** Model tier. Defaults to 'high' (Kimi). Images always route to Nova Lite
    * regardless of tier; 'low' also forces Nova Lite. */
   effort?: Effort;
+  /** Optional progress hook for user-visible status (see {@link AskPhase}). */
+  onPhase?: (phase: AskPhase, detail?: string) => void;
 }
+
+/**
+ * Gate on concurrent Kimi HTTP requests (NOT whole turns — two agent loops
+ * interleave their requests, so multi-user chat stays responsive while the
+ * provider never sees more than KIMI_MAX_CONCURRENT requests in flight). See
+ * gate.ts for the live failure this fixes.
+ */
+const kimiGate = new Semaphore(config.KIMI_MAX_CONCURRENT);
 
 interface AgentTrace {
   iterations: number;
@@ -257,7 +274,7 @@ type ChatMessage =
  * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Text-only — image
  * turns never reach here (see ask()).
  */
-async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): Promise<string> {
+async function askKimi({ system, messages, tools, effort = 'high', onPhase }: AskInput): Promise<string> {
   if (!kimi) {
     throw new Error(
       'Kimi text backend selected but KIMI_API_KEY is not set — set the key, or LLM_TEXT_BACKEND=bedrock for AWS-native runs',
@@ -291,16 +308,19 @@ async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): 
   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
     trace.iterations = i + 1;
 
+    safePhase(onPhase, 'thinking');
     // No `temperature`: the kimi-for-coding endpoint rejects any value except 1
     // (400 "only 1 is allowed for this model"). Omitting takes the server default.
     const response = await observedTextCompletion(
       () =>
-        kimi.chat.completions.create({
-          model: modelId,
-          messages: convo.slice() as never,
-          tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
-          max_tokens: config.MAX_OUTPUT_TOKENS,
-        } as never),
+        kimiGate.run(() =>
+          kimi.chat.completions.create({
+            model: modelId,
+            messages: convo.slice() as never,
+            tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
+            max_tokens: config.MAX_OUTPUT_TOKENS,
+          } as never),
+        ),
       trace,
     );
 
@@ -383,6 +403,7 @@ async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): 
         log.info({ tool: name, cached: true }, 'tool_call_cached');
         result = cached;
       } else {
+        safePhase(onPhase, 'tool', name);
         result = await tools.handle(name, parsedInput);
         if (result.status === 'success') toolCache.set(cacheKey, result);
       }
@@ -403,13 +424,16 @@ async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): 
       { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
       'Forcing final answer without tools (iteration cap reached)',
     );
+    safePhase(onPhase, 'thinking');
     try {
       const forced = await observedCompletion(() =>
-        kimi.chat.completions.create({
-          model: modelId,
-          messages: convo.slice() as never,
-          max_tokens: config.MAX_OUTPUT_TOKENS,
-        } as never),
+        kimiGate.run(() =>
+          kimi.chat.completions.create({
+            model: modelId,
+            messages: convo.slice() as never,
+            max_tokens: config.MAX_OUTPUT_TOKENS,
+          } as never),
+        ),
       );
       if (forced.usage) {
         trace.inputTokens += forced.usage.prompt_tokens ?? 0;
@@ -475,6 +499,7 @@ async function askBedrock({
   tools,
   effort = 'low',
   modelId = config.BEDROCK_MODEL_LOW,
+  onPhase,
 }: AskInput & { modelId?: string }): Promise<string> {
   const convo: Message[] = messages.map(buildMessage);
 
@@ -489,6 +514,7 @@ async function askBedrock({
   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
     trace.iterations = i + 1;
 
+    safePhase(onPhase, 'thinking');
     const response = await observedCompletion(() =>
       bedrock.send(
         new ConverseCommand({
@@ -549,6 +575,7 @@ async function askBedrock({
         log.info({ tool: name, cached: true }, 'tool_call_cached');
         result = cached;
       } else {
+        safePhase(onPhase, 'tool', name);
         result = await tools.handle(name, input);
         if (result.status === 'success') toolCache.set(cacheKey, result);
       }
@@ -617,6 +644,19 @@ async function askBedrock({
   );
 
   return finalText;
+}
+
+/** Invoke the caller's progress hook without letting it break the loop. */
+function safePhase(
+  onPhase: AskInput['onPhase'],
+  phase: AskPhase,
+  detail?: string,
+): void {
+  try {
+    onPhase?.(phase, detail);
+  } catch {
+    // The hook is UI-only; never let it disturb the agent loop.
+  }
 }
 
 /** Concatenate all `text` blocks in a Converse message, then strip reasoning. */

@@ -1,0 +1,82 @@
+import { describe, test, expect } from 'vitest';
+import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
+import { WorkshopStore, WORKSHOP_MIGRATIONS } from '../store.js';
+
+async function newStore() {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'workshop').migrate('workshop', WORKSHOP_MIGRATIONS);
+  return { store: new WorkshopStore(mem.db()), mem };
+}
+
+describe('WorkshopStore settings', () => {
+  test('seed fills empty fields only; operator edits survive re-seed', async () => {
+    const { store, mem } = await newStore();
+    store.seedSettings({ welcomeChannelId: '111', categoryId: '222' });
+    expect(store.getSettings().welcome_channel_id).toBe('111');
+    expect(store.getSettings().category_id).toBe('222');
+
+    store.setChannels('333', '444');
+    store.seedSettings({ welcomeChannelId: '111', categoryId: '222' });
+    expect(store.getSettings().welcome_channel_id).toBe('333');
+    expect(store.getSettings().category_id).toBe('444');
+    mem.close();
+  });
+
+  test('setChannels resets the welcome message id (it must be reposted)', async () => {
+    const { store, mem } = await newStore();
+    store.setWelcomeMessageId('m1');
+    expect(store.getSettings().welcome_message_id).toBe('m1');
+    store.setChannels('555', '666');
+    expect(store.getSettings().welcome_message_id).toBeNull();
+    mem.close();
+  });
+
+  test('default emoji is 🎓 and can be changed', async () => {
+    const { store, mem } = await newStore();
+    expect(store.getSettings().reaction_emoji).toBe('🎓');
+    store.setReactionEmoji('🧠');
+    expect(store.getSettings().reaction_emoji).toBe('🧠');
+    mem.close();
+  });
+});
+
+describe('WorkshopStore sessions', () => {
+  const base = { guildId: 'g1', userId: 'u1', userTag: 'user#1', nowMs: 1000 };
+
+  test('create → active; close → closed; counts and lookups agree', async () => {
+    const { store, mem } = await newStore();
+    store.createSession({ ...base, channelId: 'c1' });
+    store.createSession({ ...base, channelId: 'c2', nowMs: 2000 });
+
+    expect(store.activeSessionsFor('u1')).toHaveLength(2);
+    expect(store.activeChannelIds().sort()).toEqual(['c1', 'c2']);
+    expect(store.countSessions()).toEqual({ active: 2, closed: 0 });
+
+    store.closeSession('c1', 3000);
+    expect(store.getSession('c1')?.status).toBe('closed');
+    expect(store.getSession('c1')?.closed_at).toBe(3000);
+    expect(store.activeSessionsFor('u1')).toHaveLength(1);
+    expect(store.activeChannelIds()).toEqual(['c2']);
+    expect(store.countSessions()).toEqual({ active: 1, closed: 1 });
+    mem.close();
+  });
+
+  test('context clear and activity are per-session', async () => {
+    const { store, mem } = await newStore();
+    store.createSession({ ...base, channelId: 'c1' });
+    store.clearContext('c1', 5000);
+    store.touchActivity('c1', 6000);
+    const s = store.getSession('c1')!;
+    expect(s.context_cleared_at).toBe(5000);
+    expect(s.last_activity_at).toBe(6000);
+    mem.close();
+  });
+
+  test('panel message id round-trips', async () => {
+    const { store, mem } = await newStore();
+    store.createSession({ ...base, channelId: 'c1' });
+    store.setPanelMessageId('c1', 'panel-1');
+    expect(store.getSession('c1')?.panel_message_id).toBe('panel-1');
+    mem.close();
+  });
+});

@@ -136,6 +136,15 @@ const ConfigSchema = z.object({
   BEDROCK_MODEL_LOW: z.string().min(1).default('us.amazon.nova-lite-v1:0'),
   MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
   MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
+  // Max Kimi HTTP requests in flight at once (a semaphore inside llm/client.ts,
+  // NOT whole turns — two agent loops interleave their requests). Default 1: the
+  // coding endpoint degrades under overlapping requests (2026-08-05: two
+  // overlapping mentions → one turn returned empty content).
+  KIMI_MAX_CONCURRENT: z.coerce.number().int().positive().default(1),
+  // Max message-handling turns executing at once across ALL channels (the
+  // per-channel ordering is always strict FIFO regardless). Protects the Pi;
+  // queued turns show ⏳ on the user's message.
+  MAX_CONCURRENT_TURNS: z.coerce.number().int().positive().default(3),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
   MAX_ATTACHMENT_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
   MAX_ATTACHMENT_COUNT: z.coerce.number().int().positive().default(5),
@@ -218,6 +227,29 @@ const ConfigSchema = z.object({
   // Discord user id of the ticket bot whose form messages we parse. Defaults to
   // Ticket Tool. Change it if the server switches ticket bots.
   EVENT_INTAKE_TICKET_BOT_ID: z.string().regex(/^\d{17,20}$/).default('557628352828014614'),
+
+  // ── Workshop (escuela/trabajo) private LLM sessions (workshop capability) ──
+  // Passive capability: a member reacts to the bot's welcome message in the
+  // WELCOME channel and gets a private text channel under the CATEGORY where
+  // they chat with the bot like a web LLM (no mentions needed), with sandboxed
+  // Python + document skills. All vars seed the DB settings on first boot; the
+  // DB wins after (manage live via `config_workshop`). Unset and unseeded → the
+  // capability idles.
+  WORKSHOP_WELCOME_CHANNEL_ID: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(/^\d{17,20}$/, 'WORKSHOP_WELCOME_CHANNEL_ID must be a Discord snowflake').optional(),
+  ),
+  WORKSHOP_CATEGORY_ID: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(/^\d{17,20}$/, 'WORKSHOP_CATEGORY_ID must be a Discord snowflake').optional(),
+  ),
+  // The emoji members react with on the welcome message. A unicode emoji.
+  WORKSHOP_REACTION_EMOJI: z.string().min(1).default('🎓'),
+  // Active private sessions a single member may have at once.
+  WORKSHOP_MAX_SESSIONS_PER_USER: z.coerce.number().int().positive().default(2),
+  // Wall-clock cap for one sandboxed python run, seconds (the tool may ask for
+  // less; never more).
+  WORKSHOP_PY_TIMEOUT_S: z.coerce.number().int().positive().default(60),
 
   // ── Sancus Ops copilot (sancus_ops capability) ─────────────────────────────
   // A strictly READ-ONLY ops assistant for the Sancus platform. Observes the
