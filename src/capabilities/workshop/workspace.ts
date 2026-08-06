@@ -1,4 +1,12 @@
-import { mkdirSync, readdirSync, statSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import {
+  mkdirSync,
+  readdirSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  unlinkSync,
+} from 'node:fs';
 import { join, resolve, sep, normalize, dirname } from 'node:path';
 
 /**
@@ -83,6 +91,11 @@ export class SessionWorkspace {
 
   stat(relPath: string): { bytes: number } {
     return { bytes: statSync(this.absolute(relPath)).size };
+  }
+
+  /** Delete one local file (the durable copy may live on Discord). */
+  remove(relPath: string): void {
+    unlinkSync(this.absolute(relPath));
   }
 
   /** Recursive listing (visible files only), sorted by path. */

@@ -26,6 +26,24 @@ export interface WorkshopSession {
   /** The pinned control-panel message (skipped from history, kept on purge). */
   panel_message_id: string | null;
   closed_at: number | null;
+  /** Running compaction summary of conversation older than the live window. */
+  summary: string | null;
+  /** Messages created at/before this timestamp are covered by `summary`. */
+  summary_covers_until: number | null;
+}
+
+/**
+ * Manifest of a session's workspace files whose DURABLE copy lives on Discord
+ * (an attachment on a channel message): deliverables the bot sent and files
+ * the member uploaded. The Pi workspace is just a cache — a GC'd file is
+ * re-downloaded from its message on demand.
+ */
+export interface WorkshopFileRecord {
+  channel_id: string;
+  rel_path: string;
+  message_id: string;
+  bytes: number;
+  updated_at: number;
 }
 
 export const WORKSHOP_MIGRATIONS: Migration[] = [
@@ -59,6 +77,26 @@ export const WORKSHOP_MIGRATIONS: Migration[] = [
         ON workshop_sessions (user_id, status);
       CREATE INDEX IF NOT EXISTS workshop_sessions_status
         ON workshop_sessions (status, last_activity_at DESC);
+    `,
+  },
+  {
+    version: 2,
+    up: `
+      -- Context compaction: a running summary of conversation older than the
+      -- live history window, injected into the system prompt.
+      ALTER TABLE workshop_sessions ADD COLUMN summary TEXT;
+      ALTER TABLE workshop_sessions ADD COLUMN summary_covers_until INTEGER;
+
+      -- Discord-as-storage manifest: workspace files whose durable copy is an
+      -- attachment on a channel message (message_id). Local files are a cache.
+      CREATE TABLE IF NOT EXISTS workshop_files (
+        channel_id TEXT    NOT NULL,
+        rel_path   TEXT    NOT NULL,
+        message_id TEXT    NOT NULL,
+        bytes      INTEGER NOT NULL DEFAULT 0,
+        updated_at INTEGER NOT NULL,
+        PRIMARY KEY (channel_id, rel_path)
+      );
     `,
   },
 ];
@@ -175,10 +213,61 @@ export class WorkshopStore {
       .run(nowMs, channelId);
   }
 
+  /** Full context reset: also drops the compaction summary (borrón total).
+   * The file manifest is deliberately untouched — "limpiar" keeps files. */
   clearContext(channelId: string, nowMs: number): void {
     this.db
-      .prepare('UPDATE workshop_sessions SET context_cleared_at = ? WHERE channel_id = ?')
+      .prepare(
+        `UPDATE workshop_sessions
+         SET context_cleared_at = ?, summary = NULL, summary_covers_until = NULL
+         WHERE channel_id = ?`,
+      )
       .run(nowMs, channelId);
+  }
+
+  setSummary(channelId: string, summary: string, coversUntil: number): void {
+    this.db
+      .prepare(
+        'UPDATE workshop_sessions SET summary = ?, summary_covers_until = ? WHERE channel_id = ?',
+      )
+      .run(summary, coversUntil, channelId);
+  }
+
+  // ── File manifest (Discord as the durable store) ──────────────────────────
+
+  recordFile(input: {
+    channelId: string;
+    relPath: string;
+    messageId: string;
+    bytes: number;
+    nowMs: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO workshop_files (channel_id, rel_path, message_id, bytes, updated_at)
+         VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT(channel_id, rel_path) DO UPDATE SET
+           message_id = excluded.message_id,
+           bytes      = excluded.bytes,
+           updated_at = excluded.updated_at`,
+      )
+      .run(input.channelId, input.relPath, input.messageId, input.bytes, input.nowMs);
+  }
+
+  fileManifest(channelId: string): WorkshopFileRecord[] {
+    return this.db
+      .prepare('SELECT * FROM workshop_files WHERE channel_id = ? ORDER BY rel_path')
+      .all(channelId) as WorkshopFileRecord[];
+  }
+
+  removeFileRecord(channelId: string, relPath: string): void {
+    this.db
+      .prepare('DELETE FROM workshop_files WHERE channel_id = ? AND rel_path = ?')
+      .run(channelId, relPath);
+  }
+
+  deleteFileRecords(channelId: string): void {
+    this.db.prepare('DELETE FROM workshop_files WHERE channel_id = ?').run(channelId);
   }
 
   closeSession(channelId: string, nowMs: number): void {

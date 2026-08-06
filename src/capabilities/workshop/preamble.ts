@@ -10,6 +10,8 @@ export interface WorkshopPromptContext {
   venvAvailable: boolean;
   /** Names of files the user attached to THIS message, already saved to uploads/. */
   savedUploads: string[];
+  /** Running compaction summary of conversation older than the live window. */
+  summary?: string | null;
 }
 
 const SKILLS_BLOCK = `# Habilidades (recetas)
@@ -56,6 +58,7 @@ Asistente de estudio y trabajo: tareas, ensayos, presentaciones, hojas de cálcu
 
 ${SKILLS_BLOCK}${sandboxNote}
 
+${ctx.summary ? `# Resumen de lo trabajado antes en esta sesión (contexto comprimido)\n${ctx.summary}\n` : ''}
 # Workspace de la sesión (persiste entre mensajes)
 ${filesBlock}${uploadsLine}
 

@@ -26,6 +26,9 @@ Y tranquilx: solo te muestra los canales **que tú puedes ver**. Lo que no es pa
 - **Puedes interrumpirlo**: si está tardando y le escribes otro mensaje, suelta lo que estaba haciendo y atiende lo nuevo — como en los chats de IA de página web.
 - **Ves lo que está haciendo en vivo**: una línea de estado que se va actualizando ("🐍 Ejecutando código · paso 3 · 45s") y que al terminar se convierte en la respuesta.
 - **Ya no promete y se queda a medias**: le dimos mucho más aire para pensar en tareas largas, así que "te armo un documento Word" ahora termina con el documento de verdad en el chat.
+- **Un error ya no lo deja "trabado"**: antes, si una respuesta fallaba, el bot podía quedarse repitiendo el mismo error aunque le volvieras a preguntar. Ahora esos tropiezos se olvidan solos.
+- **Memoria de sesión larga**: en sesiones largas el bot va resumiendo lo trabajado, así que no pierde el hilo aunque lleven horas — y "limpiar" sigue borrando todo de verdad.
+- **Tus archivos viven en el canal**: lo que subes y lo que el bot genera queda como adjuntos en tu taller (por eso "limpiar" conserva los mensajes con archivos), y la Raspberry solo guarda una copia temporal que se limpia sola.
 - Menos vueltas en general: cuando algo no le sale, lo dice y propone alternativa en vez de insistir.
 
 ---
