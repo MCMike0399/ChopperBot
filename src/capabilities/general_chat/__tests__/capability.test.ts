@@ -13,6 +13,7 @@ import { CalendarCapability } from '../../calendar/capability.js';
 import { ConfigurationCapability } from '../../configuration/capability.js';
 import { GeneralChatCapability } from '../capability.js';
 import { GENERAL_CHAT_CAPABILITY_ID } from '../constants.js';
+import { REVZ_GUILD_ID } from '../profile.js';
 import { FRAMEWORK_CAPABILITY_ID, USERS_MIGRATIONS, UserDirectory } from '../../../users/store.js';
 import type { Capability, CapabilityInitDeps } from '../../capability.js';
 
@@ -121,10 +122,10 @@ async function buildHarness(): Promise<Harness> {
   return { memory, registry, router, client, channels, guild, generalCap, configCap, calCap };
 }
 
-async function callBuildTurn(h: Harness) {
+async function callBuildTurn(h: Harness, guildId: string = GUILD_ID) {
   return h.generalCap.buildTurn({
     channelId: '30000000000000000000',
-    guildId: GUILD_ID,
+    guildId,
     userId: CALLER_USER,
     userTag: 'tester#0001',
     now: NOW,
@@ -181,6 +182,49 @@ describe('GeneralChatCapability — snapshot rendering', () => {
     const h = await buildHarness();
     const turn = await callBuildTurn(h);
     expect(turn.tools.tools).toHaveLength(0);
+    h.memory.close();
+  });
+});
+
+describe('GeneralChatCapability — RevZ guild profile', () => {
+  test('a guild without a profile gets the generic prompt and no tools', async () => {
+    const h = await buildHarness();
+    const turn = await callBuildTurn(h, '40000000000000000002');
+    expect(turn.system).toContain('modo chat general');
+    expect(turn.system).not.toContain('Revolución Z');
+    expect(turn.tools.tools).toHaveLength(0);
+    h.memory.close();
+  });
+
+  test('the RevZ guild gets the community assistant prompt grounded in the Estatutos', async () => {
+    const h = await buildHarness();
+    const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+    expect(turn.system).toContain('Revolución Z');
+    expect(turn.system).toContain('Asamblea Popular');
+    expect(turn.system).toContain('Cero tolerancia');
+    expect(turn.system).not.toContain('modo chat general');
+    h.memory.close();
+  });
+
+  test('RevZ turns get the read-only calendar tools and nothing else', async () => {
+    const h = await buildHarness();
+    const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+    expect(turn.tools.tools.map((t) => t.name).sort()).toEqual([
+      'calendar_get_event',
+      'calendar_list_upcoming',
+      'calendar_search_events',
+    ]);
+    h.memory.close();
+  });
+
+  test('write tools are hard-refused even if somehow invoked in a RevZ turn', async () => {
+    const h = await buildHarness();
+    const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+    const result = await turn.tools.handle('calendar_create_event', {
+      title: 'x',
+      start_at_iso: '2026-08-10T20:00:00-06:00',
+    });
+    expect(result.status).toBe('error');
     h.memory.close();
   });
 });
