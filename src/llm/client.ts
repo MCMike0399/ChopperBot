@@ -173,8 +173,9 @@ class ContentFilterRejection extends Error {
 }
 
 /** Last resort when both backends refuse the turn. Spanish + in-voice: the
- * member should learn the provider blocked it, not read a stack-trace hint. */
-const CONTENT_FILTER_FALLBACK =
+ * member should learn the provider blocked it, not read a stack-trace hint.
+ * Exported for history filtering (see EMPTY_RESPONSE_FALLBACK). */
+export const CONTENT_FILTER_FALLBACK =
   'El filtro del proveedor del modelo bloqueó esa pregunta, así que no me llega la respuesta. Si la planteas de otra forma le entro sin problema.';
 
 /**
@@ -265,8 +266,11 @@ type ToolCall = {
 const MAX_EMPTY_RESPONSE_RETRIES = 2;
 
 /** Posted when every attempt came back empty — Spanish, matching the bot's
- * voice (the old English "I couldn't generate a response." was jarring). */
-const EMPTY_RESPONSE_FALLBACK =
+ * voice (the old English "I couldn't generate a response." was jarring).
+ * Exported so history builders can filter it OUT of conversation context:
+ * live 2026-08-06, a session whose history contained two of these taught the
+ * model to answer the user's next question with the same fallback verbatim. */
+export const EMPTY_RESPONSE_FALLBACK =
   'No pude generar una respuesta esta vez — inténtalo de nuevo en un momento.';
 
 type ChatMessage =
