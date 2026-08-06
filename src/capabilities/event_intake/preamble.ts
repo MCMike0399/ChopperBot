@@ -55,6 +55,8 @@ ${renderFormBlock(parsed, requesterId)}
 3. Publica **una sola** propuesta, en español, con este espíritu (no un formulario rígido):
    - Saluda al solicitante (${requesterId ? `menciónalo con <@${requesterId}>` : 'sin mención si no lo tienes'}) y confírmale que su solicitud llegó y que un mod la revisará.
    - Resume para lxs mods: **título**, **fecha y hora resueltas**, **ponente**, la nota del **flyer**, y el **resultado del chequeo de choques**.
+   - La solicitud no pregunta **dónde** será: incluye UNA pregunta breve por la sala (*"¿en qué sala será? — Sala de Eventos, Salón de Círculo de Estudio, Sala de Cineclub, Asamblea-Z…"*), aclarando que no es bloqueante. Con sala, el evento de Discord queda enlazado al canal correcto para que la gente se apunte.
+   - Si quien solicita dijo que SÍ hará su flyer, puedes recordarle que lo puede subir aquí mismo en el ticket: **se usará como portada del evento de Discord** al aprobarse.
    - Cierra invitando a lxs mods a **aprobar o ajustar aquí mismo** mencionándote (ej. "@ChopperBot créalo" o "@ChopperBot sí, pero muévelo al sábado 7pm").
 
 # Reglas
@@ -76,6 +78,8 @@ export function renderTicketConversationPrompt(opts: {
   isMod: boolean;
   /** Exact text that pings the approver roles (''/omitted → none resolvable). */
   modMention?: string;
+  /** The newest image attached in the ticket (the flyer), when there is one. */
+  flyer?: { url: string; authorId: string | null } | null;
 }): string {
   const { now, parsed, requesterId, isMod } = opts;
   const modMention = opts.modMention?.trim() ?? '';
@@ -86,8 +90,9 @@ export function renderTicketConversationPrompt(opts: {
   const roleSection = isMod
     ? `# Quién te habla: un MODERADOR (puede aprobar)
 - Puedes **crear el evento** con \`calendar_create_event\` cuando el mod apruebe. Al crear se publica solito el PDF del mes + ICS en el canal de salida del calendario, y yo agrego el **evento de Discord** al final de tu confirmación (no lo anuncies tú).
-- **Puedes CORREGIR un evento ya creado** con \`calendar_update_event\` (título, hora, fecha, lugar, descripción). Si el mod señala un typo o pide mover la hora de algo que ya está en el calendario, **arréglalo tú** con el \`id\` del evento — nunca digas que no tienes herramienta para editar ni le pases la chamba a un humano. Si no sabes el id, búscalo con \`calendar_search_events\`.
+- **Puedes CORREGIR un evento ya creado** con \`calendar_update_event\` (título, hora, fecha, lugar, descripción). Si el mod señala un typo o pide mover la hora de algo que ya está en el calendario, **arréglalo tú** con el \`id\` del evento — nunca digas que no tienes herramienta para editar ni le pases la chamba a un humano. Si no sabes el id, búscalo con \`calendar_search_events\`. Si el evento ya tiene evento de Discord ligado, la corrección se refleja ahí sola.
 - Con \`calendar_sync_discord_event\` puedes crear el **evento de Discord** (donde la gente se apunta) de un evento que no lo tenga. Úsalo si te lo piden; al aprobar se hace solo.
+- **La sala:** si el formulario no dice dónde será, pregunta UNA vez por la sala (*"¿en qué sala será? — Sala de Eventos, Salón de Círculo de Estudio, Sala de Cineclub, Asamblea-Z…"*), **sin bloquear**: si nadie responde o ya está todo lo demás, créalo igual (al generar el evento de Discord intento adivinar la sala por el título). Si te dicen la sala, pásala como \`location\` al crear.
 - Usa la fecha/hora ya resueltas de la propuesta, salvo que el mod indique un cambio ("muévelo al sábado 7pm", "mejor a las 6"). El mod manda sobre día/hora y sobre aceptar o no.
 - Antes de crear, revisa duplicados con \`calendar_search_events\` (como en el calendario normal). No crees series recurrentes salvo que lo pidan.
 - Al confirmar, di el día y hora local finales (usa \`start_at_local\` del resultado) y que ya quedó en el calendario. Si el flyer lo hace el equipo (el solicitante dijo que no), recuérdalo brevemente.
@@ -95,6 +100,18 @@ export function renderTicketConversationPrompt(opts: {
     : `# Quién te habla: NO es un moderador (no puede aprobar)
 - **No tienes herramienta para crear ni editar el evento** y NO debes decir que lo hiciste. Solo lxs moderadorxs aprueban.
 - Ayuda a afinar los detalles (corregir día/hora/título/ponente), responde dudas y actualiza el entendimiento de la solicitud. Si es el solicitante corrigiendo algo, agradécelo y di que un mod lo revisará y aprobará.`;
+
+  // The flyer the requester attached becomes the Discord event's cover at
+  // approval time (deterministic in the watcher) — the model just needs to
+  // know it can mention that, and which URL to pass if asked to set it.
+  const flyer = opts.flyer ?? null;
+  const flyerSection =
+    isMod && flyer
+      ? `# Flyer disponible para la portada
+Hay una imagen adjunta en este ticket (la subió ${flyer.authorId ? `<@${flyer.authorId}>` : 'alguien'}): es casi seguro el flyer del evento.
+- Al aprobarse, el evento de Discord se crea **con esa imagen de portada** automáticamente — puedes mencionarlo al confirmar.
+- Si te piden ponerla o cambiarla de portada, llama \`calendar_sync_discord_event\` con \`image_url\` tal cual: ${flyer.url}`
+      : '';
 
   // Only advertise the ping when it will actually reach someone; otherwise the
   // model would emit a chip that notifies nobody (or invent a role id).
@@ -114,6 +131,8 @@ ${renderTemporalAwareness(now)}
 ${formBlock}
 
 ${roleSection}
+
+${flyerSection}
 
 ${mentionSection}
 

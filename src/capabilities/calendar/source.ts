@@ -54,6 +54,14 @@ export interface CalendarToolSourceOptions {
    * mid-call) — see {@link ./discord-events.js createEventSyncer}.
    */
   syncer?: DiscordEventSyncer;
+  /**
+   * Image attachment URLs the model may pass as `image_url` to
+   * `calendar_sync_discord_event` — exactly the set advertised in this turn's
+   * system prompt (an attachment in the channel, or the latest flyer in a
+   * ticket). Anything outside the list is refused, so a hallucinated or
+   * injected URL can never reach the fetcher.
+   */
+  allowedImageUrls?: readonly string[];
 }
 
 export class CalendarToolSource implements ToolSource {
@@ -235,11 +243,18 @@ export class CalendarToolSource implements ToolSource {
         description:
           "Create the Discord **Scheduled Event** (the native \"Evento\" members RSVP to, under the server's Eventos tab) for a calendar event that doesn't have one yet, and link the two. Use it when a mod says \"crea el evento de Discord\", \"súbelo a eventos\", \"haz el evento para que se apunten\", or right after creating an event that the community should be able to RSVP to.\n" +
           'Idempotent: if the event is already linked to a live Discord event it returns that one instead of duplicating it. For a recurring series it schedules the NEXT occurrence. The link is what the daily "hoy hay evento" announcement uses, so this is how you make the announcement carry a clickable event.\n' +
+          'Pass `image_url` (one of the image URLs advertised in the system prompt) to set the event\'s cover image/banner — also works on an event that already exists, so "ponle esta portada" is just this call with the image.\n' +
+          'Once linked, later calendar edits and deletes propagate to the Discord event automatically — no need to call this again for that.\n' +
           'If the bot lacks the "Gestionar eventos" server permission this returns `missing_permission` — relay that so an admin can grant it, and ask the mods to create the event by hand meanwhile.',
         inputSchema: {
           type: 'object',
           properties: {
             event_id: { type: 'integer', minimum: 1, description: 'The calendar event id.' },
+            image_url: {
+              type: 'string',
+              description:
+                'Optional. URL of an image offered in this conversation (listed in the system prompt) to use as the event cover/banner. Only advertised URLs are accepted.',
+            },
           },
           required: ['event_id'],
         },
@@ -370,7 +385,8 @@ export class CalendarToolSource implements ToolSource {
       this.store.upsertOverride(id, anchor, patch);
       log.info({ tool: 'calendar_update_event', id, scope, occurrence: anchor, ms: Date.now() - t0 }, 'tool_call');
       const published = await this.publishNow();
-      return { status: 'success', payload: { updated_scope: 'occurrence', occurrence_local: formatInTimezone(patch.start_at ?? anchor), event: serializeMaster(master), published } };
+      const discordEvent = await this.propagateToDiscordEvent('update', id);
+      return { status: 'success', payload: { updated_scope: 'occurrence', occurrence_local: formatInTimezone(patch.start_at ?? anchor), event: serializeMaster(master), published, ...(discordEvent ? { discord_event: discordEvent } : {}) } };
     }
 
     if (scope === 'following') {
@@ -400,7 +416,8 @@ export class CalendarToolSource implements ToolSource {
         });
         log.info({ tool: 'calendar_update_event', id, scope, split_at: anchor, new_id: created.id, ms: Date.now() - t0 }, 'tool_call');
         const published = await this.publishNow();
-        return { status: 'success', payload: { updated_scope: 'following', new_series: serializeMaster(created), published } };
+        const discordEvent = await this.propagateToDiscordEvent('update', id);
+        return { status: 'success', payload: { updated_scope: 'following', new_series: serializeMaster(created), published, ...(discordEvent ? { discord_event: discordEvent } : {}) } };
       }
       // else fall through to a whole-series update below.
     }
@@ -453,7 +470,8 @@ export class CalendarToolSource implements ToolSource {
       'tool_call',
     );
     const published = await this.publishNow();
-    return { status: 'success', payload: { updated_scope: 'series', event: serializeMaster(updated), published } };
+    const discordEvent = await this.propagateToDiscordEvent('update', id);
+    return { status: 'success', payload: { updated_scope: 'series', event: serializeMaster(updated), published, ...(discordEvent ? { discord_event: discordEvent } : {}) } };
   }
 
   private async handleDelete(obj: Record<string, unknown>, t0: number): Promise<ToolHandlerResult> {
@@ -468,7 +486,8 @@ export class CalendarToolSource implements ToolSource {
       this.store.cancelOccurrence(id, anchor);
       log.info({ tool: 'calendar_delete_event', id, scope, occurrence: anchor, ms: Date.now() - t0 }, 'tool_call');
       const published = await this.publishNow();
-      return { status: 'success', payload: { deleted_scope: 'occurrence', occurrence_local: formatInTimezone(anchor), title: master.title, published } };
+      const discordEvent = await this.propagateToDiscordEvent('update', id);
+      return { status: 'success', payload: { deleted_scope: 'occurrence', occurrence_local: formatInTimezone(anchor), title: master.title, published, ...(discordEvent ? { discord_event: discordEvent } : {}) } };
     }
 
     if (scope === 'following') {
@@ -479,21 +498,56 @@ export class CalendarToolSource implements ToolSource {
         this.store.clearOverridesFrom(id, anchor);
         log.info({ tool: 'calendar_delete_event', id, scope, truncated_at: anchor, ms: Date.now() - t0 }, 'tool_call');
         const published = await this.publishNow();
-        return { status: 'success', payload: { deleted_scope: 'following', from_local: formatInTimezone(anchor), title: master.title, published } };
+        const discordEvent = await this.propagateToDiscordEvent('update', id);
+        return { status: 'success', payload: { deleted_scope: 'following', from_local: formatInTimezone(anchor), title: master.title, published, ...(discordEvent ? { discord_event: discordEvent } : {}) } };
       }
       // splitting at the first occurrence → delete the whole series (fall through).
     }
 
+    // The Discord event goes FIRST: `remove` reads the link off the row, and
+    // once the row is gone there's nothing to read. A failure there is
+    // reported but never blocks the calendar delete.
+    const discordEvent = await this.propagateToDiscordEvent('delete', id);
     const deleted = this.store.delete(id);
     if (!deleted) return { status: 'error', payload: { error: `Event #${id} not found.` } };
     log.info({ tool: 'calendar_delete_event', id, scope: 'series', title: deleted.title, recurrence_freq: deleted.recurrence_freq, ms: Date.now() - t0 }, 'tool_call');
     const published = await this.publishNow();
-    return { status: 'success', payload: { deleted_scope: 'series', deleted: serializeMaster(deleted), published } };
+    return { status: 'success', payload: { deleted_scope: 'series', deleted: serializeMaster(deleted), published, ...(discordEvent ? { discord_event: discordEvent } : {}) } };
   }
 
   private async handlePublishAll(): Promise<ToolHandlerResult> {
     const result = await this.publishNow();
     return { status: result.ok ? 'success' : 'error', payload: { published: result } };
+  }
+
+  /**
+   * Push a calendar mutation through to the linked Discord scheduled event, so
+   * the thing members RSVP to never drifts from the calendar: edits refresh it
+   * (title/time/sala), a whole-series delete cancels it. Quiet by design — only
+   * outcomes the model should mention in its confirmation are returned
+   * (`updated` / `deleted` / `error`); unlinked rows and no-op refreshes come
+   * back `undefined`. Never fails the calendar op over the Discord side.
+   */
+  private async propagateToDiscordEvent(
+    kind: 'update' | 'delete',
+    id: number,
+  ): Promise<Record<string, unknown> | undefined> {
+    if (!this.syncer) return undefined;
+    try {
+      if (kind === 'delete') {
+        const res = await this.syncer.remove(id);
+        if (!res.ok) return { action: 'error', message: res.message };
+        return res.action === 'deleted' ? { action: 'deleted' } : undefined;
+      }
+      const res = await this.syncer.refresh(id);
+      if (!res.ok) return { action: 'error', message: res.message };
+      return res.action === 'updated'
+        ? { action: 'updated', url: res.url, changed: res.changed }
+        : undefined;
+    } catch (err) {
+      log.warn({ err, id, kind }, 'calendar.discord_event_propagation_failed');
+      return undefined;
+    }
   }
 
   /**
@@ -517,6 +571,20 @@ export class CalendarToolSource implements ToolSource {
     t0: number,
   ): Promise<ToolHandlerResult> {
     const eventId = asPositiveInt(obj.event_id, 'event_id');
+    const imageUrl = asOptionalString(obj.image_url);
+    if (imageUrl !== null && !(this.options.allowedImageUrls ?? []).includes(imageUrl)) {
+      // The model may only use an image the conversation actually offered —
+      // anything else is a hallucination (or an injection) and must not be
+      // fetched on its say-so.
+      return {
+        status: 'error',
+        payload: {
+          error:
+            'Esa URL de imagen no corresponde a ninguna imagen ofrecida en esta conversación. ' +
+            'Pídele a la persona que adjunte la imagen aquí y vuelve a intentarlo con la URL ofrecida.',
+        },
+      };
+    }
     if (!this.syncer) {
       return {
         status: 'error',
@@ -527,7 +595,7 @@ export class CalendarToolSource implements ToolSource {
         },
       };
     }
-    const result = await this.syncer.sync(eventId);
+    const result = await this.syncer.sync(eventId, { imageUrl });
     log.info(
       { tool: 'calendar_sync_discord_event', eventId, ok: result.ok, ms: Date.now() - t0 },
       'tool_call',
@@ -543,6 +611,7 @@ export class CalendarToolSource implements ToolSource {
           url: result.url,
           created: result.created,
           start_at_local: result.startAtLocal,
+          image_set: result.imageSet === true,
         },
       },
     };

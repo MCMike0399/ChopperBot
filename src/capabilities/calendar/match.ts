@@ -34,6 +34,8 @@ export interface MatchableDiscordEvent {
   name: string;
   description: string | null;
   startAtMs: number;
+  /** Cover image CDN URL, when the event has a banner (the announcement attaches it). */
+  imageUrl?: string | null;
 }
 
 export interface MatchCandidate {
