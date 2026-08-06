@@ -24,7 +24,7 @@ type GatewayMessage = OmitPartialGroupDMChannel<Message>;
 import { basename, join } from 'node:path';
 import { existsSync } from 'node:fs';
 import { log } from '../../log.js';
-import { ask } from '../../llm/client.js';
+import { ask, TurnAbortedError } from '../../llm/client.js';
 import { chunkBotReply } from '../../discord/chunk.js';
 import { normalizeTurns, type Turn } from '../../discord/history.js';
 import { StatusReactor } from '../../discord/status-reactions.js';
@@ -86,6 +86,14 @@ export class WorkshopWatcher {
   private readonly now: () => number;
   /** Users with a channel-creation in flight (double-click guard). */
   private readonly creating = new Set<string>();
+  /**
+   * Abort flag of each channel's newest pending/running turn. A NEW message
+   * from the session owner flips it, so the older turn stops at its next
+   * step (between model requests / tool calls) and the new turn — behind it
+   * in the FIFO queue — takes over with the full history. Web-LLM-style
+   * interruption: "nooo" shouldn't wait minutes behind a doomed loop.
+   */
+  private readonly turnAborts = new Map<string, { aborted: boolean }>();
 
   constructor(private readonly deps: WorkshopWatcherDeps) {
     this.now = deps.now ?? (() => Date.now());
@@ -293,13 +301,29 @@ export class WorkshopWatcher {
       this.deps.store.touchActivity(message.channelId, this.now());
       const reactor = new StatusReactor(message, this.deps.client.user?.id);
 
+      // A newer message interrupts the channel's older pending/running turn:
+      // it stops at its next step and this turn (behind it in the FIFO queue)
+      // answers with the full history — including what the older turn's tools
+      // already left in the workspace.
+      const prev = this.turnAborts.get(message.channelId);
+      if (prev) prev.aborted = true;
+      const abortFlag = { aborted: false };
+      this.turnAborts.set(message.channelId, abortFlag);
+
       try {
         await this.deps.turnQueue.run(
           message.channelId,
-          () => this.runTurn(message, session, reactor),
+          () => this.runTurn(message, session, reactor, abortFlag),
           { onQueued: () => reactor.set('queued') },
         );
       } catch (err) {
+        if (err instanceof TurnAbortedError) {
+          // Superseded by a newer message — clean up silently; the newer
+          // turn owns the conversation now.
+          reactor.resolve();
+          log.info({ channelId: message.channelId }, 'workshop.turn_interrupted');
+          return;
+        }
         reactor.fail();
         if (err instanceof QueueBusyError) {
           await message.reply(QUEUE_BUSY_REPLY).catch(() => {});
@@ -307,6 +331,10 @@ export class WorkshopWatcher {
         }
         log.error({ err, channelId: message.channelId }, 'workshop.turn_failed');
         await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
+      } finally {
+        if (this.turnAborts.get(message.channelId) === abortFlag) {
+          this.turnAborts.delete(message.channelId);
+        }
       }
     } catch (err) {
       log.error({ err }, 'workshop.message.error');
@@ -317,7 +345,10 @@ export class WorkshopWatcher {
     message: GatewayMessage,
     session: WorkshopSession,
     reactor: StatusReactor,
+    abortFlag: { aborted: boolean },
   ): Promise<void> {
+    // Interrupted while still waiting in the queue → don't even start.
+    if (abortFlag.aborted) throw new TurnAbortedError();
     reactor.set('thinking');
     await message.channel.sendTyping().catch(() => {});
     const heartbeat = setInterval(() => void message.channel.sendTyping().catch(() => {}), 8000);
@@ -390,10 +421,15 @@ export class WorkshopWatcher {
         messages: turns,
         tools,
         onPhase: (phase) => reactor.set(phase),
+        shouldAbort: () => abortFlag.aborted,
       });
     } finally {
       clearInterval(heartbeat);
     }
+
+    // Interrupted after the loop finished but before posting: discard — the
+    // newer turn answers with full context (web-LLM interrupt semantics).
+    if (abortFlag.aborted) throw new TurnAbortedError();
 
     const parts = chunkBotReply(reply);
     let anchor: Message | null = await message.reply(parts[0]).catch(() => null);
