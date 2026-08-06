@@ -227,4 +227,17 @@ describe('GeneralChatCapability — RevZ guild profile', () => {
     expect(result.status).toBe('error');
     h.memory.close();
   });
+
+  test('staff-only capability channels never reach the assistant prompt', async () => {
+    const h = await buildHarness();
+    // The calendar capability is bound to the Gestión comisión's channel.
+    h.router.setBinding('1483675563871961248', 'calendar');
+    const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+    expect(turn.system).not.toContain('1483675563871961248');
+    expect(turn.system).not.toContain('chat-gestión');
+    // The capability itself is still described (the calendar exists and the
+    // assistant can read it) — only the staff channel info is hidden.
+    expect(turn.system).toContain('**calendar**');
+    h.memory.close();
+  });
 });

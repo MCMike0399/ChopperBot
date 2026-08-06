@@ -13,6 +13,15 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.10.1 — 2026-08-06
+
+🎭 **Ajustes finos al asistente de la comunidad**
+
+- **Habla más natural.** Se acabó lo de "compa esto, compa aquello" en cada respuesta.
+- **Ya no manda a la banda a canales internos del staff.** Para agendar un evento siempre orienta a abrir ticket, y si preguntan dónde se vota la película del cineclub, los manda directo a 🗳️│votaciones.
+
+---
+
 ## 1.10.0 — 2026-08-06
 
 🧠 **ChopperBot ahora es el asistente de la comunidad en cualquier canal**
