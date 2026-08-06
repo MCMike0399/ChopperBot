@@ -336,7 +336,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
             model: modelId,
             messages: convo.slice() as never,
             tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
-            max_tokens: config.MAX_OUTPUT_TOKENS,
+            max_tokens: config.KIMI_MAX_OUTPUT_TOKENS,
           } as never),
         ),
       trace,
@@ -450,7 +450,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
           kimi.chat.completions.create({
             model: modelId,
             messages: convo.slice() as never,
-            max_tokens: config.MAX_OUTPUT_TOKENS,
+            max_tokens: config.KIMI_MAX_OUTPUT_TOKENS,
           } as never),
         ),
       );
