@@ -9,7 +9,7 @@ import {
 } from '@aws-sdk/client-bedrock-runtime';
 import { config } from '../config.js';
 import { log } from '../log.js';
-import { llmHealth } from './health.js';
+import { isContentFilterRejection, llmHealth } from './health.js';
 import type { Turn } from '../discord/history.js';
 import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source.js';
 
@@ -104,6 +104,46 @@ async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Same as observedCompletion, but re-labels a provider moderation refusal as a
+ * ContentFilterRejection so ask() can recover from it (retry, then the other
+ * backend) instead of surfacing an error to the member. `toolCallsExecuted` is
+ * read at throw time: it's what makes the retry decision safe.
+ */
+async function observedTextCompletion<T>(
+  call: () => Promise<T>,
+  trace: AgentTrace,
+): Promise<T> {
+  try {
+    return await observedCompletion(call);
+  } catch (err) {
+    if (isContentFilterRejection(err)) {
+      throw new ContentFilterRejection(err, trace.toolCalls.length);
+    }
+    throw err;
+  }
+}
+
+/**
+ * Thrown by askKimi when the provider's risk/moderation filter refused the
+ * request (see isContentFilterRejection). Carries how many tool calls the loop
+ * had already executed, because that decides whether retrying is safe.
+ */
+class ContentFilterRejection extends Error {
+  constructor(
+    readonly original: unknown,
+    readonly toolCallsExecuted: number,
+  ) {
+    super(original instanceof Error ? original.message : String(original));
+    this.name = 'ContentFilterRejection';
+  }
+}
+
+/** Last resort when both backends refuse the turn. Spanish + in-voice: the
+ * member should learn the provider blocked it, not read a stack-trace hint. */
+const CONTENT_FILTER_FALLBACK =
+  'El filtro del proveedor del modelo bloqueó esa pregunta, así que no me llega la respuesta. Si la planteas de otra forma le entro sin problema.';
+
+/**
  * Entry point. Bedrock (Amazon Nova Lite) serves image turns always: route
  * there when the turn carries an image, or when effort 'low' (the vision tier)
  * is requested explicitly. Text turns go to Kimi by default, or to Bedrock
@@ -120,7 +160,63 @@ export async function ask(input: AskInput): Promise<string> {
   if (config.LLM_TEXT_BACKEND === 'bedrock') {
     return askBedrock({ ...input, effort, modelId: config.BEDROCK_MODEL_ID });
   }
-  return askKimi(input);
+  try {
+    return await askKimi(input);
+  } catch (err) {
+    if (!(err instanceof ContentFilterRejection)) throw err;
+    return recoverFromContentFilter(input, err);
+  }
+}
+
+/**
+ * Recovery for a moderated prompt: retry Kimi once, then hand the turn to
+ * Bedrock, then give up with a Spanish message.
+ *
+ * Why a retry at all — the filter is probabilistic, not a verdict on the text:
+ * the prompt that broke on 2026-08-06 ("¿qué deberíamos hacer con las personas
+ * que apoyan a china…?") answered normally when replayed minutes later, as did
+ * the same question about Israel. So the cheapest correct recovery is to ask
+ * again.
+ *
+ * Why Bedrock second — this is the ONE exception to "Nova Lite is for images
+ * only". RevZ is a political community whose own Estatutos are explicitly
+ * anti-imperialist and anti-Zionist, so its members WILL keep hitting a Chinese
+ * provider's risk filter on exactly the subjects the assistant exists to
+ * discuss. Answering in Nova's weaker voice beats refusing the community's
+ * actual questions. It is rare (2 rejections in the first day of general_chat
+ * v1.10.0), so the metered cost stays a rounding error.
+ */
+async function recoverFromContentFilter(
+  input: AskInput,
+  first: ContentFilterRejection,
+): Promise<string> {
+  // Both recovery paths restart the agent loop from scratch. That is only safe
+  // before any tool has run: retrying after e.g. calendar_create_event would
+  // create the event a second time. A rejection on the first request — the
+  // common case — has executed nothing.
+  if (first.toolCallsExecuted > 0) {
+    log.warn(
+      { toolCallsExecuted: first.toolCallsExecuted, err: first.message },
+      'llm.content_filter.no_retry_after_tools',
+    );
+    return CONTENT_FILTER_FALLBACK;
+  }
+
+  log.warn({ err: first.message }, 'llm.content_filter.retrying_kimi');
+  try {
+    return await askKimi(input);
+  } catch (err) {
+    if (!(err instanceof ContentFilterRejection)) throw err;
+    if (err.toolCallsExecuted > 0) return CONTENT_FILTER_FALLBACK;
+  }
+
+  log.warn('llm.content_filter.falling_back_to_bedrock');
+  try {
+    return await askBedrock({ ...input, effort: 'low' });
+  } catch (err) {
+    log.error({ err }, 'llm.content_filter.bedrock_fallback_failed');
+    return CONTENT_FILTER_FALLBACK;
+  }
 }
 
 // ── Kimi (OpenAI-compatible chat completions) ────────────────────────────────
@@ -197,13 +293,15 @@ async function askKimi({ system, messages, tools, effort = 'high' }: AskInput): 
 
     // No `temperature`: the kimi-for-coding endpoint rejects any value except 1
     // (400 "only 1 is allowed for this model"). Omitting takes the server default.
-    const response = await observedCompletion(() =>
-      kimi.chat.completions.create({
-        model: modelId,
-        messages: convo.slice() as never,
-        tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
-        max_tokens: config.MAX_OUTPUT_TOKENS,
-      } as never),
+    const response = await observedTextCompletion(
+      () =>
+        kimi.chat.completions.create({
+          model: modelId,
+          messages: convo.slice() as never,
+          tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
+          max_tokens: config.MAX_OUTPUT_TOKENS,
+        } as never),
+      trace,
     );
 
     if (response.usage) {
