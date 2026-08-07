@@ -89,6 +89,11 @@ export class SessionWorkspace {
     return { content: slice.toString('utf-8'), truncated: size > maxBytes, bytes: size };
   }
 
+  /** Raw bytes of a workspace file (binary-safe — for storage uploads). */
+  readBytes(relPath: string): Uint8Array {
+    return readFileSync(this.absolute(relPath));
+  }
+
   stat(relPath: string): { bytes: number } {
     return { bytes: statSync(this.absolute(relPath)).size };
   }

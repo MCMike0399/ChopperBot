@@ -44,6 +44,12 @@ export interface WorkshopFileRecord {
   message_id: string;
   bytes: number;
   updated_at: number;
+  /**
+   * Key of this file's copy in object storage (MinIO on the HDD), or NULL when
+   * storage is disabled / the upload hasn't happened yet. The Discord carrier
+   * message stays the fallback either way.
+   */
+  storage_key: string | null;
 }
 
 export const WORKSHOP_MIGRATIONS: Migration[] = [
@@ -97,6 +103,17 @@ export const WORKSHOP_MIGRATIONS: Migration[] = [
         updated_at INTEGER NOT NULL,
         PRIMARY KEY (channel_id, rel_path)
       );
+    `,
+  },
+  {
+    version: 3,
+    up: `
+      -- Object-storage (MinIO on the HDD) copy of each manifest file. NULL =
+      -- Discord-carrier only (pre-MinIO rows, storage disabled, or a failed
+      -- upload that a later turn will retry). recordFile's upsert deliberately
+      -- never touches this column: an archive re-point changes the Discord
+      -- carrier, not the stored object.
+      ALTER TABLE workshop_files ADD COLUMN storage_key TEXT;
     `,
   },
 ];
@@ -258,6 +275,13 @@ export class WorkshopStore {
     return this.db
       .prepare('SELECT * FROM workshop_files WHERE channel_id = ? ORDER BY rel_path')
       .all(channelId) as WorkshopFileRecord[];
+  }
+
+  /** Record (or clear) the object-storage key of a manifest file's copy. */
+  setStorageKey(channelId: string, relPath: string, storageKey: string | null): void {
+    this.db
+      .prepare('UPDATE workshop_files SET storage_key = ? WHERE channel_id = ? AND rel_path = ?')
+      .run(storageKey, channelId, relPath);
   }
 
   removeFileRecord(channelId: string, relPath: string): void {

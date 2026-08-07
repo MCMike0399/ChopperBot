@@ -90,6 +90,10 @@ export class ConfigWorkshopAdminSource implements ToolSource {
               max_sessions_per_user: config.WORKSHOP_MAX_SESSIONS_PER_USER,
               sandbox_available: sandboxAvailable(),
               venv_available: venv,
+              // Durable file store for session documents (MinIO on the HDD).
+              storage: config.MINIO_ACCESS_KEY
+                ? { backend: 'minio', endpoint: config.MINIO_ENDPOINT, bucket: config.MINIO_BUCKET }
+                : { backend: 'disabled (solo Discord)' },
               note: !settings.welcome_channel_id || !settings.category_id
                 ? 'Falta configurar canal de bienvenida y/o categoría (set_channels).'
                 : undefined,

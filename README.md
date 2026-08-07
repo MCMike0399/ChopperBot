@@ -98,7 +98,7 @@ systemctl --user status chopperbot.service                    # confirm: active 
 journalctl --user -u chopperbot -f -o cat | npx pino-pretty   # live logs
 ```
 
-Observability is `journalctl` only — there are no log files on the Pi. See [`CLAUDE.md`](CLAUDE.md) for the full deployment, scheduler, and Instagram anti-detection / guardrail details.
+Observability is `journalctl` only — there are no log files on the Pi. See [`CLAUDE.md`](CLAUDE.md) (the always-loaded index) and [`docs/`](docs/) — e.g. `docs/deployment.md` for deployment, `docs/capabilities/instagram-monitor.md` for the scheduler and anti-detection / guardrail details.
 
 ## License
 

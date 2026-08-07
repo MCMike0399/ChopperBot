@@ -258,6 +258,20 @@ const ConfigSchema = z.object({
   // less; never more).
   WORKSHOP_PY_TIMEOUT_S: z.coerce.number().int().positive().default(60),
 
+  // ── Object storage (MinIO on the Pi's 2TB HDD) ─────────────────────────────
+  // Durable byte store behind capabilities that outgrow the local disk —
+  // today: workshop session files (the Pi workspace stays a bounded cache;
+  // the Discord carrier message remains the fallback copy). Self-hosted MinIO,
+  // S3 API bound to localhost, data under /srv/seafile/minio. BOTH keys unset
+  // → storage disabled → pre-MinIO behavior (Discord-only), zero changes.
+  MINIO_ENDPOINT: z.string().min(1).default('http://127.0.0.1:9500'),
+  // MinIO accepts any region string; the SDK requires one to sign requests.
+  MINIO_REGION: z.string().min(1).default('us-east-1'),
+  MINIO_BUCKET: z.string().min(1).default('chopperbot'),
+  // Scoped service account (bucket-rw policy only), NOT the MinIO root user.
+  MINIO_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  MINIO_SECRET_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+
   // ── redacted-ops copilot (redacted-ops capability) ─────────────────────────────
   // A strictly READ-ONLY ops assistant for the redacted platform. Observes the
   // backend only through CloudWatch Logs Insights (logsvc wide events) and
@@ -293,6 +307,13 @@ const ConfigSchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['ACCESS_KEY_ID'],
       message: 'ACCESS_KEY_ID and SECRET_ACCESS_KEY must be set together (or both unset for the default AWS credential chain)',
+    });
+  }
+  if ((c.MINIO_ACCESS_KEY && !c.MINIO_SECRET_KEY) || (!c.MINIO_ACCESS_KEY && c.MINIO_SECRET_KEY)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['MINIO_ACCESS_KEY'],
+      message: 'MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set together (or both unset to disable object storage)',
     });
   }
 });

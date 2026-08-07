@@ -33,9 +33,12 @@ import { QueueBusyError, type TurnQueue } from '../../discord/turn-queue.js';
 import { QUEUE_BUSY_REPLY, GENERIC_ERROR_REPLY } from '../../discord/handlers.js';
 import { resolveAttachments } from '../../attachments/resolver.js';
 import { composeToolSources } from '../../tools/source.js';
+import type { ObjectStorage } from '../../storage/object-storage.js';
 import type { WorkshopStore, WorkshopSession } from './store.js';
 import { SessionWorkspace, workspaceDirFor } from './workspace.js';
-import { WorkshopToolSource, type SessionActions } from './tools.js';
+import { deleteSessionObjects, restoreFromStorage, uploadToStorage } from './storage.js';
+import { WorkshopToolSource, MAX_SEND_FILE_BYTES, type SessionActions } from './tools.js';
+import { archiveSessionFiles } from './archive.js';
 import { sandboxAvailable } from './sandbox.js';
 import { buildChannelHistory, type ChannelHistoryResult } from './history.js';
 import { compactConversation, shouldCompact } from './compact.js';
@@ -62,6 +65,12 @@ export interface WorkshopWatcherDeps {
   pyTimeoutMs: number;
   /** Fired whenever a session is created or closed (cache invalidation). */
   onSessionsChanged?: () => void;
+  /**
+   * Durable object store for session files (MinIO on the HDD). Null/omitted =
+   * the pre-MinIO behavior (Discord carrier messages only). Every use is
+   * best-effort — storage failures degrade to Discord, never break a turn.
+   */
+  storage?: ObjectStorage | null;
   now?: () => number;
 }
 
@@ -489,6 +498,7 @@ export class WorkshopWatcher {
     }
     if (pendingClear) {
       await this.purgeChannel(message.channel, session, anchor?.id ?? null);
+      await this.archiveFiles(message.channel, session);
     }
     if (pendingClose) {
       await this.closeSession(session.channel_id, 'tool');
@@ -556,8 +566,8 @@ export class WorkshopWatcher {
         const safeName = sanitizeFileName(att.name);
         const relPath = `uploads/${safeName}`;
         workspace.writeBytes(relPath, bytes);
-        // The user's message IS the durable copy — the local file is a cache
-        // the GC may drop and rehydration restore.
+        // The user's message IS the fallback durable copy — the local file is
+        // a cache the GC may drop and rehydration restore.
         this.deps.store.recordFile({
           channelId: message.channelId,
           relPath,
@@ -565,6 +575,15 @@ export class WorkshopWatcher {
           bytes: bytes.length,
           nowMs: this.now(),
         });
+        // MinIO (HDD) is the primary durable copy. Best-effort: a down MinIO
+        // leaves storage_key NULL and the Discord carrier keeps working.
+        if (this.deps.storage) {
+          await uploadToStorage(this.deps.storage, this.deps.store, {
+            channelId: message.channelId,
+            relPath,
+            bytes,
+          });
+        }
         saved.push(relPath);
       } catch (err) {
         log.warn({ err, file: att.name }, 'workshop.upload_save_failed');
@@ -574,24 +593,35 @@ export class WorkshopWatcher {
   }
 
   /**
-   * Restore manifest files missing from the local cache by re-downloading
-   * their attachment from the recorded Discord message (message fetch gives a
-   * FRESH CDN url — stored urls expire, message ids don't). A record whose
-   * message is gone (Unknown Message 10008) is dropped; transient network
-   * failures keep the record for the next attempt.
+   * Restore manifest files missing from the local cache. MinIO (the HDD) is
+   * the primary durable copy; the recorded Discord carrier message is the
+   * fallback (message fetch gives a FRESH CDN url — stored urls expire,
+   * message ids don't). A record whose message is gone (Unknown Message
+   * 10008) is dropped; transient network failures keep the record for the
+   * next attempt.
    */
   private async rehydrate(session: WorkshopSession, workspace: SessionWorkspace): Promise<void> {
     const manifest = this.deps.store.fileManifest(session.channel_id);
     const missing = manifest.filter((f) => !workspace.exists(f.rel_path));
     if (missing.length === 0) return;
     const channel = await this.deps.client.channels.fetch(session.channel_id).catch(() => null);
-    if (!channel || !channel.isTextBased()) return;
     for (const f of missing) {
+      if (this.deps.storage && f.storage_key) {
+        const restored = await restoreFromStorage(this.deps.storage, workspace, f);
+        if (restored) {
+          log.info(
+            { channelId: session.channel_id, file: f.rel_path, source: 'minio' },
+            'workshop.rehydrated',
+          );
+          continue;
+        }
+        // Miss/error → fall through to the Discord carrier below.
+      }
+      if (!channel || !channel.isTextBased()) return;
       try {
         const msg = await channel.messages.fetch(f.message_id);
-        const wanted = basename(f.rel_path);
-        const att = [...msg.attachments.values()].find(
-          (a) => a.name === wanted || sanitizeFileName(a.name) === wanted,
+        const att = [...msg.attachments.values()].find((a) =>
+          attachmentNameMatches(a.name, f.rel_path),
         );
         if (!att) {
           this.deps.store.removeFileRecord(session.channel_id, f.rel_path);
@@ -603,7 +633,10 @@ export class WorkshopWatcher {
         clearTimeout(timer);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         workspace.writeBytes(f.rel_path, new Uint8Array(await res.arrayBuffer()));
-        log.info({ channelId: session.channel_id, file: f.rel_path }, 'workshop.rehydrated');
+        log.info(
+          { channelId: session.channel_id, file: f.rel_path, source: 'discord' },
+          'workshop.rehydrated',
+        );
       } catch (err) {
         if ((err as { code?: number }).code === 10008) {
           // The carrying message was deleted — the file is truly gone.
@@ -627,7 +660,8 @@ export class WorkshopWatcher {
       const file = new AttachmentBuilder(abs, { name: basename(relPath) });
       if (!message.channel.isSendable()) return;
       const sent = await message.channel.send({ content: caption ?? undefined, files: [file] });
-      // The channel message is now the durable copy of this deliverable.
+      // The channel message is now the fallback durable copy of this
+      // deliverable; MinIO (HDD) gets the primary one.
       this.deps.store.recordFile({
         channelId: message.channelId,
         relPath,
@@ -635,6 +669,13 @@ export class WorkshopWatcher {
         bytes: workspace.stat(relPath).bytes,
         nowMs: this.now(),
       });
+      if (this.deps.storage) {
+        await uploadToStorage(this.deps.storage, this.deps.store, {
+          channelId: message.channelId,
+          relPath,
+          bytes: workspace.readBytes(relPath),
+        });
+      }
       log.info({ channelId: message.channelId, file: relPath }, 'workshop.file_sent');
     } catch (err) {
       log.warn({ err, file: relPath }, 'workshop.file_send_failed');
@@ -691,6 +732,38 @@ export class WorkshopWatcher {
     }
   }
 
+  /**
+   * Post the 📁 consolidated files message after a clear (uploads + delivered
+   * files), re-point the manifest at it and drop the now-redundant carrier
+   * messages. Best-effort: a failure leaves the pre-archive behavior (every
+   * carrier message simply survives the purge).
+   */
+  private async archiveFiles(
+    channel: GatewayMessage['channel'] | null,
+    session: WorkshopSession,
+  ): Promise<void> {
+    try {
+      if (!channel || channel.type !== ChannelType.GuildText) return;
+      const workspace = new SessionWorkspace(workspaceDirFor(this.deps.dataDir, session.channel_id));
+      workspace.ensure();
+      // Restore any GC'd local copies from their carrier messages first.
+      await this.rehydrate(session, workspace);
+      const stats = await archiveSessionFiles({
+        store: this.deps.store,
+        workspace,
+        channel,
+        channelId: session.channel_id,
+        nowMs: () => this.now(),
+        maxSendBytes: MAX_SEND_FILE_BYTES,
+      });
+      if (stats.attached > 0 || stats.keptInPlace > 0) {
+        log.info({ channelId: session.channel_id, ...stats }, 'workshop.files_archived');
+      }
+    } catch (err) {
+      log.warn({ err, channelId: session.channel_id }, 'workshop.files_archive_failed');
+    }
+  }
+
   /** Goodbye + delete the channel + mark the session closed. */
   async closeSession(channelId: string, initiator: 'tool' | 'button' | 'admin'): Promise<boolean> {
     const session = this.deps.store.getSession(channelId);
@@ -710,10 +783,12 @@ export class WorkshopWatcher {
       await channel.delete(`Taller cerrado (${initiator}) por ${session.user_tag}`);
       this.deps.store.closeSession(channelId, this.now());
       this.deps.onSessionsChanged?.();
-      // The channel (the durable file store) is gone — the local cache and
-      // the manifest are useless now.
+      // The channel (a durable file store) is gone — the manifest, the local
+      // cache AND the stored objects go with it (close = "everything is gone"
+      // on every store).
       this.deps.store.deleteFileRecords(channelId);
       rmSync(workspaceDirFor(this.deps.dataDir, channelId), { recursive: true, force: true });
+      if (this.deps.storage) await deleteSessionObjects(this.deps.storage, channelId);
       log.info({ channelId, initiator }, 'workshop.session_closed');
       return true;
     } catch (err) {
@@ -726,13 +801,14 @@ export class WorkshopWatcher {
   }
 
   /**
-   * Disk garbage collection — Discord is the durable store, the Pi is a cache:
-   *   - Idle active sessions (>6 h): local files whose durable copy lives on a
-   *     channel message (manifest) are dropped (rehydration restores them on
-   *     the next turn); unarchived intermediates get a 48 h TTL (recomputable
-   *     from the archived uploads).
+   * Disk garbage collection — MinIO (and Discord as fallback) is the durable
+   * store, the Pi is a cache:
+   *   - Idle active sessions (>6 h): local files whose durable copy lives in
+   *     the manifest are dropped (rehydration restores them on the next turn);
+   *     unarchived intermediates get a 48 h TTL (recomputable from the
+   *     archived uploads).
    *   - Workspaces of sessions no longer active (closed / channel deleted):
-   *     removed entirely.
+   *     removed entirely — locally, in the manifest, and in object storage.
    * Called hourly by the capability. Never throws.
    */
   async gcSweep(): Promise<{ filesDeleted: number; bytesFreed: number; dirsRemoved: number }> {
@@ -769,6 +845,7 @@ export class WorkshopWatcher {
           if (!entry.isDirectory() || active.has(entry.name)) continue;
           rmSync(join(sessionsRoot, entry.name), { recursive: true, force: true });
           this.deps.store.deleteFileRecords(entry.name);
+          if (this.deps.storage) await deleteSessionObjects(this.deps.storage, entry.name);
           dirsRemoved += 1;
         }
       }
@@ -817,13 +894,22 @@ export class WorkshopWatcher {
         case BTN_CLEAR: {
           await interaction.deferReply().catch(() => {});
           this.deps.store.clearContext(session.channel_id, this.now());
+          const hasFiles = this.deps.store.fileManifest(session.channel_id).length > 0;
           const reply = await interaction
-            .followUp('🧹 Listo — borrón y cuenta nueva. (Tus archivos del workspace siguen ahí.)')
+            .followUp(
+              hasFiles
+                ? '🧹 Listo — borrón y cuenta nueva. Tus archivos quedan reunidos en el mensaje 📁 de aquí abajo.'
+                : '🧹 Listo — borrón y cuenta nueva.',
+            )
             .catch(() => null);
           await this.purgeChannel(
             (interaction.channel as GatewayMessage['channel'] | null) ?? null,
             session,
             reply?.id ?? null,
+          );
+          await this.archiveFiles(
+            (interaction.channel as GatewayMessage['channel'] | null) ?? null,
+            session,
           );
           break;
         }
@@ -892,8 +978,27 @@ export function sanitizeFileName(name: string): string {
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-zA-Z0-9._-]+/g, '_')
-    .replace(/^\.+/, '_')
-    .slice(0, 80);
-  return cleaned || 'archivo';
+    .replace(/^\.+/, '_');
+  // Truncating to 80 chars must not amputate the extension — a PDF landing in
+  // the workspace as "libro_2011" (no .pdf) confuses both tools and the model
+  // (live 2026-08-06: the Federici book lost its extension to the slice).
+  const ext = cleaned.match(/\.[a-zA-Z0-9]{1,10}$/)?.[0] ?? '';
+  const stem = ext ? cleaned.slice(0, -ext.length) : cleaned;
+  const truncated = stem.slice(0, 80 - ext.length) + ext;
+  return truncated || 'archivo';
+}
+
+/**
+ * Whether a Discord attachment carries the workspace file `relPath`. Discord
+ * NORMALIZES attachment filenames (trailing dots/spaces are stripped as
+ * Windows-unsafe), so the carrier's name can differ from the manifest's
+ * basename — live: a file recorded as `…primitiva2011.` came back as
+ * `…primitiva2011` and rehydration couldn't find its own file. Compare raw,
+ * sanitized, and trailing-dot-folded forms.
+ */
+export function attachmentNameMatches(attName: string, relPath: string): boolean {
+  const wanted = basename(relPath);
+  const fold = (s: string) => s.replace(/[.\s]+$/, '');
+  return attName === wanted || sanitizeFileName(attName) === wanted || fold(attName) === fold(wanted);
 }
 

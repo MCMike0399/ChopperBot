@@ -13,6 +13,33 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.14.0 — 2026-08-07
+
+🗄️ **Los archivos de tu taller ahora viven en el disco grande de la casa**
+
+Todo lo que subes a tu taller y lo que el bot genera ahí (PDFs, Excels, documentos, gráficas) ahora se guarda en el **disco duro grande** del servidor, con copia de respaldo en el canal. Antes tus archivos vivían solo en el chat y en la tarjeta de memoria chica — ahora hay casi 2 terabytes de espacio para que los talleres crezcan tranquilitos.
+
+### Talleres
+- **Tus archivos tienen casa nueva**: cada documento de taller se guarda automáticamente en el almacenamiento grande. Si el bot se reinicia o limpia su memoria de trabajo, tus archivos reaparecen solos cuando los vuelves a necesitar.
+- **Cerrar el taller sigue borrando todo**: cuando cierras tu taller desde el panel, sus archivos desaparecen de todos los lugares donde se guardan — como siempre.
+- **Corrección**: un archivo cuyo nombre terminaba en punto (un caso raro de nombre largo) no se encontraba al recuperarlo; ya se reconoce sin problema.
+
+---
+
+## 1.13.0 — 2026-08-06
+
+📚 **Resumir libros completos ya funciona — por tandas y sin quedarse sin aire**
+
+Nos llegó el caso de prueba perfecto: "necesito una explicación por capítulo de este libro" — ¡408 páginas! El bot lo intentaba todo de una sola vez, se quedaba sin aire y terminaba respondiendo "No pude generar una respuesta…". Ya quedó corregido: ahora prepara el libro una sola vez (índice + capítulos separados), **trabaja de 1 a 3 capítulos por vuelta**, va guardando todo en un documento y te entrega el avance. Tú solo dices **"sigue"** y continúa exactamente por donde iba, sin repetir trabajo. Y si una tarea larga se atora al final, ahora reintenta la respuesta en vez de rendirse.
+
+### Talleres
+- **Limpiar el chat ahora deja tus archivos a la vista**: al darle 🧹, todo lo que subiste y lo que el bot generó queda reunido en un solo mensaje 📁 del canal. Borrón de conversación de verdad, con los archivos intactos y fáciles de encontrar.
+- **PDFs aún mejor leídos**: nueva herramienta para extraer **tablas** de un PDF (te las puede entregar en Excel), y mejor estrategia para libros largos: primero el índice, capítulos por separado, avance por partes.
+- **Los nombres de archivo largos ya no pierden su extensión**: un PDF con nombre larguísimo llegaba al taller sin el ".pdf" al final; ya se conserva.
+- Refuerzo interno: los límites de memoria/tiempo del entorno aislado de Python no se estaban aplicando por un detalle del sistema; ya funcionan como se diseñó.
+
+---
+
 ## 1.12.0 — 2026-08-06
 
 🗺️ **ChopperBot ya conoce todos los canales del servidor**

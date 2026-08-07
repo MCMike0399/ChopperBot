@@ -89,8 +89,10 @@ export function buildBwrapArgs(opts: {
     '--setenv', 'XDG_CACHE_HOME', '/tmp/cache',
     '--',
     '/bin/sh', '-c',
+    // /bin/sh is dash: one option per ulimit call (a combined `ulimit -v … -t …`
+    // fails with "too many arguments" and silently drops ALL the limits).
     // -f is in 512-byte blocks: 2097152 ≈ 1 GiB per created file.
-    `ulimit -v ${MEMORY_LIMIT_KB} -t ${opts.cpuSeconds} -f 2097152; exec ${python} ${opts.scriptRelPath}`,
+    `ulimit -v ${MEMORY_LIMIT_KB}; ulimit -t ${opts.cpuSeconds}; ulimit -f 2097152; exec ${python} ${opts.scriptRelPath}`,
   ];
   return args;
 }
