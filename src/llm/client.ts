@@ -456,44 +456,61 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
   // Forcing pass without `tools` so the model must synthesize prose. Runs when
   // we ran out of iterations mid-tool-calling, OR when the model lost the
   // tool-call protocol and emitted scaffolding as text (removing the tools is
-  // exactly what un-sticks that).
+  // exactly what un-sticks that). The prose nudge goes in EVERY time — live
+  // 2026-08-06 (workshop, whole-book summary): a cap-reached force with no
+  // nudge came back `finish_reason: 'tool_calls'` again (Kimi keeps calling
+  // tools from history even with none advertised) and the user got the empty
+  // fallback. One bounded retry covers a forcing pass that still misfires.
   if (!finalText && (lastFinishReason === 'tool_calls' || degenerate)) {
     log.info(
       { iterations: trace.iterations, toolCalls: trace.toolCalls.length, degenerate },
       'Forcing final answer without tools',
     );
-    if (degenerate) {
-      convo.push({
-        role: 'user',
-        content:
-          'Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. ' +
-          'Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea.',
-      });
-    }
-    safePhase(onPhase, 'thinking');
-    try {
-      const forced = await observedCompletion(() =>
-        kimiGate.run(() =>
-          kimi.chat.completions.create({
-            model: modelId,
-            messages: convo.slice() as never,
-            max_tokens: config.KIMI_MAX_OUTPUT_TOKENS,
-          } as never),
-        ),
-      );
-      if (forced.usage) {
-        trace.inputTokens += forced.usage.prompt_tokens ?? 0;
-        trace.outputTokens += forced.usage.completion_tokens ?? 0;
+    convo.push({
+      role: 'user',
+      content:
+        'Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. ' +
+        'Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea.',
+    });
+    for (let attempt = 1; attempt <= 2 && !finalText; attempt++) {
+      safePhase(onPhase, 'thinking');
+      try {
+        const forced = await observedCompletion(() =>
+          kimiGate.run(() =>
+            kimi.chat.completions.create({
+              model: modelId,
+              messages: convo.slice() as never,
+              max_tokens: config.KIMI_MAX_OUTPUT_TOKENS,
+            } as never),
+          ),
+        );
+        if (forced.usage) {
+          trace.inputTokens += forced.usage.prompt_tokens ?? 0;
+          trace.outputTokens += forced.usage.completion_tokens ?? 0;
+        }
+        lastFinishReason = forced.choices?.[0]?.finish_reason ?? lastFinishReason;
+        const forcedContent = forced.choices?.[0]?.message?.content;
+        finalText = typeof forcedContent === 'string' ? extractText(forcedContent) : '';
+        if (finalText && isDegenerateOutput(finalText)) {
+          log.warn('llm.degenerate_output_discarded_on_forcing');
+          finalText = '';
+        }
+        if (!finalText && attempt < 2) {
+          log.warn(
+            { finishReason: lastFinishReason, attempt },
+            'Forcing pass returned no usable text — retrying',
+          );
+          convo.push({
+            role: 'user',
+            content:
+              'Último intento: NO uses herramientas, ya no están disponibles. ' +
+              'Escribe la respuesta para el usuario como texto normal, aunque sea parcial.',
+          });
+        }
+      } catch (err) {
+        log.error({ err }, 'Forcing pass failed');
+        break;
       }
-      lastFinishReason = forced.choices?.[0]?.finish_reason ?? lastFinishReason;
-      const forcedContent = forced.choices?.[0]?.message?.content;
-      finalText = typeof forcedContent === 'string' ? extractText(forcedContent) : '';
-      if (finalText && isDegenerateOutput(finalText)) {
-        log.warn('llm.degenerate_output_discarded_on_forcing');
-        finalText = '';
-      }
-    } catch (err) {
-      log.error({ err }, 'Forcing pass failed');
     }
   }
 

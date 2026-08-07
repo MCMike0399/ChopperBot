@@ -25,6 +25,8 @@ import type {
 import { WORKSHOP_CAPABILITY_ID } from './constants.js';
 import { WORKSHOP_MIGRATIONS, WorkshopStore } from './store.js';
 import { WorkshopWatcher } from './watcher.js';
+import { createObjectStorage } from '../../storage/index.js';
+import type { ObjectStorage } from '../../storage/object-storage.js';
 
 /** How long the active-session channel set is cached before re-reading SQLite. */
 const SESSION_CACHE_TTL_MS = 10_000;
@@ -47,6 +49,8 @@ export class WorkshopCapability implements Capability {
 
   private store: WorkshopStore | null = null;
   private watcher: WorkshopWatcher | null = null;
+  /** Durable file store (MinIO on the HDD); null = Discord-only carriers. */
+  private storage: ObjectStorage | null = null;
   private dataDir = './data';
   private boundClient: Client | null = null;
   private messageListener: ((m: OmitPartialGroupDMChannel<Message>) => void) | null = null;
@@ -70,12 +74,21 @@ export class WorkshopCapability implements Capability {
       categoryId: config.WORKSHOP_CATEGORY_ID,
     });
     const settings = this.store.getSettings();
+    // Durable object storage for session files (MinIO on the HDD). Null when
+    // unconfigured — the watcher then keeps the Discord-only behavior. A down
+    // server does NOT disable it: per-call failures degrade gracefully and a
+    // later recovery needs no restart.
+    this.storage = createObjectStorage();
+    if (this.storage && !(await this.storage.ensureReady())) {
+      log.warn({ capability: this.id, backend: this.storage.backend }, 'workshop.storage_unavailable');
+    }
     log.info(
       {
         capability: this.id,
         welcomeChannel: settings.welcome_channel_id,
         category: settings.category_id,
         activeSessions: this.store.countSessions().active,
+        storage: this.storage?.backend ?? 'disabled',
       },
       'WorkshopCapability initialized',
     );
@@ -93,6 +106,7 @@ export class WorkshopCapability implements Capability {
       maxSessionsPerUser: config.WORKSHOP_MAX_SESSIONS_PER_USER,
       pyTimeoutMs: config.WORKSHOP_PY_TIMEOUT_S * 1000,
       onSessionsChanged: () => this.invalidateSessionCache(),
+      storage: this.storage,
     });
 
     this.messageListener = (message: OmitPartialGroupDMChannel<Message>) => {
@@ -150,6 +164,8 @@ export class WorkshopCapability implements Capability {
       clearInterval(this.gcTimer);
       this.gcTimer = null;
     }
+    this.storage?.destroy?.();
+    this.storage = null;
     if (!this.boundClient) return;
     if (this.messageListener) this.boundClient.off(Events.MessageCreate, this.messageListener);
     if (this.reactionListener) this.boundClient.off(Events.MessageReactionAdd, this.reactionListener);

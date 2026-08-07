@@ -118,3 +118,49 @@ describe('WorkshopStore file manifest (Discord as durable store)', () => {
     mem.close();
   });
 });
+
+describe('WorkshopStore file manifest storage_key (migration v3)', () => {
+  const base = { guildId: 'g1', userId: 'u1', userTag: 'user#1', nowMs: 1000 };
+
+  test('setStorageKey round-trips; recordFile upserts preserve it', async () => {
+    const { store, mem } = await newStore();
+    store.createSession({ ...base, channelId: 'c1' });
+    store.recordFile({ channelId: 'c1', relPath: 'a.txt', messageId: 'm1', bytes: 10, nowMs: 1 });
+    expect(store.fileManifest('c1')[0]!.storage_key).toBeNull();
+
+    store.setStorageKey('c1', 'a.txt', 'workshop/c1/a.txt');
+    expect(store.fileManifest('c1')[0]!.storage_key).toBe('workshop/c1/a.txt');
+
+    // An archive re-point changes the Discord carrier, NOT the stored object.
+    store.recordFile({ channelId: 'c1', relPath: 'a.txt', messageId: 'm2', bytes: 10, nowMs: 2 });
+    const rec = store.fileManifest('c1')[0]!;
+    expect(rec.message_id).toBe('m2');
+    expect(rec.storage_key).toBe('workshop/c1/a.txt');
+
+    store.setStorageKey('c1', 'a.txt', null);
+    expect(store.fileManifest('c1')[0]!.storage_key).toBeNull();
+    mem.close();
+  });
+
+  test('a v2 database migrates to v3 with rows intact and NULL storage_key', async () => {
+    const mem = new SqliteMemoryStore({ path: ':memory:' });
+    // Apply only v1+v2 first (the pre-MinIO schema).
+    await new NamespacedMemory(mem, 'workshop').migrate(
+      'workshop',
+      WORKSHOP_MIGRATIONS.filter((m) => m.version <= 2),
+    );
+    const store = new WorkshopStore(mem.db());
+    store.createSession({ ...base, channelId: 'c1' });
+    store.recordFile({ channelId: 'c1', relPath: 'viejo.pdf', messageId: 'm1', bytes: 5, nowMs: 1 });
+
+    // Now the v3 migration lands.
+    await new NamespacedMemory(mem, 'workshop').migrate('workshop', WORKSHOP_MIGRATIONS);
+
+    const rec = store.fileManifest('c1')[0]!;
+    expect(rec.rel_path).toBe('viejo.pdf');
+    expect(rec.storage_key).toBeNull();
+    store.setStorageKey('c1', 'viejo.pdf', 'workshop/c1/viejo.pdf');
+    expect(store.fileManifest('c1')[0]!.storage_key).toBe('workshop/c1/viejo.pdf');
+    mem.close();
+  });
+});
