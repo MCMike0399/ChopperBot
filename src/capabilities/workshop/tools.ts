@@ -94,7 +94,7 @@ export class WorkshopToolSource implements ToolSource {
         description:
           'Ejecuta código Python 3.11 en un sandbox aislado (sin red, sin acceso fuera del workspace). ' +
           'El directorio de trabajo es el workspace de la sesión: los archivos que escribas ahí persisten entre ejecuciones y puedes mandarlos al chat con workshop_send_file. ' +
-          'Librerías disponibles: openpyxl, python-docx, python-pptx, reportlab, matplotlib, numpy, pandas, pillow (+ stdlib). ' +
+          'Librerías disponibles: openpyxl, python-docx, python-pptx, reportlab, matplotlib, numpy, pandas, pillow, pypdf, pdfplumber (+ stdlib, y los CLIs pdftotext/pdfinfo de poppler). ' +
           'stdout/stderr se devuelven (recortados si son muy largos). Imprime lo que necesites ver.',
         inputSchema: {
           type: 'object',
@@ -169,7 +169,7 @@ export class WorkshopToolSource implements ToolSource {
       {
         name: 'workshop_clear_session',
         description:
-          'Limpia la sesión: olvida todo el contexto de la conversación y borra los mensajes del canal (los archivos del workspace se conservan). Úsalo cuando el usuario pida "limpiar", "borrar el chat", "empezar de cero".',
+          'Limpia la sesión: olvida todo el contexto de la conversación y borra los mensajes del canal (los archivos se conservan: quedan reunidos en un mensaje 📁 del canal). Úsalo cuando el usuario pida "limpiar", "borrar el chat", "empezar de cero".',
         inputSchema: { type: 'object', properties: {} },
       },
       {
@@ -263,7 +263,7 @@ export class WorkshopToolSource implements ToolSource {
             status: 'success',
             payload: {
               cleared: true,
-              note: 'Contexto olvidado; los mensajes del canal se borrarán tras esta respuesta. Los archivos del workspace se conservan.',
+              note: 'Contexto olvidado; los mensajes del canal se borrarán tras esta respuesta y los archivos quedarán reunidos en un mensaje 📁.',
             },
           };
         }

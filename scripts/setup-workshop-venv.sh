@@ -18,9 +18,10 @@ python3 -m venv "$VENV"
   reportlab \
   matplotlib \
   pypdf \
+  pdfplumber \
   numpy \
   pandas \
   pillow
 
 echo "workshop venv ready: $VENV"
-"$VENV/bin/python3" -c "import openpyxl, docx, pptx, reportlab, matplotlib, numpy, pandas, PIL, pypdf; print('all imports ok')"
+"$VENV/bin/python3" -c "import openpyxl, docx, pptx, reportlab, matplotlib, numpy, pandas, PIL, pypdf, pdfplumber; print('all imports ok')"
