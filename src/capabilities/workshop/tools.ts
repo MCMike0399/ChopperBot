@@ -46,6 +46,13 @@ export interface WorkshopToolDeps {
   actions: SessionActions;
   venvDir: string | null;
   maxTimeoutMs: number;
+  /**
+   * rel_paths with a durable DELIVERED copy (the manifest: sent deliverables +
+   * user uploads). The model uses this ledger to know what the user actually
+   * received — live 2026-08-09 it insisted "ya te lo envié" about files that
+   * had never left the workspace.
+   */
+  deliveredPaths: () => Set<string>;
 }
 
 /** Trim tool output for the model, keeping head + tail (errors live at the tail). */
@@ -140,7 +147,9 @@ export class WorkshopToolSource implements ToolSource {
       },
       {
         name: 'workshop_list_files',
-        description: 'Lista los archivos del workspace de la sesión (ruta, tamaño, fecha).',
+        description:
+          'Lista los archivos del workspace de la sesión (ruta, tamaño, fecha) y si cada uno YA FUE ENTREGADO al usuario. ' +
+          'Úsala para verificar antes de afirmar que algo fue enviado, o cuando el usuario diga que no le llegó un archivo.',
         inputSchema: { type: 'object', properties: {} },
       },
       {
@@ -222,12 +231,36 @@ export class WorkshopToolSource implements ToolSource {
           };
         }
         case 'workshop_list_files': {
-          const files = this.deps.workspace.list().map((f) => ({
-            path: f.path,
-            bytes: f.bytes,
-            modified_iso: new Date(f.modifiedAt).toISOString(),
-          }));
-          return { status: 'success', payload: { files, count: files.length } };
+          const delivered = this.deps.deliveredPaths();
+          const files = this.deps.workspace.list().map((f) => {
+            const isUpload = f.path.startsWith('uploads/');
+            return {
+              path: f.path,
+              bytes: f.bytes,
+              modified_iso: new Date(f.modifiedAt).toISOString(),
+              tipo: isUpload ? ('subida_del_usuario' as const) : ('generado' as const),
+              // Uploads reached the chat by definition (the user attached them);
+              // generated files only count as delivered once recorded on send.
+              entregado: isUpload || delivered.has(f.path),
+            };
+          });
+          const undelivered = files.filter((f) => !f.entregado).map((f) => f.path);
+          return {
+            status: 'success',
+            payload: {
+              files,
+              count: files.length,
+              pendientes_de_entrega: undelivered,
+              ...(undelivered.length > 0
+                ? {
+                    note:
+                      'Los archivos con entregado=false existen SOLO en el workspace: el usuario NO los ha recibido. ' +
+                      'Si son entregables (o el usuario dice que no le llegaron), envíalos ahora con workshop_send_file. ' +
+                          'Nunca afirmes que un archivo fue enviado si aquí dice entregado=false.',
+                  }
+                : {}),
+            },
+          };
         }
         case 'workshop_send_file': {
           const path = String(obj.path ?? '');

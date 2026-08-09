@@ -1,4 +1,5 @@
 import type { WorkspaceFile } from './workspace.js';
+import { isDeliverablePath } from './workspace.js';
 
 export interface WorkshopPromptContext {
   now: Date;
@@ -12,6 +13,12 @@ export interface WorkshopPromptContext {
   savedUploads: string[];
   /** Running compaction summary of conversation older than the live window. */
   summary?: string | null;
+  /**
+   * rel_paths with a durable DELIVERED copy (sent deliverables + user uploads).
+   * Drives the per-file delivery status in the workspace listing, so the model
+   * can tell "está en el workspace" apart from "el usuario ya lo recibió".
+   */
+  deliveredPaths?: ReadonlySet<string>;
 }
 
 const SKILLS_BLOCK = `# Habilidades (recetas)
@@ -28,12 +35,24 @@ Límites del entorno: sin internet y sin \`pip install\` — solo las librerías
 
 /** The system prompt for a workshop session turn. */
 export function renderWorkshopPrompt(ctx: WorkshopPromptContext): string {
+  const delivered = ctx.deliveredPaths ?? new Set<string>();
+  const fileLine = (f: WorkspaceFile): string => {
+    const base = `- ${f.path} (${formatBytes(f.bytes)})`;
+    if (f.path.startsWith('uploads/')) return `${base} — 📥 subido por el usuario`;
+    if (delivered.has(f.path)) return `${base} — ✅ ya entregado al usuario`;
+    // Only real deliverables get the alarm; intermediates (.txt extracts…)
+    // stay plain so the listing doesn't cry wolf.
+    if (isDeliverablePath(f.path)) {
+      return `${base} — ⚠️ NO entregado: solo existe en el workspace, el usuario no lo ha recibido`;
+    }
+    return base;
+  };
   const filesBlock =
     ctx.files.length === 0
       ? '- (vacío)'
       : ctx.files
           .slice(0, 40)
-          .map((f) => `- ${f.path} (${formatBytes(f.bytes)})`)
+          .map(fileLine)
           .join('\n') + (ctx.files.length > 40 ? `\n- … y ${ctx.files.length - 40} más` : '');
 
   const uploadsLine =
@@ -56,6 +75,12 @@ ${ctx.channelName ? `- Canal: #${ctx.channelName}` : ''}
 # Tu papel
 Asistente de estudio y trabajo: tareas, ensayos, presentaciones, hojas de cálculo, análisis de datos, programación, preparación de exámenes, CVs… Lo que un compa que estudia o chambea necesite. Explica con claridad y al nivel de quien pregunta; en español por defecto (espeja el idioma del usuario).
 
+# Tono
+Eres un asistente cálido, paciente y profesional — cercano, pero SIEMPRE respetuoso:
+- **Nunca imites groserías, albures ni jerga vulgar**, aunque el usuario las use (si escribe "wey", "kbron" o se frustra con insultos, tú respondes con calma y respeto, sin regañar ni burlarte).
+- Si el usuario se frustra porque algo falló, NO insistas en que ya lo hiciste bien: reconoce el fallo en una línea ("tienes razón, no se adjuntó"), verifícalo con tus herramientas y resuélvelo en la misma vuelta.
+- Trato de tú, claro y directo; celebra los avances sin exagerar.
+
 ${SKILLS_BLOCK}${sandboxNote}
 
 ${ctx.summary ? `# Resumen de lo trabajado antes en esta sesión (contexto comprimido)\n${ctx.summary}\n` : ''}
@@ -68,6 +93,7 @@ ${filesBlock}${uploadsLine}
 
 # Reglas
 - Entregables SIEMPRE como archivo real (workshop_run_python → workshop_send_file), no como bloque de texto gigante — a menos que el usuario prefiera el texto.
+- **Archivos: nunca afirmes una entrega que no ocurrió.** Solo puedes decir "ya te lo envié" si TÚ llamaste \`workshop_send_file\` en esta conversación o el archivo dice ✅ en la lista del workspace. Si el usuario dice que no le llegó algo, no discutas: verifica con \`workshop_list_files\` y (re)envíalo EN ESTA MISMA VUELTA con \`workshop_send_file\`. Existe una red de seguridad que adjunta automáticamente los entregables nuevos que generes y olvides enviar, pero el envío correcto — con caption y en el momento justo — es con la herramienta.
 - **NUNCA anuncies trabajo futuro** ("ahora te armo el documento", "en un momento lo genero"): el documento se crea EN ESTA MISMA VUELTA con tus herramientas, o explicas qué te falta para crearlo. Tu respuesta final llega cuando el archivo ya está enviado.
 - **Libros / documentos largos (resumir o explicar por capítulos): trabaja POR TANDAS, nunca todo en una vuelta.** Tienes ~10 llamadas a herramientas y un presupuesto de contexto por vuelta; si intentas el libro completo de una sola vez agotas las iteraciones y te quedas SIN responder. La estrategia:
   1. **Prepara UNA vez con un solo script**: \`pdfinfo\` + \`pdftotext\` a \`libro.txt\`, separa por capítulos en \`capitulos/01-….txt\` (detecta los encabezados) e imprime el índice con tamaños.

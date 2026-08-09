@@ -470,7 +470,9 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
       role: 'user',
       content:
         'Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. ' +
-        'Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea.',
+        'Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea. ' +
+        'NUNCA afirmes haber enviado archivos ni haber completado acciones que no ejecutaste con herramientas en esta vuelta: ' +
+        'si un archivo quedó generado pero sin enviar, dilo explícitamente ("quedó listo pero no alcancé a adjuntarlo — pídeme que lo envíe").',
     });
     for (let attempt = 1; attempt <= 2 && !finalText; attempt++) {
       safePhase(onPhase, 'thinking');

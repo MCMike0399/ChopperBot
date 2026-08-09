@@ -136,3 +136,55 @@ export function workspaceDirFor(dataDir: string, channelId: string): string {
   if (!/^\d{5,25}$/.test(channelId)) throw new Error(`Invalid channel id: ${channelId}`);
   return join(dataDir, 'workshop', 'sessions', channelId);
 }
+
+/**
+ * Extensions that count as user-facing deliverables (the auto-delivery safety
+ * net and the delivery ledger). Intermediates (.txt/.json/.md extracts…) are
+ * deliberately excluded — only files a member would want to download.
+ */
+const DELIVERABLE_EXTS = new Set([
+  '.xlsx',
+  '.docx',
+  '.pptx',
+  '.pdf',
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.svg',
+  '.csv',
+  '.zip',
+  '.mp3',
+  '.wav',
+]);
+
+/**
+ * Whether a workspace path looks like a user-facing deliverable. User uploads
+ * (`uploads/…`) never qualify — they came FROM the user.
+ */
+export function isDeliverablePath(relPath: string): boolean {
+  if (relPath.startsWith('uploads/')) return false;
+  const ext = /\.[a-z0-9]{1,10}$/i.exec(relPath)?.[0]?.toLowerCase();
+  return ext !== undefined && DELIVERABLE_EXTS.has(ext);
+}
+
+/**
+ * The auto-delivery safety net, pure and unit-tested: files created or
+ * modified THIS turn that look like deliverables and were neither queued for
+ * sending by the model nor already recorded in the durable manifest. Live
+ * 2026-08-09: a session's estatutos .docx/.pdf were generated but the model
+ * ended the turn without `workshop_send_file` — the user never got them and
+ * the model couldn't tell. The watcher sends whatever this returns.
+ */
+export function listUndeliveredDeliverables(
+  before: Map<string, number>,
+  after: WorkspaceFile[],
+  skip: ReadonlySet<string>,
+): WorkspaceFile[] {
+  return after.filter(
+    (f) =>
+      isDeliverablePath(f.path) &&
+      before.get(f.path) !== f.modifiedAt && // created or rewritten this turn
+      !skip.has(f.path),
+  );
+}
