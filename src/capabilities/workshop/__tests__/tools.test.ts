@@ -13,7 +13,7 @@ let closed: boolean;
 let contextClearedNow: boolean;
 let renamed: string | null;
 
-function newSource() {
+function newSource(delivered: string[] = []) {
   sent = [];
   cleared = false;
   closed = false;
@@ -29,7 +29,13 @@ function newSource() {
       return { ok: true, name: `taller-${name}` };
     },
   };
-  return new WorkshopToolSource({ workspace, actions, venvDir: null, maxTimeoutMs: 60_000 });
+  return new WorkshopToolSource({
+    workspace,
+    actions,
+    venvDir: null,
+    maxTimeoutMs: 60_000,
+    deliveredPaths: () => new Set(delivered),
+  });
 }
 
 beforeEach(() => {
@@ -81,6 +87,30 @@ describe('workshop file tools', () => {
     const missing = await src.handle('workshop_send_file', { path: 'nada.txt' });
     expect(missing.status).toBe('error');
     expect(sent).toHaveLength(1);
+  });
+
+  test('list_files carries the delivery ledger (uploads always delivered)', async () => {
+    const src = newSource(['enviado.docx']);
+    workspace.writeText('enviado.docx', 'ya');
+    workspace.writeText('pendiente.pdf', 'aún no');
+    workspace.writeText('uploads/apuntes.pdf', 'del usuario');
+
+    const res = await src.handle('workshop_list_files', {});
+    expect(res.status).toBe('success');
+    const payload = res.payload as {
+      files: Array<{ path: string; tipo: string; entregado: boolean }>;
+      pendientes_de_entrega: string[];
+      note?: string;
+    };
+    const byPath = Object.fromEntries(payload.files.map((f) => [f.path, f]));
+    expect(byPath['enviado.docx']).toMatchObject({ tipo: 'generado', entregado: true });
+    expect(byPath['pendiente.pdf']).toMatchObject({ tipo: 'generado', entregado: false });
+    expect(byPath['uploads/apuntes.pdf']).toMatchObject({
+      tipo: 'subida_del_usuario',
+      entregado: true,
+    });
+    expect(payload.pendientes_de_entrega).toEqual(['pendiente.pdf']);
+    expect(payload.note).toContain('workshop_send_file');
   });
 });
 

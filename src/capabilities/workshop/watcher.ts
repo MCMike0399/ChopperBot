@@ -35,7 +35,7 @@ import { resolveAttachments } from '../../attachments/resolver.js';
 import { composeToolSources } from '../../tools/source.js';
 import type { ObjectStorage } from '../../storage/object-storage.js';
 import type { WorkshopStore, WorkshopSession } from './store.js';
-import { SessionWorkspace, workspaceDirFor } from './workspace.js';
+import { SessionWorkspace, workspaceDirFor, listUndeliveredDeliverables } from './workspace.js';
 import { deleteSessionObjects, restoreFromStorage, uploadToStorage } from './storage.js';
 import { WorkshopToolSource, MAX_SEND_FILE_BYTES, type SessionActions } from './tools.js';
 import { archiveSessionFiles } from './archive.js';
@@ -394,6 +394,10 @@ export class WorkshopWatcher {
     // images additionally ride the turn for vision.
     const savedUploads = await this.saveUploads(message, workspace);
 
+    // Snapshot for the auto-delivery safety net: deliverables the agent loop
+    // creates/rewrites but forgets to send are attached after the reply.
+    const filesBefore = new Map(workspace.list().map((f) => [f.path, f.modifiedAt]));
+
     // Deferred side effects the tools may request (executed after the reply).
     const pendingFiles: Array<{ relPath: string; caption: string | null }> = [];
     let pendingClear = false;
@@ -428,6 +432,7 @@ export class WorkshopWatcher {
           actions,
           venvDir,
           maxTimeoutMs: this.deps.pyTimeoutMs,
+          deliveredPaths: () => this.deliveredPaths(session.channel_id),
         }),
       ]);
       const system = renderWorkshopPrompt({
@@ -440,6 +445,7 @@ export class WorkshopWatcher {
         venvAvailable: venvDir !== null,
         savedUploads,
         summary: session.summary,
+        deliveredPaths: this.deliveredPaths(session.channel_id),
       });
 
       log.info(
@@ -495,6 +501,15 @@ export class WorkshopWatcher {
     // Deferred effects, in a safe order: files → purge → close.
     for (const f of pendingFiles) {
       await this.sendWorkspaceFile(message, workspace, f.relPath, f.caption);
+    }
+    // Auto-delivery safety net (live 2026-08-09: a session's estatutos
+    // .docx/.pdf were generated but the model ended the turn without
+    // workshop_send_file, then insisted "ya te lo envié"). Attach whatever
+    // deliverable THIS turn created/rewrote that nobody queued; the ledger
+    // shows it as ✅ from the next turn on. Pointless if the channel is
+    // about to be deleted.
+    if (!pendingClose) {
+      await this.autoSendForgottenDeliverables(message, workspace, filesBefore, pendingFiles);
     }
     if (pendingClear) {
       await this.purgeChannel(message.channel, session, anchor?.id ?? null);
@@ -682,6 +697,38 @@ export class WorkshopWatcher {
       await message.channel
         .send(`⚠️ No pude subir \`${relPath}\` — inténtalo de nuevo.`)
         .catch(() => {});
+    }
+  }
+
+  /** rel_paths the durable manifest records (sent deliverables + user uploads). */
+  private deliveredPaths(channelId: string): Set<string> {
+    return new Set(this.deps.store.fileManifest(channelId).map((f) => f.rel_path));
+  }
+
+  /**
+   * Attach deliverables this turn created or rewrote that the model forgot to
+   * send (and that were never delivered before). Oversized ones are skipped —
+   * the ledger will flag them ⚠️ next turn so the model can zip/split them.
+   */
+  private async autoSendForgottenDeliverables(
+    message: GatewayMessage,
+    workspace: SessionWorkspace,
+    filesBefore: Map<string, number>,
+    pendingFiles: Array<{ relPath: string; caption: string | null }>,
+  ): Promise<void> {
+    const skip = this.deliveredPaths(message.channelId);
+    for (const f of pendingFiles) skip.add(f.relPath);
+    const forgotten = listUndeliveredDeliverables(filesBefore, workspace.list(), skip).filter(
+      (f) => f.bytes <= MAX_SEND_FILE_BYTES,
+    );
+    for (const f of forgotten) {
+      log.info({ channelId: message.channelId, file: f.path }, 'workshop.file_auto_send');
+      await this.sendWorkspaceFile(
+        message,
+        workspace,
+        f.path,
+        `📎 Esto lo generé en esta vuelta y casi se me pasa adjuntarlo: \`${basename(f.path)}\``,
+      );
     }
   }
 

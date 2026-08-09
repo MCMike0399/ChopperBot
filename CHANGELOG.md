@@ -13,6 +13,19 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.15.0 — 2026-08-09
+
+📎 **"Ya te lo envié" — y esta vez, de verdad**
+
+Nos llegó el caso: alguien pidió su documento corregido en Word y PDF, el bot respondía "ya te lo envié" una y otra vez… y el archivo nunca llegaba. El documento sí existía, pero se quedaba guardado en el taller sin adjuntarse, y el bot no tenía forma de darse cuenta. Ya quedó corregido por todos los frentes — y de paso el bot aprendió modales.
+
+### Talleres
+- **Los archivos generados ya no se quedan sin adjuntar**: si el bot crea un entregable (Word, Excel, PDF, gráfica…) y por cualquier razón no lo adjunta en su respuesta, el sistema lo adjunta automáticamente al final de la vuelta. Nunca más un "aquí está" sin archivo.
+- **El bot ahora sabe qué te llegó y qué no**: su lista de archivos del taller marca cuáles ya te entregó ✅ y cuáles siguen sin enviarse ⚠️. Si le dices "no me llegó", lo verifica y te lo reenvía al momento, en vez de discutir.
+- **Tono más de asistente**: el taller ahora mantiene un trato cálido pero siempre respetuoso — no repite groserías aunque se le hable con ellas, y cuando algo falla lo reconoce y lo corrige en vez de insistir en que estaba bien.
+
+---
+
 ## 1.14.0 — 2026-08-07
 
 🗄️ **Los archivos de tu taller ahora viven en el disco grande de la casa**
