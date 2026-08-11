@@ -258,12 +258,13 @@ const ConfigSchema = z.object({
   // less; never more).
   WORKSHOP_PY_TIMEOUT_S: z.coerce.number().int().positive().default(60),
 
-  // ── Object storage (MinIO on the Pi's 2TB HDD) ─────────────────────────────
+  // ── Object storage (MinIO on the Pi's 1TB SSD) ─────────────────────────────
   // Durable byte store behind capabilities that outgrow the local disk —
   // today: workshop session files (the Pi workspace stays a bounded cache;
   // the Discord carrier message remains the fallback copy). Self-hosted MinIO,
-  // S3 API bound to localhost, data under /srv/seafile/minio. BOTH keys unset
-  // → storage disabled → pre-MinIO behavior (Discord-only), zero changes.
+  // S3 API bound to localhost, data under /srv/minio (moved off the 2 TB HDD
+  // 2026-08-10 so the file store no longer depends on the external disk).
+  // BOTH keys unset → storage disabled → pre-MinIO behavior (Discord-only).
   MINIO_ENDPOINT: z.string().min(1).default('http://127.0.0.1:9500'),
   // MinIO accepts any region string; the SDK requires one to sign requests.
   MINIO_REGION: z.string().min(1).default('us-east-1'),

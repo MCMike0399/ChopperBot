@@ -97,7 +97,7 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 - `src/capabilities/<name>/` — one self-contained dir per capability. `capability.ts` (interface), `registry.ts`, and `routing.ts` are the framework glue.
 - `src/tools/source.ts` — provider-neutral `ToolSource` composition (`composeToolSources`); the LLM client is the only place that knows the wire shape.
 - `src/memory/` — the shared SQLite store (`store.ts`) + the per-capability migration runner (`migrations.ts`).
-- `src/storage/` — the provider-neutral object-storage layer (`ObjectStorage` in `object-storage.ts`): `minio.ts` (MinIO on the Pi's 2 TB HDD, via `@aws-sdk/client-s3`, path-style, localhost endpoint), `local.ts` (dev/test backend), `index.ts` (the config-driven factory; returns `null` when `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` are unset → callers keep their pre-storage behavior). Used today by the workshop for durable session-file storage.
+- `src/storage/` — the provider-neutral object-storage layer (`ObjectStorage` in `object-storage.ts`): `minio.ts` (MinIO on the Pi's 1 TB SSD at `/srv/minio`, via `@aws-sdk/client-s3`, path-style, localhost endpoint), `local.ts` (dev/test backend), `index.ts` (the config-driven factory; returns `null` when `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` are unset → callers keep their pre-storage behavior). Used today by the workshop for durable session-file storage.
 - `src/users/` — the framework Discord-user directory (the reserved `__framework__` namespace).
 - `src/attachments/` — image (vision) resolution for incoming Discord attachments.
 - `scripts/` — dev/proof/calibration scripts, **not tests** (some spend real Bedrock/IG budget — see the per-doc notes).
