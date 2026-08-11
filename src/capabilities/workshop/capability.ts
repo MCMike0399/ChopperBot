@@ -139,11 +139,17 @@ export class WorkshopCapability implements Capability {
 
     await this.watcher.ensureWelcomeMessage();
 
-    // Hourly disk GC; also one pass shortly after boot to clean leftovers of
-    // sessions closed while the bot was down. TTLs inside gcSweep gate what
-    // is actually dropped, so running it often is safe.
-    this.gcTimer = setInterval(() => void this.watcher?.gcSweep(), 60 * 60 * 1000);
-    setTimeout(() => void this.watcher?.gcSweep(), 60 * 1000);
+    // Hourly maintenance; also one pass shortly after boot. Order matters:
+    // the storage backfill first (re-uploads manifest files whose MinIO copy
+    // is missing — e.g. uploads that landed while MinIO was still coming up
+    // at boot — using local bytes while they're still cached), then the disk
+    // GC (TTLs inside gcSweep gate what is dropped, so running often is safe).
+    const maintenance = async (): Promise<void> => {
+      await this.watcher?.storageBackfill();
+      await this.watcher?.gcSweep();
+    };
+    this.gcTimer = setInterval(() => void maintenance(), 60 * 60 * 1000);
+    setTimeout(() => void maintenance(), 60 * 1000);
 
     log.info(
       { capability: this.id, activeSessions: this.store.countSessions().active },
