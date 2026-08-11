@@ -675,6 +675,57 @@ export class WorkshopWatcher {
     }
   }
 
+  /** One backfill pass at a time (it can fetch from Discord — keep it single). */
+  private backfilling = false;
+
+  /**
+   * Re-upload manifest files whose PRIMARY (MinIO) copy is missing —
+   * `storage_key IS NULL` rows recorded while the object store was down.
+   * The canonical producer of those rows is the boot race: this user unit can
+   * start before Docker/MinIO at boot, and uploads in that window degrade to
+   * Discord-only. Bytes come from the local workspace cache when present,
+   * else from the Discord carrier (via rehydrate). Idempotent, best-effort,
+   * never throws — run periodically it heals ANY MinIO downtime window
+   * without the manual `scripts/migrate-workshop-to-minio.ts` step.
+   */
+  async storageBackfill(): Promise<number> {
+    if (!this.deps.storage || this.backfilling) return 0;
+    this.backfilling = true;
+    let uploaded = 0;
+    try {
+      for (const session of this.deps.store.activeSessions()) {
+        const pending = this.deps.store
+          .fileManifest(session.channel_id)
+          .filter((f) => !f.storage_key);
+        if (pending.length === 0) continue;
+        const workspace = new SessionWorkspace(
+          workspaceDirFor(this.deps.dataDir, session.channel_id),
+        );
+        workspace.ensure();
+        if (pending.some((f) => !workspace.exists(f.rel_path))) {
+          // Pull GC'd local copies back from their Discord carriers first.
+          await this.rehydrate(session, workspace);
+        }
+        for (const f of pending) {
+          // Carrier gone too (record dropped by rehydrate) → nothing to heal.
+          if (!workspace.exists(f.rel_path)) continue;
+          const ok = await uploadToStorage(this.deps.storage, this.deps.store, {
+            channelId: session.channel_id,
+            relPath: f.rel_path,
+            bytes: workspace.readBytes(f.rel_path),
+          });
+          if (ok) uploaded += 1;
+        }
+      }
+    } catch (err) {
+      log.warn({ err }, 'workshop.storage_backfill_error');
+    } finally {
+      this.backfilling = false;
+    }
+    if (uploaded > 0) log.info({ uploaded }, 'workshop.storage_backfill');
+    return uploaded;
+  }
+
   /** rel_paths the durable manifest records (sent deliverables + user uploads). */
   private deliveredPaths(channelId: string): Set<string> {
     return new Set(this.deps.store.fileManifest(channelId).map((f) => f.rel_path));

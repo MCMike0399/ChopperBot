@@ -26,6 +26,13 @@ StartLimitBurst=10
 [Service]
 Type=simple
 WorkingDirectory=__REPO__
+# Boot race: MinIO (Docker) usually comes up AFTER this unit at boot, and a
+# systemd USER unit cannot order against the SYSTEM docker.service (different
+# managers) — so poll the local MinIO health endpoint instead, up to ~90 s.
+# Always exits 0 (the `-` prefix also ignores failures): a genuinely-down
+# MinIO must degrade the workshop to Discord-only, never block the bot; the
+# hourly workshop storage backfill heals whatever landed in the gap.
+ExecStartPre=-/bin/sh -c 'for i in $(seq 1 45); do curl -sf -m 2 http://127.0.0.1:9500/minio/health/live >/dev/null && exit 0; sleep 2; done; exit 0'
 ExecStart=__NODE__ dist/index.js
 Environment=NODE_ENV=production
 # launchd KeepAlive{Crashed=true} equivalent: always restart, 15s throttle.

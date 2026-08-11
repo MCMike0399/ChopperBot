@@ -165,3 +165,74 @@ describe('workshop storage glue', () => {
     expect(await deleteSessionObjects(storage, 'c2')).toBe(0);
   });
 });
+
+describe('storageBackfill (heals the MinIO boot race)', () => {
+  const CH = '123456789012345678';
+
+  async function backfillSetup() {
+    const { store, mem } = await newStore();
+    const dataDir = mkdtempSync(join(tmpdir(), 'backfill-test-'));
+    dirs.push(dataDir);
+    store.createSession({ channelId: CH, guildId: 'g1', userId: 'u1', userTag: 'u#1', nowMs: 1 });
+    const ws = new SessionWorkspace(join(dataDir, 'workshop', 'sessions', CH));
+    ws.ensure();
+    const storage = new FakeStorage();
+    const { WorkshopWatcher } = await import('../watcher.js');
+    const watcher = new WorkshopWatcher({
+      // The local-bytes path never touches Discord; rehydrate is only reached
+      // when a pending file is missing locally.
+      client: { channels: { fetch: async () => null } } as never,
+      store,
+      turnQueue: null as never,
+      dataDir,
+      reactionEmoji: () => '🎓',
+      maxSessionsPerUser: 2,
+      pyTimeoutMs: 1000,
+      storage,
+    });
+    return { store, mem, ws, storage, watcher };
+  }
+
+  test('uploads NULL-storage_key files from the local cache and records the key', async () => {
+    const { store, mem, ws, storage, watcher } = await backfillSetup();
+    ws.writeBytes('uploads/a.txt', new Uint8Array([1, 2, 3]));
+    store.recordFile({ channelId: CH, relPath: 'uploads/a.txt', messageId: 'm1', bytes: 3, nowMs: 1 });
+    expect(store.fileManifest(CH)[0]!.storage_key).toBeNull();
+
+    expect(await watcher.storageBackfill()).toBe(1);
+    expect([...storage.objects.get(`workshop/${CH}/uploads/a.txt`)!]).toEqual([1, 2, 3]);
+    expect(store.fileManifest(CH)[0]!.storage_key).toBe(`workshop/${CH}/uploads/a.txt`);
+
+    // Idempotent: a second pass has nothing to do.
+    expect(await watcher.storageBackfill()).toBe(0);
+    mem.close();
+  });
+
+  test('storage still down: keeps the NULL key and heals on a later pass', async () => {
+    const { store, mem, ws, storage, watcher } = await backfillSetup();
+    ws.writeBytes('b.pdf', new Uint8Array([9]));
+    store.recordFile({ channelId: CH, relPath: 'b.pdf', messageId: 'm2', bytes: 1, nowMs: 1 });
+
+    storage.failNext = true;
+    expect(await watcher.storageBackfill()).toBe(0);
+    expect(store.fileManifest(CH)[0]!.storage_key).toBeNull();
+
+    storage.failNext = false;
+    expect(await watcher.storageBackfill()).toBe(1);
+    expect(store.fileManifest(CH)[0]!.storage_key).toBe(`workshop/${CH}/b.pdf`);
+    mem.close();
+  });
+
+  test('a file gone from cache AND carrier is skipped, others still heal', async () => {
+    const { store, mem, ws, storage, watcher } = await backfillSetup();
+    ws.writeBytes('ok.txt', new Uint8Array([4]));
+    store.recordFile({ channelId: CH, relPath: 'ok.txt', messageId: 'm3', bytes: 1, nowMs: 1 });
+    // No local copy and the fake client can't fetch the carrier channel.
+    store.recordFile({ channelId: CH, relPath: 'gone.txt', messageId: 'm4', bytes: 1, nowMs: 1 });
+
+    expect(await watcher.storageBackfill()).toBe(1);
+    expect(storage.objects.has(`workshop/${CH}/ok.txt`)).toBe(true);
+    expect(storage.objects.has(`workshop/${CH}/gone.txt`)).toBe(false);
+    mem.close();
+  });
+});
