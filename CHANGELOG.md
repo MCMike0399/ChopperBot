@@ -26,6 +26,8 @@ La estrella de esta versión son los **talleres privados** (los canales que abre
 
 - El proveedor que se cayó ayer en la mañana (y que nos obligó a cambiar de emergencia) **ya se recuperó**: lo verificamos con toda nuestra batería de pruebas (8/8 en manejo del calendario, 0 fallas) y el bot ya responde de nuevo con su cerebro de siempre. El plan de mudanza definitiva al proveedor nuevo sigue en pie para fin de mes, y si algo vuelve a fallar el cambio es inmediato.
 
+## 1.16.2 — 2026-08-11
+
 📣 **Un solo aviso por evento (adiós al anuncio triplicado)**
 
 Esta mañana el aviso de las 10 del conversatorio salió **tres veces seguidas**, cada una con su notificación a todo el server. No fue la primera vez: pasó también el 5, el 6 y el 8 de agosto. Ya está arreglado de raíz.
