@@ -26,6 +26,13 @@ export const DEFAULT_TICK_MS = 60 * 1000;
 // One account per tick (≤1 outbound IG request per minute) so we never fire a
 // synchronized burst that looks like a bot.
 const ACCOUNTS_PER_TICK = 1;
+// How long a post whose classification failed stays eligible for a retry,
+// measured from its IG capture time. Inside the window the dedup anchor is held
+// back so the next poll re-classifies it; past it we fail closed (record it
+// seen, unpushed) so one permanently-undecidable post can't wedge the account's
+// anchor forever. 24h ≈ 24 retries at the default hourly cadence, which covers a
+// provider outage of any realistic length.
+export const UNDECIDED_RETRY_HORIZON_MS = 24 * 60 * 60 * 1000;
 // Per-account next-due jitter (anti-burst) now lives in store.ts as
 // POLL_JITTER_FRACTION, sized to each account's *adaptive* interval inside
 // dueAccounts (so a 6h-interval account jitters proportionally, not by a global).
@@ -897,9 +904,21 @@ export class InstagramMonitorScheduler {
     // Process oldest-first so Discord receives them in real-world order.
     const chronological = [...newPostsNewestFirst].reverse();
     const pushedByChannel = new Map<string, number>();
+    // Oldest post this poll that the classifier couldn't decide on. The anchor
+    // must not advance past it, or the post is lost for good (see below).
+    let oldestUndecided: RecentPost | null = null;
 
     for (const post of chronological) {
       if (this.disposed) return;
+
+      // Every bound channel already has this post → nothing a verdict could
+      // change. Skip before the cover fetch and the LLM call: this is what makes
+      // holding the anchor back cheap, since a retry poll re-walks the posts
+      // above the stuck one and would otherwise re-classify each of them (an LLM
+      // call *and* an extra IG image fetch — budget plus an automation signal).
+      if (boundChannels.every((channelId) => this.deps.store.hasSeen(channelId, post.igPostId))) {
+        continue;
+      }
 
       // Classify once per post; same outcome for every channel that gets it.
       // The cover is fetched anyway for publishing, so we hand it to the
@@ -938,6 +957,37 @@ export class InstagramMonitorScheduler {
         },
         'instagram_monitor.classified',
       );
+
+      // No verdict (provider 500, or an unparseable reply). Leave the post
+      // UNRECORDED and pin the anchor below it so the next poll classifies it
+      // again — recording it would set `relevant: false` forever and `hasSeen`
+      // would block every retry. Bounded by capture age, not an attempt counter:
+      // once the post ages past the horizon we fail closed exactly as before, so
+      // a permanently-undecidable post can't wedge the anchor indefinitely.
+      if (classification.undecided) {
+        if (post.takenAtMs > Date.now() - UNDECIDED_RETRY_HORIZON_MS) {
+          oldestUndecided ??= post;
+          log.warn(
+            {
+              account: acc.username,
+              shortcode: post.shortcode,
+              reason: classification.reason,
+              retry_after_poll: true,
+            },
+            'instagram_monitor.undecided.retry_queued',
+          );
+          continue;
+        }
+        log.warn(
+          {
+            account: acc.username,
+            shortcode: post.shortcode,
+            reason: classification.reason,
+            age_h: Math.round((Date.now() - post.takenAtMs) / 3_600_000),
+          },
+          'instagram_monitor.undecided.gave_up',
+        );
+      }
 
       for (const channelId of boundChannels) {
         if (this.disposed) return;
@@ -997,7 +1047,32 @@ export class InstagramMonitorScheduler {
       }
     }
 
-    this.deps.store.markPollSuccess(acc.id, Date.now(), next.id, next.at);
+    // An undecided post pins the anchor: advance only to just *below* it, so the
+    // next poll sees it as new again. Posts newer than it were already recorded
+    // seen, so `hasSeen` (and the early skip above) keeps them from re-pushing or
+    // re-classifying — the per-channel seen table is what makes rewinding safe.
+    if (oldestUndecided) {
+      log.warn(
+        {
+          account: acc.username,
+          held_at: oldestUndecided.shortcode,
+          instead_of: next.id,
+        },
+        'instagram_monitor.anchor_held_for_retry',
+      );
+      // `chronological` is oldest-first, so the last post below the undecided one
+      // is its immediate predecessor. Passing a null anchor updates only the poll
+      // bookkeeping (last_polled_at + failure counters), leaving the anchor
+      // untouched — this poll genuinely succeeded, so it must not engage the IG
+      // failure backoff.
+      const prior = [...chronological]
+        .reverse()
+        .find((p) => p.takenAtMs < oldestUndecided.takenAtMs);
+      if (prior) this.deps.store.markPollSuccess(acc.id, Date.now(), prior.igPostId, prior.takenAtMs);
+      else this.deps.store.markPollSuccess(acc.id, Date.now(), null);
+    } else {
+      this.deps.store.markPollSuccess(acc.id, Date.now(), next.id, next.at);
+    }
     // New posts were just recorded for this account → its cadence estimate
     // changed. Refresh it now (cheap, single-account) so the interval adapts
     // without waiting for the daily sweep. Best-effort.

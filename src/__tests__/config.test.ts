@@ -222,4 +222,52 @@ describe('boot validation (LLM text backend + AWS credential pair)', () => {
     expect(config.ACCESS_KEY_ID).toBeUndefined();
     expect(config.SECRET_ACCESS_KEY).toBeUndefined();
   });
+
+  // The 2026-08-23 Kimi→DeepSeek cutover is meant to be ONE env var. These pin
+  // that: selecting deepseek must repoint key/url/model together, and must fail
+  // loudly rather than silently falling back to the Kimi endpoint with the
+  // wrong credentials.
+  test('LLM_TEXT_BACKEND=deepseek resolves textBackend to the DeepSeek endpoint', async () => {
+    process.env.LLM_TEXT_BACKEND = 'deepseek';
+    process.env.DEEPSEEK_API_KEY = 'sk-deepseek-test';
+    delete process.env.DEEP_SEEK_API_KEY;
+
+    const { textBackend } = await import('../config.js');
+    expect(textBackend.provider).toBe('deepseek');
+    expect(textBackend.apiKey).toBe('sk-deepseek-test');
+    expect(textBackend.baseUrl).toBe('https://api.deepseek.com/v1');
+    expect(textBackend.modelId).toBe('deepseek-v4-flash');
+  });
+
+  test('DEEP_SEEK_API_KEY is accepted as an alias (the spelling already in .env)', async () => {
+    process.env.LLM_TEXT_BACKEND = 'deepseek';
+    delete process.env.DEEPSEEK_API_KEY;
+    process.env.DEEP_SEEK_API_KEY = 'sk-alias-test';
+
+    const { textBackend } = await import('../config.js');
+    expect(textBackend.apiKey).toBe('sk-alias-test');
+  });
+
+  test('LLM_TEXT_BACKEND=deepseek exits when neither key spelling is set', async () => {
+    process.env.LLM_TEXT_BACKEND = 'deepseek';
+    delete process.env.DEEPSEEK_API_KEY;
+    delete process.env.DEEP_SEEK_API_KEY;
+    mockExit();
+
+    await expect(import('../config.js')).rejects.toThrow('exit:1');
+  });
+
+  test('default kimi backend leaves textBackend on the Kimi endpoint', async () => {
+    delete process.env.LLM_TEXT_BACKEND;
+    process.env.KIMI_API_KEY = 'sk-kimi-test';
+
+    // Mirror the KIMI_ vars rather than the schema defaults: vitest.setup.ts
+    // pre-fills KIMI_MODEL_ID, so asserting the literal default would pin the
+    // test harness instead of the resolver.
+    const { config, textBackend } = await import('../config.js');
+    expect(textBackend.provider).toBe('kimi');
+    expect(textBackend.apiKey).toBe('sk-kimi-test');
+    expect(textBackend.baseUrl).toBe(config.KIMI_BASE_URL);
+    expect(textBackend.modelId).toBe(config.KIMI_MODEL_ID);
+  });
 });

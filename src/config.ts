@@ -81,11 +81,18 @@ const ConfigSchema = z.object({
   CALENDAR_ANNOUNCE_HOUR: z.coerce.number().int().min(0).max(23).default(10),
   // ── Text brain selector ────────────────────────────────────────────────────
   // `kimi` (default, self-hosted/Pi): every text turn runs on Moonshot Kimi 2.7
-  // Thinking (KIMI_API_KEY required). `bedrock` (AWS-native deploys, e.g. the
-  // ECS redacted-ops bot): text turns run on Amazon Bedrock Converse with
-  // BEDROCK_MODEL_ID, authenticated by the ambient AWS credential chain (task
-  // role on ECS, named profile locally) — no external API key needed.
-  LLM_TEXT_BACKEND: z.enum(['kimi', 'bedrock']).default('kimi'),
+  // Thinking (KIMI_API_KEY required). `deepseek`: the same OpenAI-compatible
+  // code path pointed at DeepSeek V4-Flash (DEEPSEEK_API_KEY required) — see the
+  // DEEPSEEK_ block below. `bedrock` (AWS-native deploys, e.g. the ECS redacted
+  // ops bot): text turns run on Amazon Bedrock Converse with BEDROCK_MODEL_ID,
+  // authenticated by the ambient AWS credential chain (task role on ECS, named
+  // profile locally) — no external API key needed.
+  //
+  // NOTE: this selects the TEXT brain only. Image turns always route to Amazon
+  // Nova Lite regardless, because neither Kimi nor DeepSeek V4 can see images —
+  // DeepSeek rejects `image_url` with a 400 at the deserialization layer on both
+  // Flash and Pro (probed 2026-08-10, scripts/probe-deepseek-api.ts §8).
+  LLM_TEXT_BACKEND: z.enum(['kimi', 'deepseek', 'bedrock']).default('kimi'),
   // ── Moonshot Kimi (the text brain — ALL text, every domain) ────────────────
   // Every text turn — Discord chat, the calendar/config tool-calling, the
   // event-intake proposals, and the IG classifier's caption-only fallback — runs
@@ -110,6 +117,27 @@ const ConfigSchema = z.object({
   // `claude-cli/1.0.0` is empirically on the allowlist. Ignored by the plain
   // platform API. Override if the allowlist changes.
   KIMI_USER_AGENT: z.string().min(1).default('claude-cli/1.0.0'),
+
+  // ── DeepSeek (the other OpenAI-compatible text brain) ──────────────────────
+  // Selected with LLM_TEXT_BACKEND=deepseek. Speaks the SAME chat-completions
+  // wire shape as Kimi, so it reuses askKimi's agent loop verbatim — only the
+  // base URL, key and model id differ (resolved into `textBackend` below).
+  //
+  // Why it's here (measured 2026-08-10, scripts/text-backend-trial.ts, 2 runs):
+  // V4-Flash matched or beat the Kimi coding endpoint on every axis — tool
+  // battery 7/8 vs 6/8, voice 2/2, zero scaffolding leaks, and 9.1s/turn vs
+  // 33.5s. It also returns `reasoning_content` exactly like K2.7 Thinking, so
+  // the degenerate-output guard and the empty-content retry both still apply.
+  //
+  // Both spellings are accepted: DEEPSEEK_API_KEY is canonical, DEEP_SEEK_API_KEY
+  // is the spelling already sitting in the Pi's .env. Set either.
+  DEEPSEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  DEEP_SEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+  DEEPSEEK_BASE_URL: z.string().min(1).default('https://api.deepseek.com/v1'),
+  // deepseek-v4-flash is the agentic-tuned tier and the cheap one ($0.14/M in,
+  // $0.28/M out, $0.0028/M on a cache hit). deepseek-v4-pro costs ~3× for no
+  // measured gain on this workload.
+  DEEPSEEK_MODEL_ID: z.string().min(1).default('deepseek-v4-flash'),
 
   // Amazon Bedrock (Converse API) credentials + models. On the Pi these are the
   // static ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env (the IMAGES-ONLY
@@ -303,6 +331,13 @@ const ConfigSchema = z.object({
       message: 'KIMI_API_KEY is required when LLM_TEXT_BACKEND=kimi',
     });
   }
+  if (c.LLM_TEXT_BACKEND === 'deepseek' && !(c.DEEPSEEK_API_KEY ?? c.DEEP_SEEK_API_KEY)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['DEEPSEEK_API_KEY'],
+      message: 'DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY) is required when LLM_TEXT_BACKEND=deepseek',
+    });
+  }
   if ((c.ACCESS_KEY_ID && !c.SECRET_ACCESS_KEY) || (!c.ACCESS_KEY_ID && c.SECRET_ACCESS_KEY)) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
@@ -328,6 +363,50 @@ if (!parsed.success) {
 
 export const config = parsed.data;
 export type Config = typeof config;
+
+/**
+ * The resolved OpenAI-compatible TEXT backend.
+ *
+ * Kimi and DeepSeek speak the same chat-completions wire shape, so
+ * src/llm/client.ts runs ONE agent loop against whichever is selected — it
+ * reads this object instead of the provider-specific `KIMI_` / `DEEPSEEK_`
+ * vars, so adding a third OpenAI-compatible provider never touches the loop.
+ *
+ * In `bedrock` text mode no OpenAI-compatible client is built at all; the shape
+ * still resolves (to the Kimi defaults) and `apiKey` is simply undefined, which
+ * is what keeps the client construction lazy.
+ */
+export interface TextBackend {
+  provider: 'kimi' | 'deepseek';
+  apiKey: string | undefined;
+  baseUrl: string;
+  modelId: string;
+  /** Only the Kimi coding endpoint gates on this; DeepSeek ignores it. */
+  userAgent: string;
+  maxOutputTokens: number;
+  maxConcurrent: number;
+}
+
+export const textBackend: TextBackend =
+  config.LLM_TEXT_BACKEND === 'deepseek'
+    ? {
+        provider: 'deepseek',
+        apiKey: config.DEEPSEEK_API_KEY ?? config.DEEP_SEEK_API_KEY,
+        baseUrl: config.DEEPSEEK_BASE_URL,
+        modelId: config.DEEPSEEK_MODEL_ID,
+        userAgent: config.KIMI_USER_AGENT,
+        maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
+        maxConcurrent: config.KIMI_MAX_CONCURRENT,
+      }
+    : {
+        provider: 'kimi',
+        apiKey: config.KIMI_API_KEY,
+        baseUrl: config.KIMI_BASE_URL,
+        modelId: config.KIMI_MODEL_ID,
+        userAgent: config.KIMI_USER_AGENT,
+        maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
+        maxConcurrent: config.KIMI_MAX_CONCURRENT,
+      };
 
 let cachedChannels: Set<string> | null = null;
 let cachedCapabilityMap: Map<string, string> | null = null;

@@ -13,6 +13,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.16.1 — 2026-08-11
+
+🔧 **El bot volvió a responder, y ya no se le pierden posts**
+
+Hoy al mediodía el servicio de inteligencia artificial que usa ChopperBot para entender y responder mensajes se cayó por completo (era una falla del proveedor, no del bot). Durante unos minutos el bot contestó "hubo un error" a todo el mundo. Ya está resuelto: lo cambiamos a otro proveedor y quedó **más rápido que antes**. Lo que cambia:
+
+- **Vuelve a responder con normalidad** en el chat, el calendario, los talleres y las solicitudes de eventos.
+- **Responde más rápido.** Las respuestas que llevaban más de medio minuto ahora tardan unos segundos.
+- **Ya no se pierden publicaciones de Instagram.** Cuando el bot no lograba analizar un post de las cuentas que vigila, lo descartaba para siempre sin avisar. Ahora lo vuelve a intentar más tarde, así que las convocatorias y eventos que antes se colaban ya llegan al canal.
+
 ## 1.16.0 — 2026-08-10
 
 📅 **"Crea el evento" — ahora sí sabe de cuál le hablan**

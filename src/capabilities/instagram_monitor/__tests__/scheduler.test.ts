@@ -1021,3 +1021,181 @@ describe('InstagramMonitorScheduler — status digest', () => {
     }
   });
 });
+
+// A classification that never reached a verdict (provider 500 / unparseable
+// reply) must not be mistaken for "decided not relevant". Before 2026-08-11 it
+// was: the post got recorded seen with relevant=false and hasSeen blocked it
+// forever, so a transient outage permanently discarded posts (114 of them over
+// the monitor's lifetime, 1 during the Kimi hard-500 that day).
+describe('InstagramMonitorScheduler — undecided classifications', () => {
+  const DECIDED_IRRELEVANT: Classification = {
+    relevant: false,
+    type: 'otro',
+    title: '',
+    summary: '',
+    when: null,
+    where: null,
+    tags: [],
+  };
+  const UNDECIDED: Classification = {
+    ...DECIDED_IRRELEVANT,
+    reason: 'ask_failed: 500 The server had an error while processing your request',
+    undecided: true,
+  };
+  const RELEVANT: Classification = {
+    relevant: true,
+    type: 'evento',
+    title: 'Asamblea',
+    summary: 'Convocatoria',
+    when: null,
+    where: 'CDMX',
+    tags: ['cdmx'],
+  };
+
+  /** Fresh posts, so they sit inside UNDECIDED_RETRY_HORIZON_MS. */
+  function recent(id: string, minutesAgo: number): RecentPost {
+    return post(id, { takenAtMs: Date.now() - minutesAgo * 60_000 });
+  }
+
+  test('does not record an undecided post, and holds the anchor below it', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const p0 = recent('P0', 180);
+    const p1 = recent('P1', 120);
+    const p2 = recent('P2', 60);
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0', p0.takenAtMs);
+
+    const classify = vi.fn(async (_a: string, p: RecentPost): Promise<Classification> =>
+      p.igPostId === 'P2' ? UNDECIDED : DECIDED_IRRELEVANT,
+    );
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({ foo: [p2, p1, p0] }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify,
+      publish: vi.fn(async (): Promise<PublishResult> => ({ ok: true, messageId: 'M1' })),
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    // P1 got a real verdict → settled. P2 didn't → left unrecorded for a retry.
+    expect(store.hasSeen(CHAN, 'P1')).toBe(true);
+    expect(store.hasSeen(CHAN, 'P2')).toBe(false);
+    // The anchor must stay below P2 or the next poll won't consider it new.
+    expect(store.getAccount('foo')?.last_post_id).toBe('P1');
+    mem.close();
+  });
+
+  test('retries the undecided post on the next poll and publishes it once decided', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const p0 = recent('P0', 180);
+    const p1 = recent('P1', 120);
+    const p2 = recent('P2', 60);
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0', p0.takenAtMs);
+
+    // First poll: the provider is down. Second: it's back and P2 is relevant.
+    let providerDown = true;
+    const classify = vi.fn(async (_a: string, p: RecentPost): Promise<Classification> => {
+      if (p.igPostId !== 'P2') return DECIDED_IRRELEVANT;
+      return providerDown ? UNDECIDED : RELEVANT;
+    });
+    const publish = vi.fn(async (): Promise<PublishResult> => ({ ok: true, messageId: 'M1' }));
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({ foo: [p2, p1, p0] }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify,
+      publish,
+      fetchCover: async () => null,
+    });
+
+    await sch.tickOnce();
+    expect(publish).not.toHaveBeenCalled();
+    // Anchor held below P2, so the retry has something to find.
+    expect(store.getAccount('foo')?.last_post_id).toBe('P1');
+
+    // Simulate the next poll cycle: rewind last_polled_at so the account is due
+    // again, keeping the held anchor exactly as the first tick left it.
+    const held = store.getAccount('foo')!;
+    store.markPollSuccess(held.id, 1, held.last_post_id, held.last_post_at);
+
+    providerDown = false;
+    await sch.tickOnce();
+
+    // The post survived the outage and reached Discord.
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect((publish.mock.calls[0]![3] as RecentPost).shortcode).toBe('P2');
+    expect(store.hasSeen(CHAN, 'P2')).toBe(true);
+    expect(store.getAccount('foo')?.last_post_id).toBe('P2');
+    // P1 was already settled on poll 1 — the retry must not re-classify it, or a
+    // held anchor would re-spend an LLM call + an IG cover fetch every poll.
+    const p1Calls = classify.mock.calls.filter((c) => (c[1] as RecentPost).igPostId === 'P1');
+    expect(p1Calls).toHaveLength(1);
+    mem.close();
+  });
+
+  test('gives up past the retry horizon so a stuck post cannot wedge the anchor', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const p0 = recent('P0', 3 * 24 * 60);
+    // Older than UNDECIDED_RETRY_HORIZON_MS (24h) → no longer retryable.
+    const p1 = recent('P1', 48 * 60);
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0', p0.takenAtMs);
+
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({ foo: [p1, p0] }),
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => UNDECIDED,
+      publish: vi.fn(async (): Promise<PublishResult> => ({ ok: true, messageId: 'M1' })),
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    // Fails closed exactly as the old behavior did: recorded, unpushed, anchor
+    // advanced — so the account keeps making progress.
+    expect(store.hasSeen(CHAN, 'P1')).toBe(true);
+    expect(store.getAccount('foo')?.last_post_id).toBe('P1');
+    mem.close();
+  });
+
+  test('skips classification entirely when every bound channel already saw the post', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    const p0 = recent('P0', 180);
+    const p1 = recent('P1', 60);
+    store.markPollSuccess(store.getAccount('foo')!.id, 1, 'P0', p0.takenAtMs);
+    for (const channelId of [CHAN, CHAN_B]) {
+      store.recordSeen({
+        channel_id: channelId,
+        ig_post_id: 'P1',
+        account_username: 'foo',
+        caption: null,
+        media_type: 'image',
+        posted_at: p1.takenAtMs,
+        classification_json: '{}',
+        pushed: false,
+        discord_message_id: null,
+      });
+    }
+
+    const classify = vi.fn();
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: fakeFetcher({ foo: [p1, p0] }),
+      client: fakeClient,
+      getBoundChannels: TWO_CHANNELS,
+      classify,
+      publish: vi.fn(async (): Promise<PublishResult> => ({ ok: true, messageId: 'M1' })),
+      fetchCover: async () => null,
+    });
+    await sch.tickOnce();
+
+    expect(classify).not.toHaveBeenCalled();
+    mem.close();
+  });
+});

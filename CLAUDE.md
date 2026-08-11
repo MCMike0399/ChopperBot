@@ -16,7 +16,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | Working on… | Read first |
 |---|---|
-| LLM client — dual backend (Kimi text / Nova vision), effort tiers, content-filter recovery, tool loop, health watchdog, image attachments | [docs/llm.md](docs/llm.md) |
+| **Onboarding / "what does this bot do?"** — one deep, self-contained tour of every RevZ capability, the live channel wiring, config reference, runbook and failure-mode index. **Orientation only — never the change-gated source of truth; the topic docs below are.** | [docs/revolucion-z-capabilities.md](docs/revolucion-z-capabilities.md) |
+| LLM client — dual backend (selectable text brain, **live: DeepSeek** since the 2026-08-11 Kimi outage / Nova vision), effort tiers, content-filter recovery, tool loop, health watchdog, image attachments | [docs/llm.md](docs/llm.md) |
 | Framework internals — boot sequence, per-turn pipeline, tool composition, persistence, capability routing | [docs/framework.md](docs/framework.md) |
 | `calendar` — global calendar, recurrence, PDF/ICS publishing, month rollover, daily announcements, Discord-event sync | [docs/capabilities/calendar.md](docs/capabilities/calendar.md) |
 | `instagram_monitor` — scheduler, adaptive cadence + budget governor, anti-detection, guardrails/kill-switch | [docs/capabilities/instagram-monitor.md](docs/capabilities/instagram-monitor.md) |
@@ -119,7 +120,7 @@ Full details: [docs/framework.md](docs/framework.md). The load-bearing facts:
 Full per-var reference and gotchas: [docs/environment.md](docs/environment.md). The universal rules:
 
 - **dotenv `override: false`** — a stale `export FOO=...` in a shell rc shadows `.env`; `unset FOO`, don't flip override.
-- **Required at boot:** `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, `KIMI_API_KEY` (text brain), `ACCESS_KEY_ID`+`SECRET_ACCESS_KEY` (the images-only Nova backend). Everything else has a schema default.
+- **Required at boot:** `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, the key for the selected text brain (`LLM_TEXT_BACKEND=kimi` → `KIMI_API_KEY`, the default; `=deepseek` → `DEEPSEEK_API_KEY`/`DEEP_SEEK_API_KEY`), `ACCESS_KEY_ID`+`SECRET_ACCESS_KEY` (the images-only Nova backend — required under every text backend, since no text brain can see images). Everything else has a schema default.
 - **Channel settings seed-then-DB-wins:** env vars seed SQLite settings on first boot only; after that the DB is the source of truth, managed live from the config channel — no restart needed.
 
 ## Logs & observability — quick reference
