@@ -582,12 +582,19 @@ export class CalendarAnnouncer {
     ];
     for (const t of missing) {
       const when = formatInTimezone(t.occurrence.startAtMs);
-      lines.push(`- **${t.occurrence.title}** — ${when} (a las ${formatLocalClock(t.occurrence.startAtMs)})`);
+      // The id is printed because the ask below is "díganme «… del #N»" — a
+      // placeholder the mods can't resolve makes that instruction unusable, and
+      // it's also what pins the referent when someone replies to this nudge.
+      lines.push(
+        `- **#${t.occurrence.id} ${t.occurrence.title}** — ${when} (a las ${formatLocalClock(t.occurrence.startAtMs)})`,
+      );
     }
+    const example = missing.length === 1 ? `#${missing[0]!.occurrence.id}` : '#<id>';
     lines.push(
       '',
       'Sin el evento de Discord el anuncio del día sale sin el enlace para apuntarse. ' +
-        'Créenlo en **Eventos → Crear evento** del servidor, o díganme aquí *"crea el evento de Discord del #<id>"* y lo hago yo.',
+        `Créenlo en **Eventos → Crear evento** del servidor, o **respondan a este mensaje** con *"crea el evento de Discord del ${example}"* y lo hago yo ` +
+        '(díganme también en qué sala será, si no la tiene).',
     );
 
     const mentions = await this.resolveModMentions(guildId);

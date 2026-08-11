@@ -3,21 +3,50 @@ import { normalizeTurns, type Turn } from '../history.js';
 import { ImageAttachable } from '../../attachments/attachable.js';
 
 describe('normalizeTurns', () => {
-  test('drops a leading assistant turn', () => {
+  test('folds a leading assistant turn into the first user turn as context', () => {
     const turns: Turn[] = [
       { role: 'assistant', content: 'hi' },
       { role: 'user', content: 'a question' },
     ];
-    expect(normalizeTurns(turns)).toEqual([{ role: 'user', content: 'a question' }]);
+    const result = normalizeTurns(turns);
+    expect(result).toHaveLength(1);
+    expect(result[0].role).toBe('user');
+    expect(result[0].content).toContain('> hi');
+    expect(result[0].content.endsWith('a question')).toBe(true);
   });
 
-  test('drops multiple leading assistant turns', () => {
+  test('folds multiple leading assistant turns, in order', () => {
     const turns: Turn[] = [
       { role: 'assistant', content: 'one' },
       { role: 'assistant', content: 'two' },
       { role: 'user', content: 'question' },
     ];
-    expect(normalizeTurns(turns)).toEqual([{ role: 'user', content: 'question' }]);
+    const result = normalizeTurns(turns);
+    expect(result).toHaveLength(1);
+    expect(result[0].content.indexOf('one')).toBeLessThan(result[0].content.indexOf('two'));
+    expect(result[0].content.endsWith('question')).toBe(true);
+  });
+
+  test('a reply to a bot-initiated nudge keeps the event id the nudge named', () => {
+    // The live 2026-08-10 failure: the mod replied to the calendar's "falta el
+    // evento de Discord" nudge with "crea el evento" and the bot, having lost
+    // the nudge, asked for a title and a date.
+    const nudge = '📌 **Falta crear el evento de Discord** para lo que viene:\n- **#29 Conversatorio**';
+    const result = normalizeTurns([
+      { role: 'assistant', content: nudge },
+      { role: 'user', content: 'crea el evento' },
+    ]);
+    expect(result).toHaveLength(1);
+    expect(result[0].content).toContain('#29');
+    expect(result[0].content).toContain('crea el evento');
+  });
+
+  test('quotes every line of the folded context so the boundary is unambiguous', () => {
+    const result = normalizeTurns([
+      { role: 'assistant', content: 'line one\nline two' },
+      { role: 'user', content: 'ok' },
+    ]);
+    expect(result[0].content).toContain('> line one\n> line two');
   });
 
   test('merges consecutive same-role turns', () => {

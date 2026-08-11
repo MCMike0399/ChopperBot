@@ -34,6 +34,7 @@ import {
   GuildScheduledEventPrivacyLevel,
   GuildScheduledEventStatus,
   PermissionFlagsBits,
+  Routes,
   type Client,
   type Guild,
   type GuildScheduledEvent,
@@ -70,9 +71,23 @@ export interface EventAccessDiagnosis {
   problems: string[];
 }
 
+/**
+ * Where a scheduled event ended up. Reported all the way out to the tool result
+ * because `external` is a **degraded** outcome the mods need to hear about: the
+ * event exists, but with no room to join, so members get no "entrar" button.
+ * Venue resolution is deliberately conservative (a wrong room is worse than
+ * none), which makes saying "quedó sin sala, ¿en cuál va?" the other half of
+ * the feature — without it the fallback is silent.
+ */
+export interface EventVenue {
+  kind: 'voice' | 'stage' | 'external';
+  /** Channel name for voice/stage; the free-text location for external. */
+  name: string;
+}
+
 /** A create attempt: the new event, or a typed reason it couldn't happen. */
 export type CreateEventOutcome =
-  | { ok: true; event: DiscordScheduledEvent }
+  | { ok: true; event: DiscordScheduledEvent; venue: EventVenue }
   | { ok: false; reason: 'missing_permission' | 'no_venue' | 'error'; message: string };
 
 /** Guild-scheduled-event statuses that are still ahead of us. */
@@ -338,12 +353,67 @@ export async function createScheduledEvent(
       },
       'calendar.discord_events.created',
     );
-    return { ok: true, event: flattenEvent(guildId, created) };
+    return { ok: true, event: flattenEvent(guildId, created), venue: describeVenue(venueChannel, draft.location) };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     log.warn({ err, guildId, title: draft.title }, 'calendar.discord_events.create_failed');
     return { ok: false, reason: 'error', message };
   }
+}
+
+/**
+ * Move an EXTERNAL scheduled event into a real voice/stage room, sending the
+ * `entity_metadata: null` the API documents for that type change (see the call
+ * site for why discord.js can't). Returns false — never throws — when it still
+ * doesn't take; the caller then reports the original failure.
+ */
+async function convertToVenue(
+  guild: Guild,
+  discordEventId: string,
+  channelId: string,
+  entityType: GuildScheduledEventEntityType.Voice | GuildScheduledEventEntityType.StageInstance,
+  fields: { name: string; description: string | null; startAtMs: number },
+): Promise<boolean> {
+  try {
+    await guild.client.rest.patch(Routes.guildScheduledEvent(guild.id, discordEventId), {
+      body: {
+        name: fields.name,
+        description: fields.description ?? undefined,
+        scheduled_start_time: new Date(fields.startAtMs).toISOString(),
+        channel_id: channelId,
+        entity_type: entityType,
+        entity_metadata: null,
+      },
+    });
+    return true;
+  } catch (err) {
+    log.warn({ err, discordEventId, channelId }, 'calendar.discord_events.convert_venue_failed');
+    return false;
+  }
+}
+
+/** The venue a create/edit actually landed on, in the shape callers report. */
+function describeVenue(channel: VenueCandidate | null, location: string | null): EventVenue {
+  if (!channel) return { kind: 'external', name: location?.trim() || 'Revolución Z' };
+  return {
+    kind: channel.type === ChannelType.GuildStageVoice ? 'stage' : 'voice',
+    name: channel.name,
+  };
+}
+
+/**
+ * The venue of an event that already exists (the idempotent re-sync path), read
+ * back from Discord rather than re-derived — a room a mod picked by hand is the
+ * truth, and re-running {@link resolveVenue} would report what we WOULD have
+ * chosen instead of what is.
+ */
+async function describeLinkedVenue(guild: Guild, event: DiscordScheduledEvent): Promise<EventVenue> {
+  if (!event.channelId) return { kind: 'external', name: event.location?.trim() || 'sin sala' };
+  const channel = await guild.channels.fetch(event.channelId).catch(() => null);
+  return {
+    kind: channel?.type === ChannelType.GuildStageVoice ? 'stage' : 'voice',
+    name: channel && 'name' in channel ? channel.name : 'sala del evento',
+  };
 }
 
 /**
@@ -379,6 +449,8 @@ export type SyncOutcome =
       startAtLocal: string;
       /** True when this call set the cover image. */
       imageSet?: boolean;
+      /** Where it landed — `external` means "no room", which mods should hear. */
+      venue: EventVenue;
     }
   | {
       ok: false;
@@ -392,7 +464,7 @@ export type SyncOutcome =
  * touch rows nobody ever made a Discord event for.
  */
 export type RefreshOutcome =
-  | { ok: true; action: 'updated'; url: string; changed: string[]; imageSet?: boolean }
+  | { ok: true; action: 'updated'; url: string; changed: string[]; imageSet?: boolean; venue?: EventVenue }
   | { ok: true; action: 'unchanged' | 'not_linked' | 'no_future' | 'stale_cleared'; url?: string }
   | { ok: false; reason: 'not_found' | 'missing_permission' | 'error'; message: string };
 
@@ -482,16 +554,14 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
       if (row.discord_event_id) {
         const existing = await fetchScheduledEvent(deps.client, deps.guildId, row.discord_event_id);
         if (existing) {
+          const guild = await deps.client.guilds.fetch(deps.guildId).catch(() => null);
           // Already linked: the only thing left to do is set/replace the banner.
-          if (image) {
-            const guild = await deps.client.guilds.fetch(deps.guildId).catch(() => null);
-            if (guild) {
-              await guild.scheduledEvents
-                .edit(existing.id, { image: toImageDataUri(image) })
-                .catch((err) =>
-                  log.warn({ err, eventId, discordEventId: existing.id }, 'calendar.discord_events.image_edit_failed'),
-                );
-            }
+          if (image && guild) {
+            await guild.scheduledEvents
+              .edit(existing.id, { image: toImageDataUri(image) })
+              .catch((err) =>
+                log.warn({ err, eventId, discordEventId: existing.id }, 'calendar.discord_events.image_edit_failed'),
+              );
           }
           return {
             ok: true,
@@ -500,6 +570,9 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
             created: false,
             startAtLocal: fmt(existing.startAtMs),
             imageSet: image != null,
+            venue: guild
+              ? await describeLinkedVenue(guild, existing)
+              : { kind: existing.channelId ? 'voice' : 'external', name: existing.location ?? 'sala del evento' },
           };
         }
         deps.store.setDiscordEventId(eventId, null); // stale link — the admin deleted it
@@ -541,6 +614,7 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
         created: true,
         startAtLocal: fmt(outcome.event.startAtMs),
         imageSet: image != null,
+        venue: outcome.venue,
       };
     },
 
@@ -589,20 +663,19 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
       if (changed.length === 0) return { ok: true, action: 'unchanged', url: existing.url };
       if (!(await canManage(guild))) return { ...missingPermission };
 
+      const entityType = venueChannel
+        ? venueChannel.type === ChannelType.GuildStageVoice
+          ? GuildScheduledEventEntityType.StageInstance
+          : GuildScheduledEventEntityType.Voice
+        : null;
       try {
         await guild.scheduledEvents.edit(existing.id, {
           name,
           description: description ?? undefined,
           scheduledStartTime: new Date(next.startAtMs),
           scheduledEndTime: endAtMs !== null ? new Date(endAtMs) : undefined,
-          ...(moveToVenue && venueChannel
-            ? {
-                channel: venueChannel.id,
-                entityType:
-                  venueChannel.type === ChannelType.GuildStageVoice
-                    ? GuildScheduledEventEntityType.StageInstance
-                    : GuildScheduledEventEntityType.Voice,
-              }
+          ...(moveToVenue && venueChannel && entityType !== null
+            ? { channel: venueChannel.id, entityType }
             : {}),
           ...(image ? { image: toImageDataUri(image) } : {}),
         });
@@ -610,8 +683,44 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
           { eventId, discordEventId: existing.id, changed },
           'calendar.discord_events.refreshed',
         );
-        return { ok: true, action: 'updated', url: existing.url, changed, imageSet: image != null };
+        return {
+          ok: true,
+          action: 'updated',
+          url: existing.url,
+          changed,
+          imageSet: image != null,
+          ...(moveToVenue && venueChannel ? { venue: describeVenue(venueChannel, row.location) } : {}),
+        };
       } catch (err) {
+        // The one failure worth a second attempt: giving a room to an event
+        // that is currently EXTERNAL. Discord wants `entity_metadata: null` on
+        // that conversion, and discord.js's `edit()` DROPS a null metadata
+        // instead of sending it (its `create()` does send it — the asymmetry is
+        // in the library, not the API), so the stale location can bounce the
+        // patch. Retrying the same change through REST sends the documented
+        // shape. This is the repair path the bot now offers mods out loud
+        // ("quedó sin sala — ¿en cuál va?"), so it has to actually land.
+        if (moveToVenue && venueChannel && entityType !== null && existing.channelId === null) {
+          const converted = await convertToVenue(guild, existing.id, venueChannel.id, entityType, {
+            name,
+            description,
+            startAtMs: next.startAtMs,
+          });
+          if (converted) {
+            log.info(
+              { eventId, discordEventId: existing.id, changed, via: 'rest_convert' },
+              'calendar.discord_events.refreshed',
+            );
+            return {
+              ok: true,
+              action: 'updated',
+              url: existing.url,
+              changed,
+              imageSet: image != null,
+              venue: describeVenue(venueChannel, row.location),
+            };
+          }
+        }
         const message = err instanceof Error ? err.message : String(err);
         log.warn({ err, eventId, discordEventId: existing.id }, 'calendar.discord_events.refresh_failed');
         return { ok: false, reason: 'error', message };

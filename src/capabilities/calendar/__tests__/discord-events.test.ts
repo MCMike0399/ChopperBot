@@ -39,11 +39,18 @@ function makeClient(opts: {
   canManage?: boolean;
   venues?: Array<{ id: string; name: string; type: ChannelType }>;
   events?: FakeEventState[];
+  /**
+   * Reject an edit that gives a room to an EXTERNAL event without clearing its
+   * location — the way Discord does, and the reason the REST conversion exists
+   * (discord.js's `edit()` cannot send `entity_metadata: null`).
+   */
+  rejectStaleMetadata?: boolean;
 }) {
   const events = new Map<string, FakeEventState>((opts.events ?? []).map((e) => [e.id, { ...e }]));
   const calls = {
     create: [] as Array<Record<string, unknown>>,
     edit: [] as Array<{ id: string; payload: Record<string, unknown> }>,
+    patch: [] as Array<{ route: string; body: Record<string, unknown> }>,
     delete: [] as string[],
   };
   let seq = 1;
@@ -60,7 +67,25 @@ function makeClient(opts: {
     coverImageURL: () =>
       e.image !== null ? `https://cdn.discordapp.com/guild-events/${e.id}/hash.png` : null,
   });
-  const guild = {
+  const guild: Record<string, unknown> = {
+    id: GUILD,
+    // The raw-REST escape hatch the external→voice conversion uses.
+    client: {
+      rest: {
+        patch: async (route: string, options: { body: Record<string, unknown> }) => {
+          calls.patch.push({ route, body: options.body });
+          const id = route.split('/').pop()!;
+          const e = events.get(id);
+          if (!e) throw new Error('Unknown event');
+          if (options.body.entity_metadata !== null) {
+            throw new Error('Cannot have entity metadata for this event type');
+          }
+          e.channelId = options.body.channel_id as string;
+          e.location = null;
+          return toWire(e);
+        },
+      },
+    },
     members: {
       fetchMe: async () => ({
         permissions: {
@@ -70,13 +95,16 @@ function makeClient(opts: {
       }),
     },
     channels: {
-      fetch: async () =>
-        new Map(
+      // Discord's own overload: no id → every channel, an id → that one.
+      fetch: async (id?: string) => {
+        const all = new Map(
           (opts.venues ?? []).map((v) => [
             v.id,
             { ...v, permissionsFor: () => ({ has: () => true }) },
           ]),
-        ),
+        );
+        return id === undefined ? all : (all.get(id) ?? null);
+      },
     },
     scheduledEvents: {
       fetch: async (id?: string) => {
@@ -107,6 +135,14 @@ function makeClient(opts: {
         calls.edit.push({ id, payload });
         const e = events.get(id);
         if (!e) throw new Error('Unknown event');
+        if (
+          opts.rejectStaleMetadata &&
+          payload.channel !== undefined &&
+          e.channelId === null &&
+          payload.entityMetadata === undefined
+        ) {
+          throw new Error('Cannot have entity metadata for this event type');
+        }
         if (payload.name !== undefined) e.name = payload.name as string;
         if (payload.description !== undefined) e.description = payload.description as string;
         if (payload.scheduledStartTime !== undefined)
@@ -114,6 +150,8 @@ function makeClient(opts: {
         if (payload.scheduledEndTime !== undefined)
           e.scheduledEndTimestamp = new Date(payload.scheduledEndTime as Date).getTime();
         if (payload.channel !== undefined) e.channelId = payload.channel as string;
+        if (payload.entityMetadata !== undefined)
+          e.location = (payload.entityMetadata as { location?: string } | null)?.location ?? null;
         if (payload.image !== undefined) e.image = payload.image as string;
         return toWire(e);
       },
@@ -205,6 +243,24 @@ describe('sync — create', () => {
     await makeSyncer(client, store).sync(1);
     expect(calls.create[0]!.channel).toBeUndefined();
     expect(calls.create[0]!.scheduledEndTime).toBeDefined();
+  });
+
+  test('the roomless fallback is REPORTED, not silent', async () => {
+    // Live on 2026-08-10: #29 was created as `venue: external` and the bot
+    // confirmed "listo" without ever saying nobody could join it.
+    const { client } = makeClient({ venues: [] });
+    const store = makeStore([row({ title: 'Conversatorio: Data Centers y LLMs' })]);
+    const out = await makeSyncer(client, store).sync(1);
+    expect(out.ok && out.venue).toEqual({ kind: 'external', name: 'Revolución Z' });
+  });
+
+  test('a resolved room comes back named, so the confirmation can say it', async () => {
+    const { client } = makeClient({
+      venues: [{ id: 'POESIA', name: '🫀 Sala de Club de Poesía 🫀', type: ChannelType.GuildStageVoice }],
+    });
+    const store = makeStore([row()]);
+    const out = await makeSyncer(client, store).sync(1);
+    expect(out.ok && out.venue).toEqual({ kind: 'stage', name: '🫀 Sala de Club de Poesía 🫀' });
   });
 
   test('a conservative title match does NOT grab a room on a weak overlap', async () => {
@@ -313,6 +369,62 @@ describe('refresh — a calendar edit propagates', () => {
     expect(events.get('DE9')!.image).toBe('data:image/png;base64,oldbanner');
     expect(events.get('DE9')!.name).toBe('Rosario Castellanos | Club de poesía');
     expect(events.get('DE9')!.scheduledStartTimestamp).toBe(START);
+  });
+
+  /** An event that exists but has no room — what a silent `external` create leaves behind. */
+  const roomlessEvent: FakeEventState = {
+    ...staleEvent,
+    name: 'Rosario Castellanos | Club de poesía',
+    scheduledStartTimestamp: START,
+    channelId: null,
+    location: 'Revolución Z',
+  };
+  const cineclub = [{ id: 'CINE', name: '🎬 Sala de Cineclub 🎬', type: ChannelType.GuildStageVoice }];
+
+  test('giving a roomless event a location moves it into that room', async () => {
+    // The repair path the bot now offers out loud ("quedó sin sala — ¿en cuál va?").
+    const { client, events } = makeClient({ events: [roomlessEvent], venues: cineclub });
+    const store = makeStore([row({ discord_event_id: 'DE9', location: 'sala de cineclub' })]);
+    const out = await makeSyncer(client, store).refresh(1);
+
+    expect(out.ok && out.action === 'updated').toBe(true);
+    if (out.ok && out.action === 'updated') {
+      expect(out.changed).toContain('sala');
+      expect(out.venue).toEqual({ kind: 'stage', name: '🎬 Sala de Cineclub 🎬' });
+    }
+    expect(events.get('DE9')!.channelId).toBe('CINE');
+  });
+
+  test('…and still lands when Discord rejects the leftover entity_metadata', async () => {
+    const { client, events, calls } = makeClient({
+      events: [roomlessEvent],
+      venues: cineclub,
+      rejectStaleMetadata: true,
+    });
+    const store = makeStore([row({ discord_event_id: 'DE9', location: 'sala de cineclub' })]);
+    const out = await makeSyncer(client, store).refresh(1);
+
+    expect(out.ok && out.action === 'updated').toBe(true);
+    if (out.ok && out.action === 'updated') expect(out.changed).toContain('sala');
+    // The library edit bounced; the REST conversion sent the documented shape.
+    expect(calls.patch).toHaveLength(1);
+    expect(calls.patch[0]!.body.entity_metadata).toBeNull();
+    expect(calls.patch[0]!.body.channel_id).toBe('CINE');
+    expect(events.get('DE9')!.channelId).toBe('CINE');
+    expect(events.get('DE9')!.location).toBeNull();
+  });
+
+  test('a refresh that fails for any OTHER reason is still reported as a failure', async () => {
+    const { client } = makeClient({ events: [roomlessEvent], venues: [] });
+    const store = makeStore([row({ discord_event_id: 'DE9' })]);
+    const syncer = makeSyncer(client, store);
+    // No venue in play → nothing to convert; a broken edit must surface.
+    const guild = await (client as { guilds: { fetch: () => Promise<Record<string, never>> } }).guilds.fetch();
+    (guild as unknown as { scheduledEvents: { edit: () => Promise<never> } }).scheduledEvents.edit = async () => {
+      throw new Error('boom');
+    };
+    const out = await syncer.refresh(1);
+    expect(out).toMatchObject({ ok: false, reason: 'error', message: 'boom' });
   });
 
   test('an unresolvable location never strips the room a mod picked by hand', async () => {
