@@ -1,8 +1,10 @@
 import { describe, test, expect } from 'vitest';
 import {
   announceKey,
+  announceNonce,
   announcementsDue,
   appendEventLink,
+  MAX_NONCE_LENGTH,
   nudgeKey,
   nudgesDue,
   prefixMentions,
@@ -196,5 +198,37 @@ describe('renderAnnouncementPrompt', () => {
       AUG5_10AM,
     );
     expect(p).toMatch(/no lo inventes/);
+  });
+});
+
+/**
+ * The nonce is what makes the create idempotent, so Discord's 25-character cap
+ * is a correctness boundary, not a style note: an over-long nonce is rejected
+ * and the announcement falls back to being duplicable again.
+ */
+describe('announceNonce', () => {
+  test('is stable for the same occurrence, so a retry is recognised as one', () => {
+    expect(announceNonce(21, AUG5_8PM)).toBe(announceNonce(21, AUG5_8PM));
+  });
+
+  test('separates different events and different occurrences of one series', () => {
+    expect(announceNonce(21, AUG5_8PM)).not.toBe(announceNonce(22, AUG5_8PM));
+    expect(announceNonce(21, AUG5_8PM)).not.toBe(announceNonce(21, AUG5_8PM + 86_400_000));
+  });
+
+  test('a salted repost is a different message on purpose', () => {
+    expect(announceNonce(21, AUG5_8PM, AUG5_10AM)).not.toBe(announceNonce(21, AUG5_8PM));
+  });
+
+  test('stays inside Discord’s 25-character limit, salted or not', () => {
+    // Far past any id or date this bot will see, salted included.
+    const cases: Array<[number, number, number | undefined]> = [
+      [1, AUG5_8PM, undefined],
+      [21, AUG5_8PM, AUG5_10AM],
+      [999_999_999, Date.UTC(2999, 11, 31), Date.UTC(2999, 11, 31)],
+    ];
+    for (const [id, start, salt] of cases) {
+      expect(announceNonce(id, start, salt).length).toBeLessThanOrEqual(MAX_NONCE_LENGTH);
+    }
   });
 });

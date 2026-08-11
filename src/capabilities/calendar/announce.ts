@@ -52,6 +52,35 @@ export function nudgeKey(eventId: number, occurrenceStartMs: number): string {
   return `nudge:${eventId}@${occurrenceStartMs}`;
 }
 
+/** Discord's hard cap on the `nonce` field of a message create. */
+export const MAX_NONCE_LENGTH = 25;
+
+/**
+ * The idempotency key handed to Discord for one announcement's POST.
+ *
+ * `POST /channels/{id}/messages` is not idempotent by default, and that is the
+ * whole bug this prevents: `@discordjs/rest` aborts a request after 15 s and
+ * retries it up to 3 times, but a slow uplink means the *server* already created
+ * the message — so the community gets the same @-ping two or three times.
+ * Sending `nonce` + `enforce_nonce` makes Discord return the message it already
+ * created instead of creating another, which is the only way to stop the
+ * duplicate before it fires a notification (deleting it afterwards does not
+ * retract the ping).
+ *
+ * Derived from the announcement's own identity rather than randomly, so it also
+ * covers two *different* attempts at the same announcement — overlapping watcher
+ * ticks, or a restart mid-post. Base36 keeps it comfortably inside Discord's
+ * 25-character limit.
+ *
+ * `salt` is for a deliberate repost (`--repost` / `ignoreLedger`), which must
+ * NOT be swallowed as a duplicate of this morning's post.
+ */
+export function announceNonce(eventId: number, occurrenceStartMs: number, salt?: number): string {
+  const parts = [`a${eventId.toString(36)}`, occurrenceStartMs.toString(36)];
+  if (salt !== undefined) parts.push((Math.abs(Math.trunc(salt)) % 36 ** 4).toString(36));
+  return parts.join('-');
+}
+
 export interface DueInput {
   /** Occurrences in a window that comfortably covers today (the caller expands). */
   occurrences: readonly MatchableOccurrence[];

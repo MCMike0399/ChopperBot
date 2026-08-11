@@ -39,6 +39,7 @@ import {
 } from './match.js';
 import {
   announceKey,
+  announceNonce,
   announcementsDue,
   appendEventLink,
   nudgeKey,
@@ -68,6 +69,13 @@ interface AnnouncePayload {
    * discord.js downloads and re-uploads it as a real attachment.
    */
   files?: string[];
+  /**
+   * Idempotency key for the create (see {@link announceNonce}). With
+   * `enforceNonce` Discord returns the message it already made instead of making
+   * a second one, so a retried POST can no longer duplicate the @-ping.
+   */
+  nonce?: string;
+  enforceNonce?: boolean;
 }
 
 /** The bit of a fetched message the duplicate sweep needs. */
@@ -399,6 +407,10 @@ export class CalendarAnnouncer {
     };
     if (opts.dryRun) return result;
 
+    // A deliberate repost is a *new* message on purpose, so it must not be
+    // deduplicated against this morning's — everything else shares the
+    // occurrence's stable key.
+    const nonce = announceNonce(occ.id, occ.startAtMs, opts.ignoreLedger ? nowMs : undefined);
     const sent = await this.sendExactlyOnce(channel, channelId, {
       content: text,
       allowedMentions: {
@@ -408,6 +420,8 @@ export class CalendarAnnouncer {
         roles: mentions.roleIds,
       },
       files: result.imageUrl ? [result.imageUrl] : undefined,
+      nonce,
+      enforceNonce: true,
     });
     if (!sent.ok) {
       result.error = sent.error;
@@ -432,6 +446,7 @@ export class CalendarAnnouncer {
         channelId,
         messageId: sent.messageId,
         duplicatesRemoved: sent.duplicatesRemoved,
+        nonce,
         link: result.link,
         discordEventId: result.discordEventId,
         hasImage: result.imageUrl !== null,
@@ -445,21 +460,29 @@ export class CalendarAnnouncer {
    * Post the announcement and guarantee the channel ends up with exactly ONE of
    * it — then return the id that actually survived.
    *
-   * This is not paranoia; it is a bug we hit on the first live run. Discord has
-   * no idempotency key for `POST /channels/{id}/messages`, and a create whose
-   * *response* is lost is indistinguishable, client-side, from a create that
-   * never happened — so `@discordjs/rest` retries it and the community gets the
-   * announcement twice. (Observed: one `send()`, one model call, two messages
-   * 23 s apart, only the retry's id returned.) Everywhere else in this bot a
-   * duplicated send is a harmless repeated reply; here it is a duplicated
-   * @-ping to the whole server, so the send has to verify itself:
+   * This is not paranoia; it is a bug we hit repeatedly in production. A create
+   * whose *response* is lost is indistinguishable, client-side, from a create
+   * that never happened, so `@discordjs/rest` (defaults: 15 s timeout, 3
+   * retries) retries it — and on this Pi's uplink the server had already made
+   * the message. Measured live, the gap between the copies was 14.8 s, 14.9 s
+   * and 29.9 s: exactly one and two timeouts. Everywhere else in this bot a
+   * duplicated send is a harmless repeated reply; here it is a duplicated @-ping
+   * to the whole server, so the send is defended twice over:
    *
-   *   1. note the channel's newest message id,
-   *   2. send,
-   *   3. look at what actually appeared after that mark — keep the earliest of
-   *      our own messages, delete the rest.
+   *   **Prevention** — the payload carries `nonce` + `enforceNonce`, Discord's
+   *   own idempotency key, so the retry returns the existing message rather than
+   *   creating a second one. This is the part that matters, because it is the
+   *   only one that acts *before* a notification fires: on 2026-08-11 three
+   *   copies landed and an admin deleted two of them by hand nine seconds before
+   *   the sweep below could, and the community had already been pinged 3×.
    *
-   * Step 3 also repairs the opposite failure: when the send REJECTS but the
+   *   **Repair** — the sweep, kept as a backstop for anything the nonce doesn't
+   *   cover (a copy created outside Discord's dedup window, an older gateway
+   *   path): note the channel's newest message id, send, then look at what
+   *   actually appeared after that mark — keep the earliest of our own messages,
+   *   delete the rest.
+   *
+   * The sweep also repairs the opposite failure: when the send REJECTS but the
    * message got created anyway, we adopt the orphan instead of leaving no ledger
    * row and re-announcing on the next tick.
    */

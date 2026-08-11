@@ -69,6 +69,15 @@ export class CalendarCapability implements Capability {
   private rolloverTimer: NodeJS.Timeout | null = null;
   /** Daily-announcement watcher (see {@link CalendarAnnouncer}); cleared on dispose. */
   private announceTimer: NodeJS.Timeout | null = null;
+  /**
+   * The announcement pass currently in flight, if any — see {@link runAnnouncer}.
+   * A pass writes its ledger row only *after* the model has written the text and
+   * Discord has accepted the post, and that stretch has been observed to reach
+   * ~5 minutes live (a 4-minute model call plus a 45-second, retrying send) —
+   * i.e. long enough for the next tick to start, read a ledger that says
+   * "not announced yet", and post the same thing again.
+   */
+  private announceInFlight: Promise<void> | null = null;
   /** Set in `start()` — used to find the mod-facing channel for nudges. */
   private router: MutableCapabilityRouter | null = null;
   /** Shared handle, kept so a nudge can read who event_intake lets approve. */
@@ -238,8 +247,29 @@ export class CalendarCapability implements Capability {
     });
   }
 
-  /** One announcement pass; failures stay inside the timer. */
+  /**
+   * One announcement pass; failures stay inside the timer.
+   *
+   * Serialized against itself: the ledger is only consulted at the *start* of a
+   * pass and only written at the end, so two overlapping passes both see "not
+   * announced" and both post. Skipping the tick rather than queueing it is the
+   * right call — the skipped work is exactly what the in-flight pass is already
+   * doing, and the next tick is 5 minutes away.
+   */
   private async runAnnouncer(client: Client): Promise<void> {
+    if (this.announceInFlight) {
+      log.debug({ capability: this.id }, 'calendar.announce_tick_skipped_busy');
+      return this.announceInFlight;
+    }
+    const pass = this.announcePass(client).finally(() => {
+      this.announceInFlight = null;
+    });
+    this.announceInFlight = pass;
+    return pass;
+  }
+
+  /** The body of one announcement pass (see {@link runAnnouncer} for the guard). */
+  private async announcePass(client: Client): Promise<void> {
     try {
       const report = await this.makeAnnouncer(client).run();
       // Only speak up when something actually happened — this ticks every 5 min.

@@ -24,7 +24,7 @@ vi.mock('../discord-events.js', () => ({
 const { SqliteMemoryStore } = await import('../../../memory/store.js');
 const { CALENDAR_MIGRATIONS, CalendarStore } = await import('../store.js');
 const { CalendarAnnouncer } = await import('../announcer.js');
-const { announceKey } = await import('../announce.js');
+const { announceKey, announceNonce, MAX_NONCE_LENGTH } = await import('../announce.js');
 
 const BOT_ID = 'BOT';
 const CHANNEL_ID = 'CH_ANUNCIOS';
@@ -40,22 +40,38 @@ interface FakeMessage {
   delete(): Promise<unknown>;
 }
 
+interface SendPayload {
+  content: string;
+  nonce?: string;
+  enforceNonce?: boolean;
+}
+
 /**
  * A channel that can be told to duplicate a send — i.e. to behave the way
  * Discord did when the bug fired: the message is created N times, and the id of
  * the LAST one is what comes back to the caller.
+ *
+ * `honourNonce` models real Discord: with `enforce_nonce`, a create whose nonce
+ * was already used by the same author in this channel returns the EXISTING
+ * message instead of making another. Off by default so the pre-existing sweep
+ * tests keep exercising the unprotected path.
  */
 class FakeChannel {
   readonly messages_: FakeMessage[] = [];
   guildId = GUILD_ID;
   sends = 0;
+  /** Every payload `send()` was called with, for asserting the wire shape. */
+  readonly payloads: SendPayload[] = [];
   private seq = 100;
+  private readonly byNonce = new Map<string, FakeMessage>();
 
   constructor(
     /** How many messages each `send()` actually creates server-side. */
     private readonly copiesPerSend = 1,
     /** When true, `send()` rejects even though the copies were created. */
     private readonly rejectAfterCreating = false,
+    /** Whether this channel implements Discord's `enforce_nonce` dedup. */
+    private readonly honourNonce = false,
   ) {
     // Start non-empty: an empty channel has no "since" mark to sweep from, which
     // is a separate (and deliberately unswept) case.
@@ -82,10 +98,22 @@ class FakeChannel {
     return true;
   }
 
-  async send(): Promise<{ id: string }> {
+  async send(payload: SendPayload): Promise<{ id: string }> {
     this.sends += 1;
+    this.payloads.push(payload);
+    const key = payload.enforceNonce ? payload.nonce : undefined;
     let last = '';
-    for (let i = 0; i < this.copiesPerSend; i++) last = this.push(String(++this.seq)).id;
+    for (let i = 0; i < this.copiesPerSend; i++) {
+      // Each iteration is one HTTP attempt. Discord dedups them by nonce.
+      const existing = this.honourNonce && key !== undefined ? this.byNonce.get(key) : undefined;
+      if (existing) {
+        last = existing.id;
+        continue;
+      }
+      const created = this.push(String(++this.seq));
+      if (key !== undefined) this.byNonce.set(key, created);
+      last = created.id;
+    }
     if (this.rejectAfterCreating) throw new Error('Request timed out');
     return { id: last };
   }
@@ -212,6 +240,58 @@ describe('a retried create (the live incident)', () => {
     const channel = new FakeChannel(3);
     await makeAnnouncer(channel).run();
     expect(channel.liveBotMessages()).toHaveLength(1);
+  });
+});
+
+/**
+ * The sweep above is a *repair*: it runs after the copies exist, so the
+ * community has already been @-pinged once per copy — deleting a message does
+ * not retract its notification. On 2026-08-11 three copies landed at 10:05 and
+ * an admin deleted two by hand nine seconds before the sweep could, which is
+ * why the journal recorded `duplicatesRemoved: 0` for a triple-posted morning.
+ *
+ * So the create itself has to be idempotent. These tests pin the prevention.
+ */
+describe('the create is idempotent (nonce + enforceNonce)', () => {
+  test('carries a nonce and asks Discord to enforce it', async () => {
+    const channel = new FakeChannel();
+    await makeAnnouncer(channel).run();
+
+    const [payload] = channel.payloads;
+    expect(payload!.enforceNonce).toBe(true);
+    expect(payload!.nonce).toBe(announceNonce(1, EVENT_START));
+    expect(payload!.nonce!.length).toBeLessThanOrEqual(MAX_NONCE_LENGTH);
+  });
+
+  test('a retried create never becomes a second message — so it never pings twice', async () => {
+    // Three HTTP attempts, Discord honouring the nonce: one message, and the
+    // sweep has nothing to clean up because nothing extra was ever created.
+    const channel = new FakeChannel(3, false, true);
+    const report = await makeAnnouncer(channel).run();
+
+    expect(channel.liveBotMessages()).toHaveLength(1);
+    expect(report.announced[0]!.posted).toBe(true);
+    expect(report.announced[0]!.messageId).toBe('101');
+    expect(channel.liveBotMessages().some((m) => m.deleted)).toBe(false);
+  });
+
+  test('two overlapping passes for the same occurrence collapse to one post', async () => {
+    // What an announce tick that outlives the 5-minute interval looks like: both
+    // passes read a ledger that says "not announced" and both send.
+    const channel = new FakeChannel(1, false, true);
+    await Promise.all([makeAnnouncer(channel).run(), makeAnnouncer(channel).run()]);
+
+    expect(channel.sends).toBe(2);
+    expect(channel.liveBotMessages()).toHaveLength(1);
+  });
+
+  test('a deliberate repost is NOT swallowed as a duplicate', async () => {
+    const channel = new FakeChannel(1, false, true);
+    await makeAnnouncer(channel).run();
+    await makeAnnouncer(channel).run({ ignoreLedger: true });
+
+    expect(channel.liveBotMessages()).toHaveLength(2);
+    expect(channel.payloads[1]!.nonce).not.toBe(channel.payloads[0]!.nonce);
   });
 });
 
