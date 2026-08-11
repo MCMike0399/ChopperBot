@@ -64,11 +64,27 @@ export async function buildHistory(client: Client, message: Message): Promise<Tu
 }
 
 /**
+ * Header for a bot message that OPENS the window, folded into the first user
+ * turn. It's labelled rather than passed off as the person's own words, so the
+ * model can tell "this is what I said before" from "this is what they asked".
+ */
+const LEADING_BOT_HEADER =
+  '[Contexto — mensaje anterior de ChopperBot en este canal, al que la persona está respondiendo]';
+
+/**
  * Coerce a sequence of turns into the canonical chat shape the model expects:
  *   - alternating user/assistant
  *   - starts with user
- * Strategy: merge consecutive same-role turns (concatenate content),
- * then drop any leading assistant turns.
+ * Strategy: merge consecutive same-role turns (concatenate content), then FOLD
+ * any leading assistant turns into the first user turn as labelled context.
+ *
+ * Folding (rather than dropping) is load-bearing for **bot-initiated** threads.
+ * A chain that starts with the bot is not an anomaly here: the calendar's
+ * "falta crear el evento de Discord" nudge, the daily announcement and admin
+ * alerts all speak first, and a mod replying to one of them produces a window
+ * whose only history turn is that bot message. Dropping it left the model with
+ * a bare "crea el evento" and no referent — observed live on 2026-08-10, where
+ * it answered "¿qué evento quieres crear?" to a reply on its own nudge.
  */
 export function normalizeTurns(turns: Turn[]): Turn[] {
   const merged: Turn[] = [];
@@ -84,6 +100,19 @@ export function normalizeTurns(turns: Turn[]): Turn[] {
       merged.push({ role: t.role, content: t.content, attachments: t.attachments });
     }
   }
-  while (merged.length > 0 && merged[0].role === 'assistant') merged.shift();
+
+  const leading: Turn[] = [];
+  while (merged.length > 0 && merged[0].role === 'assistant') leading.push(merged.shift()!);
+  // Nothing to fold into (an assistant-only window can't be a prompt) — the
+  // caller always appends the live user message, so this stays an edge case.
+  if (leading.length > 0 && merged.length > 0) {
+    const quoted = leading
+      .map((t) => t.content)
+      .join('\n\n')
+      .split('\n')
+      .map((line) => `> ${line}`)
+      .join('\n');
+    merged[0].content = `${LEADING_BOT_HEADER}\n${quoted}\n\n${merged[0].content}`;
+  }
   return merged;
 }

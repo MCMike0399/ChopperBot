@@ -63,6 +63,7 @@ beforeEach(async () => {
     created: true,
     startAtLocal: 'Tue, Aug 11, 8:00 PM',
     imageSet: false,
+    venue: { kind: 'stage', name: '🫀 Sala de Club de Poesía 🫀' },
   });
   refreshMock.mockReset().mockResolvedValue({
     ok: true,
@@ -189,11 +190,41 @@ describe('calendar_sync_discord_event — the banner parameter', () => {
       created: true,
       startAtLocal: 'Tue, Aug 11, 8:00 PM',
       imageSet: true,
+      venue: { kind: 'stage', name: '🫀 Sala de Club de Poesía 🫀' },
     });
     const ev = createEvent();
     const res = await makeSource().handle('calendar_sync_discord_event', { event_id: ev.id });
     expect(res.status).toBe('success');
     const payload = res.payload as { discord_event: { image_set: boolean } };
     expect(payload.discord_event.image_set).toBe(true);
+  });
+
+  test('the room reaches the payload so the confirmation can name it', async () => {
+    const ev = createEvent();
+    const res = await makeSource().handle('calendar_sync_discord_event', { event_id: ev.id });
+    const payload = res.payload as {
+      discord_event: { venue_kind: string; venue_name: string; needs_room: boolean };
+    };
+    expect(payload.discord_event.venue_kind).toBe('stage');
+    expect(payload.discord_event.venue_name).toBe('🫀 Sala de Club de Poesía 🫀');
+    expect(payload.discord_event.needs_room).toBe(false);
+  });
+
+  test('a roomless (external) event is flagged needs_room, not reported as fine', async () => {
+    // Live on 2026-08-10: #29 was created external and confirmed as if done.
+    syncMock.mockResolvedValue({
+      ok: true,
+      discordEventId: 'DE1',
+      url: 'https://discord.com/events/G1/DE1',
+      created: true,
+      startAtLocal: 'Tue, Aug 11, 8:00 PM',
+      imageSet: false,
+      venue: { kind: 'external', name: 'Revolución Z' },
+    });
+    const ev = createEvent({ title: 'Conversatorio: Data Centers y LLMs' });
+    const res = await makeSource().handle('calendar_sync_discord_event', { event_id: ev.id });
+    const payload = res.payload as { discord_event: { needs_room: boolean; venue_kind: string } };
+    expect(payload.discord_event.needs_room).toBe(true);
+    expect(payload.discord_event.venue_kind).toBe('external');
   });
 });

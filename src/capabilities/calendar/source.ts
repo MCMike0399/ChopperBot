@@ -244,6 +244,7 @@ export class CalendarToolSource implements ToolSource {
           "Create the Discord **Scheduled Event** (the native \"Evento\" members RSVP to, under the server's Eventos tab) for a calendar event that doesn't have one yet, and link the two. Use it when a mod says \"crea el evento de Discord\", \"súbelo a eventos\", \"haz el evento para que se apunten\", or right after creating an event that the community should be able to RSVP to.\n" +
           'Idempotent: if the event is already linked to a live Discord event it returns that one instead of duplicating it. For a recurring series it schedules the NEXT occurrence. The link is what the daily "hoy hay evento" announcement uses, so this is how you make the announcement carry a clickable event.\n' +
           'Pass `image_url` (one of the image URLs advertised in the system prompt) to set the event\'s cover image/banner — also works on an event that already exists, so "ponle esta portada" is just this call with the image.\n' +
+          'The result reports where it landed: `venue_kind` voice/stage (members get a join button) or `external` with `needs_room: true`, which means NO room was resolvable — say so and ask which sala it is; storing that as the calendar `location` moves the Discord event into it.\n' +
           'Once linked, later calendar edits and deletes propagate to the Discord event automatically — no need to call this again for that.\n' +
           'If the bot lacks the "Gestionar eventos" server permission this returns `missing_permission` — relay that so an admin can grant it, and ask the mods to create the event by hand meanwhile.',
         inputSchema: {
@@ -542,7 +543,7 @@ export class CalendarToolSource implements ToolSource {
       const res = await this.syncer.refresh(id);
       if (!res.ok) return { action: 'error', message: res.message };
       return res.action === 'updated'
-        ? { action: 'updated', url: res.url, changed: res.changed }
+        ? { action: 'updated', url: res.url, changed: res.changed, ...(res.venue ? { venue: res.venue } : {}) }
         : undefined;
     } catch (err) {
       log.warn({ err, id, kind }, 'calendar.discord_event_propagation_failed');
@@ -612,6 +613,11 @@ export class CalendarToolSource implements ToolSource {
           created: result.created,
           start_at_local: result.startAtLocal,
           image_set: result.imageSet === true,
+          /** Room it landed in — `external` means nobody gets a join button. */
+          venue_kind: result.venue.kind,
+          venue_name: result.venue.name,
+          /** True when the event has NO voice/stage room; ask the mod for one. */
+          needs_room: result.venue.kind === 'external',
         },
       },
     };

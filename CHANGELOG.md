@@ -13,6 +13,17 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.16.0 — 2026-08-10
+
+📅 **"Crea el evento" — ahora sí sabe de cuál le hablan**
+
+Cuando el bot les recuerda que falta crear el evento de Discord de algo que viene, ya pueden **responder a ese mismo mensaje** con un simple *"crea el evento"* y lo hace. Antes se le olvidaba de qué estaban hablando y pedía título y fecha de un evento que él mismo acababa de nombrar. Lo que cambia:
+
+- **Se acuerda de lo que él mismo dijo.** Si responden a un aviso suyo, ahora lee ese aviso como parte de la conversación. Esto aplica a todos sus avisos, no solo a los del calendario.
+- **El recordatorio trae el número del evento** (`#28`), así que se puede copiar tal cual: *"crea el evento de Discord del #28"*.
+- **Sabe cuáles eventos ya tienen su evento de Discord y cuáles no**, sin tener que buscarlo. Si solo falta uno, lo confirma en una línea en vez de interrogarlxs.
+- **Ya no deja eventos sin sala en silencio.** Al crear el evento de Discord les dice en qué sala quedó, y si no encontró ninguna lo dice y pregunta: *"quedó sin sala — ¿en cuál va?"*. Cuando le contestan, mueve el evento de Discord a esa sala él solito.
+
 ## 1.15.0 — 2026-08-09
 
 📎 **"Ya te lo envié" — y esta vez, de verdad**
