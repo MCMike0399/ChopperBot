@@ -25,6 +25,16 @@ export interface Classification {
   tags: string[];
   /** Filled when we couldn't parse the model's reply. */
   reason?: string;
+  /**
+   * True when the classifier never reached a verdict — the LLM call threw, or
+   * its reply didn't parse. Distinct from an honest `relevant: false`, which is
+   * a *decision*. Callers must not treat an undecided post as settled: the
+   * scheduler holds its dedup anchor back so the post is retried on a later
+   * poll instead of being recorded seen and lost forever. (2026-08-11: the Kimi
+   * endpoint went hard-500 and every in-flight post was silently discarded;
+   * 114 posts had been dropped this way over the monitor's lifetime.)
+   */
+  undecided?: true;
 }
 
 export const SYSTEM_PROMPT = `Eres un curador de un canal de Discord que monitorea cuentas activistas mexicanas (feminismo, ecología, DDHH, antimilitarismo, mutual-aid).
@@ -179,7 +189,17 @@ async function transcribeFlyer(
 /** A non-relevant Classification carrying a failure `reason`, so callers never
  * have to handle a null and an unclassifiable post is simply not pushed. */
 function failClassification(reason: string): Classification {
-  return { relevant: false, type: 'otro', title: '', summary: '', when: null, where: null, tags: [], reason };
+  return {
+    relevant: false,
+    type: 'otro',
+    title: '',
+    summary: '',
+    when: null,
+    where: null,
+    tags: [],
+    reason,
+    undecided: true,
+  };
 }
 
 const TYPE_VALUES: ReadonlySet<ClassificationType> = new Set([

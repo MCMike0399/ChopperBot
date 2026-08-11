@@ -7,7 +7,7 @@ import {
   type Tool,
   type ToolConfiguration,
 } from '@aws-sdk/client-bedrock-runtime';
-import { config } from '../config.js';
+import { config, textBackend } from '../config.js';
 import { log } from '../log.js';
 import { Semaphore } from './gate.js';
 import { isContentFilterRejection, llmHealth } from './health.js';
@@ -22,9 +22,14 @@ import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source
 // Kimi is text-only, so a turn carrying an attachment goes to Amazon Nova Lite
 // (the effort `low` tier). The routing rule:
 //
-//   has an image OR effort 'low'    → Bedrock (Amazon Nova Lite) — images only
-//   text + LLM_TEXT_BACKEND=kimi    → Kimi 2.7 Thinking
-//   text + LLM_TEXT_BACKEND=bedrock → Bedrock Converse (BEDROCK_MODEL_ID)
+//   has an image OR effort 'low'     → Bedrock (Amazon Nova Lite) — images only
+//   text + LLM_TEXT_BACKEND=kimi     → Kimi 2.7 Thinking
+//   text + LLM_TEXT_BACKEND=deepseek → DeepSeek V4-Flash (same wire shape)
+//   text + LLM_TEXT_BACKEND=bedrock  → Bedrock Converse (BEDROCK_MODEL_ID)
+//
+// Nova is NOT optional and cannot be consolidated away: neither text brain can
+// see images. DeepSeek V4 rejects `image_url` with a 400 at the deserialization
+// layer on both Flash and Pro (probed 2026-08-10).
 //
 // The bedrock text mode exists for AWS-native deploys (the ECS redacted-ops bot):
 // no external LLM API key is available there, so text runs on the same Bedrock
@@ -33,13 +38,18 @@ import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source
 // 403 ("Kimi For Coding is currently only available for Coding Agents…").
 // `claude-cli/1.0.0` is empirically on the allowlist; override via
 // KIMI_USER_AGENT if it changes. The client is constructed LAZILY — in bedrock
-// text mode no KIMI_API_KEY exists and no Kimi client is needed.
-const kimi = config.KIMI_API_KEY
+// text mode no API key exists and no OpenAI-compatible client is needed.
+//
+// Which provider fills this slot is config, not code: `textBackend` resolves
+// LLM_TEXT_BACKEND=kimi|deepseek into one {apiKey, baseUrl, modelId} shape.
+// Both speak chat-completions and both return `reasoning_content`, so the loop
+// below is identical for either.
+const kimi = textBackend.apiKey
   ? new OpenAI({
-      apiKey: config.KIMI_API_KEY,
-      baseURL: config.KIMI_BASE_URL,
+      apiKey: textBackend.apiKey,
+      baseURL: textBackend.baseUrl,
       defaultHeaders: {
-        'User-Agent': config.KIMI_USER_AGENT,
+        'User-Agent': textBackend.userAgent,
       },
     })
   : null;
@@ -114,7 +124,7 @@ export class TurnAbortedError extends Error {
  * provider never sees more than KIMI_MAX_CONCURRENT requests in flight). See
  * gate.ts for the live failure this fixes.
  */
-const kimiGate = new Semaphore(config.KIMI_MAX_CONCURRENT);
+const kimiGate = new Semaphore(textBackend.maxConcurrent);
 
 interface AgentTrace {
   iterations: number;
@@ -298,10 +308,10 @@ type ChatMessage =
 async function askKimi({ system, messages, tools, effort = 'high', onPhase, shouldAbort }: AskInput): Promise<string> {
   if (!kimi) {
     throw new Error(
-      'Kimi text backend selected but KIMI_API_KEY is not set — set the key, or LLM_TEXT_BACKEND=bedrock for AWS-native runs',
+      `${textBackend.provider} text backend selected but no API key is set — set ${textBackend.provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'KIMI_API_KEY'}, or LLM_TEXT_BACKEND=bedrock for AWS-native runs`,
     );
   }
-  const modelId = config.KIMI_MODEL_ID;
+  const modelId = textBackend.modelId;
   const convo: ChatMessage[] = [
     { role: 'system', content: system },
     ...messages.map((m): ChatMessage =>
@@ -342,7 +352,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
             model: modelId,
             messages: convo.slice() as never,
             tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
-            max_tokens: config.KIMI_MAX_OUTPUT_TOKENS,
+            max_tokens: textBackend.maxOutputTokens,
           } as never),
         ),
       trace,
@@ -482,7 +492,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
             kimi.chat.completions.create({
               model: modelId,
               messages: convo.slice() as never,
-              max_tokens: config.KIMI_MAX_OUTPUT_TOKENS,
+              max_tokens: textBackend.maxOutputTokens,
             } as never),
           ),
         );
@@ -526,7 +536,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
 
   log.info(
     {
-      backend: 'kimi',
+      backend: textBackend.provider,
       effort,
       model: modelId,
       iterations: trace.iterations,

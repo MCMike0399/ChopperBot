@@ -2,20 +2,17 @@
  * Go/no-go trial for a candidate TEXT backend (the `kimi` slot in the LLM
  * client), run against ChopperBot's own decisive behaviors.
  *
- * The client builds its OpenAI-compatible handle ONCE at module load from
- * KIMI_BASE_URL/KIMI_API_KEY, so the backend cannot be swapped at runtime —
- * point this script at a candidate by setting the vars on the command line.
- * That is deliberate: the exact env you pass here is the exact env the swap
- * needs in `.env`, so a green run is proof of the real production config.
+ * The client resolves its OpenAI-compatible handle ONCE at module load (see
+ * `textBackend` in src/config.ts), so the backend cannot be swapped at runtime —
+ * select one on the command line. That is deliberate: the env you pass here is
+ * the exact env the cutover needs in `.env`, so a green run is proof of the
+ * real production config, not of a test-only code path.
  *
  *   # baseline — current Kimi coding endpoint
  *   npx tsx scripts/text-backend-trial.ts
  *
- *   # candidate — DeepSeek V4-Flash (OpenAI-compatible /v1)
- *   KIMI_BASE_URL=https://api.deepseek.com/v1 \
- *   KIMI_MODEL_ID=deepseek-v4-flash \
- *   KIMI_API_KEY=$DEEPSEEK_API_KEY \
- *   npx tsx scripts/text-backend-trial.ts
+ *   # candidate — DeepSeek V4-Flash (key read from DEEP_SEEK_API_KEY in .env)
+ *   LLM_TEXT_BACKEND=deepseek npx tsx scripts/text-backend-trial.ts
  *
  * Run both, diff the two reports. Spends real tokens on both providers; posts
  * nothing to Discord and touches no production SQLite (every scene gets a fresh
@@ -40,7 +37,7 @@
  */
 import 'dotenv/config';
 import OpenAI from 'openai';
-import { config } from '../src/config.js';
+import { config, textBackend } from '../src/config.js';
 import { SqliteMemoryStore, NamespacedMemory } from '../src/memory/store.js';
 import { CalendarCapability } from '../src/capabilities/calendar/capability.js';
 import { CalendarStore } from '../src/capabilities/calendar/store.js';
@@ -58,6 +55,8 @@ const SUN_28 = Date.parse('2026-06-28T20:00:00-06:00');
 
 const runsArg = process.argv.indexOf('--runs');
 const RUNS = runsArg >= 0 ? Math.max(1, Number(process.argv[runsArg + 1]) || 2) : 2;
+/** Skip the (slow, token-hungry) tool battery and probe only the risk filter. */
+const filterOnly = process.argv.includes('--filter-only');
 
 const GREEN = '\x1b[32m', RED = '\x1b[31m', DIM = '\x1b[2m', RST = '\x1b[0m';
 
@@ -175,9 +174,9 @@ async function battery(): Promise<Battery> {
  * shape trips isContentFilterRejection (via classifyLlmError → 'content_filter').
  */
 const raw = new OpenAI({
-  apiKey: config.KIMI_API_KEY,
-  baseURL: config.KIMI_BASE_URL,
-  defaultHeaders: { 'User-Agent': config.KIMI_USER_AGENT },
+  apiKey: textBackend.apiKey,
+  baseURL: textBackend.baseUrl,
+  defaultHeaders: { 'User-Agent': textBackend.userAgent },
 });
 
 const FILTER_PROMPTS: Array<[string, string]> = [
@@ -187,18 +186,28 @@ const FILTER_PROMPTS: Array<[string, string]> = [
   ['benign control', '¿qué eventos hay esta semana?'],
 ];
 
-async function filterProbe(): Promise<{ refused: number; classified: number; lines: string[] }> {
+async function filterProbe(): Promise<{ refused: number; classified: number; empty: number; lines: string[] }> {
   const lines: string[] = [];
-  let refused = 0, classified = 0;
+  let refused = 0, classified = 0, empty = 0;
   for (const [label, prompt] of FILTER_PROMPTS) {
     try {
       const res = await raw.chat.completions.create({
-        model: config.KIMI_MODEL_ID,
-        max_tokens: 200,
+        model: textBackend.modelId,
+        // Generous budget on purpose: a thinking model spends output tokens on
+        // reasoning_content first, so a small cap returns empty `content` and
+        // an empty answer is indistinguishable from a refusal. Observed on the
+        // Kimi baseline at max_tokens 200 — all three political prompts came
+        // back empty and were misread as answered.
+        max_tokens: 2000,
         messages: [{ role: 'user', content: prompt }],
       });
       const text = res.choices[0]?.message?.content ?? '';
-      lines.push(`   ${GREEN}answered${RST}  ${label.padEnd(20)} ${DIM}${text.slice(0, 70).replace(/\s+/g, ' ') || '(empty)'}${RST}`);
+      if (text.trim().length === 0) {
+        empty++;
+        lines.push(`   ${RED}EMPTY   ${RST}  ${label.padEnd(20)} ${DIM}no content — reasoning-only or a silent refusal; inconclusive${RST}`);
+      } else {
+        lines.push(`   ${GREEN}answered${RST}  ${label.padEnd(20)} ${DIM}${text.slice(0, 70).replace(/\s+/g, ' ')}${RST}`);
+      }
     } catch (err) {
       refused++;
       const kind = classifyLlmError(err);
@@ -210,17 +219,17 @@ async function filterProbe(): Promise<{ refused: number; classified: number; lin
       );
     }
   }
-  return { refused, classified, lines };
+  return { refused, classified, empty, lines };
 }
 
 async function main(): Promise<void> {
   console.log('=== Text-backend trial ===');
-  console.log(`backend : ${config.KIMI_MODEL_ID} @ ${config.KIMI_BASE_URL}`);
-  console.log(`runs    : ${RUNS}   now(local): ${localStr(NOW.getTime())}\n`);
+  console.log(`backend : ${textBackend.provider} · ${textBackend.modelId} @ ${textBackend.baseUrl}`);
+  console.log(`scope   : ${filterOnly ? 'risk filter only' : `${RUNS} run(s) of the full battery`}   now(local): ${localStr(NOW.getTime())}\n`);
 
   const agg = { create: 0, override: 0, dedup: 0, oneoff: 0, voice: 0, leaks: 0, ms: 0 };
   let lastErr = '';
-  for (let r = 0; r < RUNS; r++) {
+  for (let r = 0; r < (filterOnly ? 0 : RUNS); r++) {
     const b = await battery();
     agg.create += b.create; agg.override += b.override; agg.dedup += b.dedup;
     agg.oneoff += b.oneoff; agg.voice += b.voice; agg.ms += b.ms;
@@ -238,19 +247,36 @@ async function main(): Promise<void> {
 
   const tool = agg.create + agg.override + agg.dedup + agg.oneoff;
   const toolMax = 4 * RUNS;
-  console.log(`\n— verdict —`);
-  console.log(`tool-calling : ${tool}/${toolMax}${tool === toolMax ? ` ${GREEN}✓${RST}` : tool >= toolMax * 0.75 ? ` ${DIM}(borderline)${RST}` : ` ${RED}✗${RST}`}`);
-  console.log(`voice        : ${agg.voice}/${RUNS}${agg.voice === RUNS ? ` ${GREEN}✓${RST}` : ` ${RED}✗${RST}`}`);
-  console.log(`leaks        : ${agg.leaks}${agg.leaks === 0 ? ` ${GREEN}✓${RST}` : ` ${RED}✗${RST}`}`);
-  console.log(`refusals     : ${f.refused}/${FILTER_PROMPTS.length} refused, ${f.classified} correctly classified as content_filter`);
-  if (f.refused > f.classified) {
-    console.log(`               ${RED}an uncaught refusal shape means the member sees an English error and admins get paged — widen the regex in src/llm/health.ts before switching${RST}`);
+  console.log(`\n— scorecard —`);
+  if (!filterOnly) {
+    // Deliberately NOT an absolute pass/fail: the tool battery is stochastic
+    // (the Kimi baseline itself scored 3/4 on a single run, missing `create`),
+    // so the only meaningful bar is parity with the baseline run of the SAME
+    // shape. Report the numbers; let the operator diff the two reports.
+    console.log(`tool-calling : ${tool}/${toolMax}   ${DIM}(create ${agg.create} override ${agg.override} dedup ${agg.dedup} oneoff ${agg.oneoff})${RST}`);
+    console.log(`voice        : ${agg.voice}/${RUNS}${agg.voice === RUNS ? ` ${GREEN}✓${RST}` : ` ${RED}✗${RST}`}`);
+    console.log(`leaks        : ${agg.leaks}${agg.leaks === 0 ? ` ${GREEN}✓${RST}` : ` ${RED}✗ scaffolding reached the reply${RST}`}`);
+    console.log(`avg latency  : ${DIM}${(agg.ms / (RUNS * 5) / 1000).toFixed(1)}s per turn${RST}`);
   }
-  console.log(`avg latency  : ${DIM}${(agg.ms / (RUNS * 5) / 1000).toFixed(1)}s per turn${RST}`);
-  if (lastErr) console.log(`last error   : ${DIM}${lastErr}${RST}`);
+  console.log(`refusals     : ${f.refused}/${FILTER_PROMPTS.length} refused · ${f.classified} classified as content_filter · ${f.empty} empty`);
 
-  const green = tool === toolMax && agg.voice === RUNS && agg.leaks === 0 && f.refused === f.classified;
-  console.log(`\n${green ? `${GREEN}GO — behavior matches the contract; compare against the baseline run before switching.${RST}` : `${RED}NO-GO — fix the ✗ rows above (or re-run: tool-calling is stochastic) before touching .env.${RST}`}`);
+  // These two ARE hard gates — they are contract breaks, not quality wobbles.
+  const uncaught = f.refused > f.classified;
+  if (uncaught) {
+    console.log(`\n${RED}BLOCKER — a refusal shape this backend emits is not matched by isContentFilterRejection.${RST}`);
+    console.log(`${DIM}  Effect: the turn is classified as a config error → admin channel gets paged and the${RST}`);
+    console.log(`${DIM}  member sees an English error string instead of the Nova fallback. Widen the regex in${RST}`);
+    console.log(`${DIM}  src/llm/health.ts (and add a case to src/llm/__tests__/) BEFORE switching .env.${RST}`);
+  }
+  if (agg.leaks > 0) console.log(`\n${RED}BLOCKER — reasoning scaffolding leaked into a user-visible reply.${RST}`);
+  if (f.empty > 0) console.log(`\n${DIM}note: ${f.empty} prompt(s) returned empty content — reasoning-only output or a silent refusal. Inspect manually; neither is safe to assume.${RST}`);
+  if (lastErr) console.log(`\nlast error   : ${DIM}${lastErr}${RST}`);
+
+  console.log(
+    `\n${uncaught || agg.leaks > 0
+      ? `${RED}NO-GO — fix the blockers above before touching .env.${RST}`
+      : `${GREEN}No blockers.${RST} Now diff this scorecard against the baseline run (same flags, current .env). Switch only if tool-calling and voice hold at parity.`}`,
+  );
   process.exit(0);
 }
 
