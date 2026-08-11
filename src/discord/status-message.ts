@@ -24,6 +24,9 @@ const MIN_EDIT_INTERVAL_MS = 1500;
 export function toolLabel(toolName: string | undefined): string {
   if (!toolName) return '🛠️ Trabajando';
   if (toolName === 'workshop_run_python') return '🐍 Ejecutando código';
+  if (toolName === 'workshop_doc_index') return '📚 Indexando el documento';
+  if (toolName === 'workshop_doc_search') return '🔎 Buscando en el documento';
+  if (toolName === 'workshop_doc_read') return '📖 Leyendo el documento';
   if (toolName === 'workshop_read_file') return '📖 Leyendo archivos';
   if (toolName === 'workshop_write_file') return '✍️ Escribiendo archivo';
   if (toolName === 'workshop_list_files') return '🗂️ Revisando el workspace';

@@ -26,8 +26,10 @@ export interface WorkspaceFile {
   modifiedAt: number;
 }
 
-/** Files/dirs never shown to the model nor sent to Discord. */
-const HIDDEN_PREFIXES = ['.workshop'];
+/** Files/dirs never shown to the model nor sent to Discord. `.workshop` is
+ * the per-run staging dir (wiped after each python run); `.docindex` holds the
+ * document indexes (see docindex.ts) and persists between turns. */
+const HIDDEN_PREFIXES = ['.workshop', '.docindex'];
 
 export class PathEscapeError extends Error {
   constructor(requested: string) {

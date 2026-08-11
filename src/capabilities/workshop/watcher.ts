@@ -24,11 +24,10 @@ type GatewayMessage = OmitPartialGroupDMChannel<Message>;
 import { basename, join } from 'node:path';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { log } from '../../log.js';
-import { ask, TurnAbortedError, type AskPhase } from '../../llm/client.js';
+import { ask, TurnAbortedError } from '../../llm/client.js';
 import { chunkBotReply } from '../../discord/chunk.js';
 import { normalizeTurns, type Turn } from '../../discord/history.js';
-import { StatusReactor } from '../../discord/status-reactions.js';
-import { LiveStatusMessage, composeStatusText } from '../../discord/status-message.js';
+import { WorkshopTurnPresenter } from '../../discord/presenter.js';
 import { QueueBusyError, type TurnQueue } from '../../discord/turn-queue.js';
 import { QUEUE_BUSY_REPLY, GENERIC_ERROR_REPLY } from '../../discord/handlers.js';
 import { resolveAttachments } from '../../attachments/resolver.js';
@@ -312,7 +311,9 @@ export class WorkshopWatcher {
       if (!userText && !hasAttachments) return;
 
       this.deps.store.touchActivity(message.channelId, this.now());
-      const reactor = new StatusReactor(message, this.deps.client.user?.id);
+      // Workshop conversation style: ⏳ reaction while queued, then the live
+      // status line that morphs into the reply (web-LLM experience).
+      const presenter = new WorkshopTurnPresenter(message, this.deps.client.user?.id, this.now);
 
       // A newer message interrupts the channel's older pending/running turn:
       // it stops at its next step and this turn (behind it in the FIFO queue)
@@ -326,24 +327,23 @@ export class WorkshopWatcher {
       try {
         await this.deps.turnQueue.run(
           message.channelId,
-          () => this.runTurn(message, session, reactor, abortFlag),
-          { onQueued: () => reactor.set('queued') },
+          () => this.runTurn(message, session, presenter, abortFlag),
+          { onQueued: () => presenter.onQueued() },
         );
       } catch (err) {
         if (err instanceof TurnAbortedError) {
           // Superseded by a newer message — clean up silently; the newer
           // turn owns the conversation now.
-          reactor.resolve();
+          await presenter.discard();
           log.info({ channelId: message.channelId }, 'workshop.turn_interrupted');
           return;
         }
-        reactor.fail();
         if (err instanceof QueueBusyError) {
-          await message.reply(QUEUE_BUSY_REPLY).catch(() => {});
+          await presenter.fail(QUEUE_BUSY_REPLY);
           return;
         }
         log.error({ err, channelId: message.channelId }, 'workshop.turn_failed');
-        await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
+        await presenter.fail(GENERIC_ERROR_REPLY);
       } finally {
         if (this.turnAborts.get(message.channelId) === abortFlag) {
           this.turnAborts.delete(message.channelId);
@@ -357,7 +357,7 @@ export class WorkshopWatcher {
   private async runTurn(
     message: GatewayMessage,
     session: WorkshopSession,
-    reactor: StatusReactor,
+    presenter: WorkshopTurnPresenter,
     abortFlag: { aborted: boolean },
   ): Promise<void> {
     // Interrupted while still waiting in the queue → don't even start.
@@ -366,22 +366,7 @@ export class WorkshopWatcher {
     // Web-LLM-style progress: ONE subtext status line, edited in place as the
     // turn advances, that finally morphs into the reply itself. The queued-⏳
     // reaction (set by handleMessage) is cleared as soon as the line exists.
-    const status = new LiveStatusMessage(message.channel);
-    const progress = {
-      phase: 'thinking' as AskPhase,
-      toolName: undefined as string | undefined,
-      step: 0,
-      startedAt: this.now(),
-    };
-    const statusText = (): string =>
-      composeStatusText({ ...progress, elapsedMs: this.now() - progress.startedAt });
-    await status.start(statusText());
-    reactor.resolve();
-
-    const heartbeat = setInterval(() => void message.channel.sendTyping().catch(() => {}), 8000);
-    // Keep the elapsed-time suffix ticking even when no phase changes arrive
-    // (a single long Kimi request can take a minute+).
-    const ticker = setInterval(() => status.update(statusText()), 10_000);
+    await presenter.begin();
 
     const workspace = new SessionWorkspace(workspaceDirFor(this.deps.dataDir, session.channel_id));
     workspace.ensure();
@@ -464,39 +449,29 @@ export class WorkshopWatcher {
         system,
         messages: turns,
         tools,
-        onPhase: (phase, detail) => {
-          progress.phase = phase;
-          if (phase === 'tool') {
-            progress.toolName = detail;
-            progress.step += 1;
-          }
-          status.update(statusText());
-        },
+        onPhase: (phase, detail) => presenter.onPhase(phase, detail),
         shouldAbort: () => abortFlag.aborted,
       });
     } catch (err) {
       if (err instanceof TurnAbortedError) {
         // Superseded: the status line vanishes; the newer turn takes over.
-        await status.discard();
+        await presenter.discard();
         throw err;
       }
       log.error({ err, channelId: session.channel_id }, 'workshop.turn_failed');
-      await status.fail(GENERIC_ERROR_REPLY);
+      await presenter.fail(GENERIC_ERROR_REPLY);
       return;
-    } finally {
-      clearInterval(heartbeat);
-      clearInterval(ticker);
     }
 
     // Interrupted after the loop finished but before posting: discard — the
     // newer turn answers with full context (web-LLM interrupt semantics).
     if (abortFlag.aborted) {
-      await status.discard();
+      await presenter.discard();
       throw new TurnAbortedError();
     }
 
     // The status line becomes the reply (first chunk edits it in place).
-    const anchor = await status.finishAsReply(chunkBotReply(reply));
+    const anchor = await presenter.deliver(chunkBotReply(reply));
 
     // Deferred effects, in a safe order: files → purge → close.
     for (const f of pendingFiles) {
