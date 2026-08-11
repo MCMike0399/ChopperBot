@@ -4,7 +4,7 @@ import type { WorkshopFileRecord, WorkshopStore } from './store.js';
 import type { SessionWorkspace } from './workspace.js';
 
 /**
- * Workshop ↔ object-storage glue. MinIO (on the 2 TB HDD) is the PRIMARY
+ * Workshop ↔ object-storage glue. MinIO (on the 1 TB SSD) is the PRIMARY
  * durable copy of a session file; the Discord carrier message stays as the
  * fallback. Every helper here is best-effort — a storage failure is logged
  * and the Discord path keeps working, so a down MinIO never breaks a turn.
