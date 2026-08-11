@@ -1,10 +1,9 @@
 import { Client, Events, Message, type CloseEvent } from 'discord.js';
 import { log } from '../log.js';
-import { ask, type AskPhase } from '../llm/client.js';
+import { ask } from '../llm/client.js';
 import { chunkBotReply } from './chunk.js';
 import { buildHistory, normalizeTurns, type Turn } from './history.js';
-import { StatusReactor } from './status-reactions.js';
-import { LiveStatusMessage, composeStatusText } from './status-message.js';
+import { ReactionTurnPresenter } from './presenter.js';
 import { QueueBusyError, type TurnQueue } from './turn-queue.js';
 import { resolveAttachments, listImageAttachments } from '../attachments/resolver.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
@@ -34,23 +33,6 @@ export interface HandlerDeps {
 /** Reply when a channel's queue is already packed (anti-spam backstop). */
 export const QUEUE_BUSY_REPLY =
   'Tengo varias respuestas pendientes en este canal — dame un momento y vuelve a intentarlo.';
-
-/**
- * Discord's typing indicator expires ~10 s after each `sendTyping()`, so the
- * refresh must have real margin: at 8 s a busy event loop on the Pi let it
- * lapse mid-turn and a member read the stopped animation as "se trabó" (live
- * 2026-08-06, #chat-poesía — the answer did arrive). 5 s leaves ~2× headroom.
- */
-const TYPING_REFRESH_MS = 5_000;
-
-/**
- * After this long, a public-channel turn also posts the live status line (the
- * same one talleres use). Fast turns stay clean — no extra message — while a
- * slow one gets an explicit, durable "estoy trabajando" that then becomes the
- * answer itself. Typing alone can't do that: it's ephemeral and invisible to
- * anyone who looks a second later.
- */
-const SLOW_TURN_STATUS_MS = 20_000;
 
 /** Last-resort reply when the turn threw. Spanish and user-facing — the reader
  * is a community member, so it says what happened and invites a retry rather
@@ -101,24 +83,10 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
       // rank by recency.
       deps.userDirectory.upsert(message.author.id, message.author.tag, Date.now());
 
-      // Visible progress on the user's message: ⏳ queued → 🤔 thinking → 🛠️
-      // tools → removed on success / ❌ on failure. Reactions are instant and
-      // don't add messages; the typing indicator covers the writing tail, and a
-      // SLOW turn escalates to the live status line (see SLOW_TURN_STATUS_MS).
-      const reactor = new StatusReactor(message, client.user?.id);
-      // Posted as a REPLY so the answer stays in the user's reply chain
-      // (buildHistory walks message.reference) even when it morphs from status.
-      const status = new LiveStatusMessage({
-        post: (content) => message.reply(content),
-        send: (content) =>
-          message.channel.send({ content, allowedMentions: { repliedUser: false } }),
-      });
-      const progress = { phase: 'thinking' as AskPhase, toolName: undefined as string | undefined, step: 0 };
-      const startedAt = Date.now();
-      const statusText = (): string =>
-        composeStatusText({ ...progress, elapsedMs: Date.now() - startedAt });
-      let slowTimer: NodeJS.Timeout | null = null;
-      let statusTicker: NodeJS.Timeout | null = null;
+      // Public conversation style: status reactions (⏳🤔🛠️/❌) + the native
+      // typing indicator, and nothing else — no extra bot messages. Workshop
+      // sessions use the richer WorkshopTurnPresenter (live status line).
+      const presenter = new ReactionTurnPresenter(message, client.user?.id);
 
       let reply: string;
       try {
@@ -127,114 +95,81 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
         reply = await deps.turnQueue.run(
           message.channelId,
           async () => {
-            reactor.set('thinking');
-            await message.channel.sendTyping().catch(() => {});
-            const typingHeartbeat = setInterval(() => {
-              message.channel.sendTyping().catch(() => {});
-            }, TYPING_REFRESH_MS);
-            // Escalate to the visible status line only if this turn is slow.
-            slowTimer = setTimeout(() => {
-              void status.start(statusText());
-              statusTicker = setInterval(() => status.update(statusText()), 10_000);
-            }, SLOW_TURN_STATUS_MS);
-            try {
-              const capabilityId = deps.router.resolve(message.channelId);
-              let capability = capabilityId ? deps.registry.get(capabilityId) : undefined;
-              if (!capability) {
-                // Fallback: any unbound channel in a guild the bot is in falls
-                // through to general_chat for a conversational intro + redirect.
-                capability = deps.registry.get(GENERAL_CHAT_CAPABILITY_ID);
-              }
-              if (!capability) {
-                log.error(
-                  { channelId: message.channelId, capabilityId },
-                  'No capability resolvable for channel (general_chat not registered either) — refusing to answer',
-                );
-                return '';
-              }
-
-              const history = await buildHistory(client, message);
-              const attachments = await resolveAttachments(message);
-              const turns: Turn[] = normalizeTurns([
-                ...history,
-                { role: 'user', content: userText, attachments },
-              ]);
-
-              const turn = await capability.buildTurn({
-                channelId: message.channelId,
-                guildId: message.guildId,
-                userId: message.author.id,
-                userTag: message.author.tag,
-                now: new Date(),
-                attachments: listImageAttachments(message),
-              });
-
-              log.info(
-                {
-                  capability: capability.id,
-                  user: message.author.tag,
-                  len: userText.length,
-                  historyTurns: history.length,
-                  attachments: attachments.length,
-                },
-                'Answering question',
-              );
-
-              return ask({
-                system: turn.system,
-                messages: turns,
-                tools: turn.tools,
-                onPhase: (phase, detail) => {
-                  reactor.set(phase);
-                  progress.phase = phase;
-                  if (phase === 'tool') {
-                    progress.toolName = detail;
-                    progress.step += 1;
-                  }
-                  status.update(statusText());
-                },
-              });
-            } finally {
-              // Typing stays alive until the reply is actually posted (below):
-              // clearing it here is what left the gap members read as "stuck".
-              clearInterval(typingHeartbeat);
+            await presenter.begin();
+            const capabilityId = deps.router.resolve(message.channelId);
+            let capability = capabilityId ? deps.registry.get(capabilityId) : undefined;
+            if (!capability) {
+              // Fallback: any unbound channel in a guild the bot is in falls
+              // through to general_chat for a conversational intro + redirect.
+              capability = deps.registry.get(GENERAL_CHAT_CAPABILITY_ID);
             }
+            if (!capability) {
+              log.error(
+                { channelId: message.channelId, capabilityId },
+                'No capability resolvable for channel (general_chat not registered either) — refusing to answer',
+              );
+              return '';
+            }
+
+            const history = await buildHistory(client, message);
+            const attachments = await resolveAttachments(message);
+            const turns: Turn[] = normalizeTurns([
+              ...history,
+              { role: 'user', content: userText, attachments },
+            ]);
+
+            const turn = await capability.buildTurn({
+              channelId: message.channelId,
+              guildId: message.guildId,
+              userId: message.author.id,
+              userTag: message.author.tag,
+              now: new Date(),
+              attachments: listImageAttachments(message),
+            });
+
+            log.info(
+              {
+                capability: capability.id,
+                user: message.author.tag,
+                len: userText.length,
+                historyTurns: history.length,
+                attachments: attachments.length,
+              },
+              'Answering question',
+            );
+
+            return ask({
+              system: turn.system,
+              messages: turns,
+              tools: turn.tools,
+              onPhase: (phase, detail) => presenter.onPhase(phase, detail),
+            });
           },
-          { onQueued: () => reactor.set('queued') },
+          { onQueued: () => presenter.onQueued() },
         );
       } catch (err) {
-        reactor.fail();
-        if (slowTimer) clearTimeout(slowTimer);
-        if (statusTicker) clearInterval(statusTicker);
         if (err instanceof QueueBusyError) {
-          await status.discard();
-          await message.reply(QUEUE_BUSY_REPLY).catch(() => {});
+          await presenter.fail(QUEUE_BUSY_REPLY);
           return;
         }
-        await status.discard();
-        throw err;
-      } finally {
-        if (slowTimer) clearTimeout(slowTimer);
-        if (statusTicker) clearInterval(statusTicker);
-      }
-      if (!reply) {
-        reactor.resolve();
-        await status.discard();
+        log.error({ err }, 'Failed to handle message');
+        // Spanish, and free of operator instructions: this lands in a community
+        // channel, not in the config channel. (2026-08-06: a member asked a
+        // political question, the provider's risk filter refused the prompt, and
+        // the channel got the English "check the logs" — which read as the bot
+        // brushing the question off. The filter case now recovers inside ask();
+        // this is the generic last resort.)
+        await presenter.fail(GENERIC_ERROR_REPLY);
         return;
       }
 
-      // A slow turn's status line morphs into the answer; a fast turn (no
-      // status line posted) just replies normally — finishAsReply handles both.
-      await status.finishAsReply(chunkBotReply(reply));
-      reactor.resolve();
+      if (!reply) {
+        await presenter.discard();
+        return;
+      }
+      await presenter.deliver(chunkBotReply(reply));
     } catch (err) {
       log.error({ err }, 'Failed to handle message');
-      // Spanish, and free of operator instructions: this lands in a community
-      // channel, not in the config channel. (2026-08-06: a member asked a
-      // political question, the provider's risk filter refused the prompt, and
-      // the channel got the English "check the logs" — which read as the bot
-      // brushing the question off. The filter case now recovers inside ask();
-      // this is the generic last resort.)
       await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
     }
   });

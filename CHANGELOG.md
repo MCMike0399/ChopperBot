@@ -13,7 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
-## 1.16.2 — 2026-08-11
+## 1.17.0 — 2026-08-11
+
+📚 **Los talleres ahora sí pueden con libros y documentos enormes**
+
+La estrella de esta versión son los **talleres privados** (los canales que abres reaccionando 🎓 en #bienvenidx):
+
+- **Súbele un libro o documento largo sin miedo.** Antes, si le pedías al bot trabajar con un PDF de cientos de páginas, se saturaba y a veces se quedaba sin responder. Ahora el bot arma primero un **índice interno del documento** (páginas, capítulos y secciones) y trabaja sobre él: puede **buscar exactamente lo que le preguntes** y decirte en qué página está, o leerlo por partes para resumirlo capítulo por capítulo, avanzando por tandas y entregándote el avance en cada vuelta. Lo probamos con un libro real de 409 páginas: pregunta puntual, respuesta con citas de página. 🤓
+- **El indicador de actividad se queda donde brilla.** En tu taller sigues viendo en vivo qué está haciendo el bot ("🐍 Ejecutando código · paso 3 · 45s"), ahora también cuando busca o lee dentro de tus documentos. En los canales públicos del server, en cambio, el bot vuelve al estilo discreto de siempre: reacciones en tu mensaje (⏳🤔🛠️) y el "escribiendo…" de Discord, sin mensajes extra que hagan ruido.
+
+🧠 **El cerebro principal del bot volvió a casa**
+
+- El proveedor que se cayó ayer en la mañana (y que nos obligó a cambiar de emergencia) **ya se recuperó**: lo verificamos con toda nuestra batería de pruebas (8/8 en manejo del calendario, 0 fallas) y el bot ya responde de nuevo con su cerebro de siempre. El plan de mudanza definitiva al proveedor nuevo sigue en pie para fin de mes, y si algo vuelve a fallar el cambio es inmediato.
 
 📣 **Un solo aviso por evento (adiós al anuncio triplicado)**
 

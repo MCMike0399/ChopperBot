@@ -1,5 +1,11 @@
 import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
+import {
+  ensureDocIndex,
+  excerptAround,
+  readDocChunks,
+  searchChunks,
+} from './docindex.js';
 import { runPython, sandboxAvailable } from './sandbox.js';
 import { PathEscapeError, type SessionWorkspace } from './workspace.js';
 
@@ -146,6 +152,50 @@ export class WorkshopToolSource implements ToolSource {
         },
       },
       {
+        name: 'workshop_doc_index',
+        description:
+          'Indexa un documento largo del workspace (PDF, DOCX, TXT o MD) UNA sola vez: extrae el texto, lo divide en fragmentos con página y detecta el esquema de capítulos/secciones. ' +
+          'Devuelve páginas, tamaño y el esquema. El índice persiste entre mensajes (re-llamarlo con el mismo archivo es gratis). ' +
+          'ÚSALO SIEMPRE antes de trabajar un documento de más de unas pocas páginas — nunca cargues un documento largo con workshop_read_file.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Ruta relativa del documento, p. ej. "uploads/libro.pdf".' },
+          },
+          required: ['path'],
+        },
+      },
+      {
+        name: 'workshop_doc_search',
+        description:
+          'Busca en un documento ya indexado (o lo indexa primero automáticamente) y devuelve SOLO los fragmentos más relevantes para la consulta, con su página. ' +
+          'Es la manera correcta de responder preguntas puntuales sobre un documento largo sin cargarlo entero.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Ruta relativa del documento.' },
+            query: { type: 'string', description: 'Qué buscar (palabras clave o una frase).' },
+            max_results: { type: 'number', description: 'Fragmentos a devolver (por defecto 4, máximo 8).' },
+          },
+          required: ['path', 'query'],
+        },
+      },
+      {
+        name: 'workshop_doc_read',
+        description:
+          'Lee un rango de páginas de un documento ya indexado (o lo indexa primero automáticamente). ' +
+          'Para resumir/explicar por capítulos: consulta el esquema con workshop_doc_index y lee 1–3 capítulos por vuelta con sus rangos de páginas.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            path: { type: 'string', description: 'Ruta relativa del documento.' },
+            from_page: { type: 'number', description: 'Primera página (1-based, inclusive).' },
+            to_page: { type: 'number', description: 'Última página (inclusive).' },
+          },
+          required: ['path', 'from_page', 'to_page'],
+        },
+      },
+      {
         name: 'workshop_list_files',
         description:
           'Lista los archivos del workspace de la sesión (ruta, tamaño, fecha) y si cada uno YA FUE ENTREGADO al usuario. ' +
@@ -230,6 +280,12 @@ export class WorkshopToolSource implements ToolSource {
             },
           };
         }
+        case 'workshop_doc_index':
+          return await this.handleDocIndex(obj);
+        case 'workshop_doc_search':
+          return await this.handleDocSearch(obj);
+        case 'workshop_doc_read':
+          return await this.handleDocRead(obj);
         case 'workshop_list_files': {
           const delivered = this.deps.deliveredPaths();
           const files = this.deps.workspace.list().map((f) => {
@@ -323,6 +379,118 @@ export class WorkshopToolSource implements ToolSource {
       log.warn({ tool: toolName, err }, 'workshop.tool_failed');
       return { status: 'error', payload: { error: err instanceof Error ? err.message : String(err) } };
     }
+  }
+
+  /** Build (or reuse) the index and return the shared error shape on failure. */
+  private async ensureIndex(path: string) {
+    return ensureDocIndex({
+      workspace: this.deps.workspace,
+      sourceRel: path,
+      venvDir: this.deps.venvDir,
+      timeoutMs: this.deps.maxTimeoutMs,
+    });
+  }
+
+  private async handleDocIndex(obj: Record<string, unknown>): Promise<ToolHandlerResult> {
+    const path = String(obj.path ?? '');
+    const built = await this.ensureIndex(path);
+    if ('error' in built) return { status: 'error', payload: { error: built.error } };
+    const { meta } = built;
+    const outline = meta.outline.slice(0, 60).map((o) => ({
+      heading: o.heading,
+      page: o.page,
+    }));
+    const payload = {
+      source: meta.source,
+      pages: meta.pages,
+      chars: meta.chars,
+      chunks: meta.chunks,
+      outline,
+      ...(meta.outline.length > 60 ? { outline_note: `… y ${meta.outline.length - 60} secciones más` } : {}),
+      note:
+        'Índice listo (persiste entre mensajes). Preguntas puntuales → workshop_doc_search; ' +
+        'lectura por capítulos → workshop_doc_read con rangos de páginas (1–3 capítulos por vuelta).',
+    };
+    this.charge(JSON.stringify(outline).length);
+    return { status: 'success', payload };
+  }
+
+  private async handleDocSearch(obj: Record<string, unknown>): Promise<ToolHandlerResult> {
+    const path = String(obj.path ?? '');
+    const query = String(obj.query ?? '').trim();
+    if (!query) return { status: 'error', payload: { error: 'Falta query.' } };
+    const k = clampInt(obj.max_results, 1, 8, 4);
+    const perHitChars = 1200;
+    if (!this.budgetAllows(k * perHitChars)) return this.budgetExceededResult('más fragmentos del documento');
+
+    const built = await this.ensureIndex(path);
+    if ('error' in built) return { status: 'error', payload: { error: built.error } };
+    const chunks = readDocChunks(this.deps.workspace, built.dir);
+    const hits = searchChunks(chunks, query, k);
+    const results = hits.map((h) => ({
+      pages: h.chunk.page_start === h.chunk.page_end
+        ? `p. ${h.chunk.page_start}`
+        : `pp. ${h.chunk.page_start}–${h.chunk.page_end}`,
+      ...(h.chunk.heading ? { seccion: h.chunk.heading } : {}),
+      texto: excerptAround(h.chunk.text, query, perHitChars),
+    }));
+    this.charge(results.reduce((acc, r) => acc + r.texto.length + 40, 0));
+    return {
+      status: 'success',
+      payload: {
+        query,
+        results,
+        count: results.length,
+        ...(results.length === 0
+          ? { note: 'Sin coincidencias. Prueba otras palabras clave, o consulta el esquema con workshop_doc_index.' }
+          : {}),
+      },
+    };
+  }
+
+  private async handleDocRead(obj: Record<string, unknown>): Promise<ToolHandlerResult> {
+    const path = String(obj.path ?? '');
+    const from = clampInt(obj.from_page, 1, 100_000, 1);
+    const to = Math.max(from, clampInt(obj.to_page, 1, 100_000, from));
+    const CALL_CAP = 12_000;
+    const remaining = TURN_PAYLOAD_BUDGET_CHARS - this.payloadChars;
+    if (remaining < 2_000) return this.budgetExceededResult(`las páginas ${from}–${to}`);
+
+    const built = await this.ensureIndex(path);
+    if ('error' in built) return { status: 'error', payload: { error: built.error } };
+    if (from > built.meta.pages) {
+      return { status: 'error', payload: { error: `El documento tiene ${built.meta.pages} páginas.` } };
+    }
+    const cap = Math.min(CALL_CAP, remaining);
+    const chunks = readDocChunks(this.deps.workspace, built.dir).filter(
+      (c) => c.page_end >= from && c.page_start <= to,
+    );
+    let text = '';
+    let lastPage = from;
+    let truncated = false;
+    for (const c of chunks) {
+      const piece = `${c.heading ? `\n## ${c.heading}\n` : '\n'}[pp. ${c.page_start}–${c.page_end}]\n${c.text}\n`;
+      if (text.length + piece.length > cap) {
+        truncated = true;
+        break;
+      }
+      text += piece;
+      lastPage = c.page_end;
+    }
+    this.charge(text.length);
+    return {
+      status: 'success',
+      payload: {
+        pages_requested: `${from}–${to}`,
+        text: text || '(sin texto en ese rango)',
+        ...(truncated
+          ? {
+              truncated: true,
+              note: `Corté en la página ~${lastPage} por el presupuesto de contexto. Continúa en la siguiente llamada o vuelta desde la página ${lastPage}.`,
+            }
+          : {}),
+      },
+    };
   }
 
   private async handleRunPython(obj: Record<string, unknown>): Promise<ToolHandlerResult> {

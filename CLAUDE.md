@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Working on… | Read first |
 |---|---|
 | **Onboarding / "what does this bot do?"** — one deep, self-contained tour of every RevZ capability, the live channel wiring, config reference, runbook and failure-mode index. **Orientation only — never the change-gated source of truth; the topic docs below are.** | [docs/revolucion-z-capabilities.md](docs/revolucion-z-capabilities.md) |
-| LLM client — dual backend (selectable text brain, **live: DeepSeek** since the 2026-08-11 Kimi outage / Nova vision), effort tiers, content-filter recovery, tool loop, health watchdog, image attachments | [docs/llm.md](docs/llm.md) |
+| LLM client — dual backend (selectable text brain, **live: Kimi** — recovered from the 2026-08-11 outage same day; DeepSeek takes over permanently 2026-08-23 / Nova vision), effort tiers, content-filter recovery, tool loop, health watchdog, image attachments | [docs/llm.md](docs/llm.md) |
 | Framework internals — boot sequence, per-turn pipeline, tool composition, persistence, capability routing | [docs/framework.md](docs/framework.md) |
 | `calendar` — global calendar, recurrence, PDF/ICS publishing, month rollover, daily announcements, Discord-event sync | [docs/capabilities/calendar.md](docs/capabilities/calendar.md) |
 | `instagram_monitor` — scheduler, adaptive cadence + budget governor, anti-detection, guardrails/kill-switch | [docs/capabilities/instagram-monitor.md](docs/capabilities/instagram-monitor.md) |
@@ -111,7 +111,7 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 Full details: [docs/framework.md](docs/framework.md). The load-bearing facts:
 
 - **Boot:** capabilities `init()` before Discord login (a throwing capability is skipped, boot continues), bindings load from SQLite, `start()` runs background work after login. Init-time dep getters (`getDiscordClient`, `getRegistry`, …) throw during `init()` — call them at `buildTurn()` time.
-- **Turns:** one shared `TurnQueue` (strict FIFO per channel, `MAX_CONCURRENT_TURNS`=3 across channels) + status reactions (⏳🤔🛠️/❌); `buildHistory` (8 turns/16k) → `buildTurn` → `ask()` agent loop (per-turn tool-call dedup; tools-free forcing pass at the iteration cap); replies chunk with fences preserved, `MAX_REPLY_CHUNKS`=5; typing kept alive, >20 s turns get a live status line.
+- **Turns:** one shared `TurnQueue` (strict FIFO per channel, `MAX_CONCURRENT_TURNS`=3 across channels); `buildHistory` (8 turns/16k) → `buildTurn` → `ask()` agent loop (per-turn tool-call dedup; tools-free forcing pass at the iteration cap); replies chunk with fences preserved, `MAX_REPLY_CHUNKS`=5. Progress/reply delivery is a per-surface `TurnPresenter` (`src/discord/presenter.ts`): public channels = reactions (⏳🤔🛠️/❌) + typing ONLY; workshop sessions = the live status line that morphs into the reply.
 - **Persistence:** one SQLite file, one `_migrations` row per capability+version, tables owned by id-prefix convention.
 - **Routing:** channel→capability bindings persist in SQLite and re-bind live without restart; `configuration` holds the only mutable router reference.
 
