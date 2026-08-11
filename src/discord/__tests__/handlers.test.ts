@@ -6,7 +6,7 @@ const BOT_ID = '999999999999999999';
 const CHANNEL = '12345678901234567890';
 
 function makeClient(): Client {
-  return { user: { id: BOT_ID } } as unknown as Client;
+  return { user: { id: BOT_ID, username: 'ChopperBot' } } as unknown as Client;
 }
 
 interface MsgOverrides {
@@ -16,13 +16,21 @@ interface MsgOverrides {
   isReplyToBot?: boolean;
   refId?: string;
   inGuild?: boolean;
+  content?: string;
+  botNickname?: string;
 }
 
 function makeMessage(o: MsgOverrides = {}): Message {
   return {
     author: { bot: o.authorBot ?? false },
     channelId: o.channelId ?? CHANNEL,
-    guild: o.inGuild ? { id: '40000000000000000001' } : null,
+    content: o.content ?? '',
+    guild: o.inGuild
+      ? {
+          id: '40000000000000000001',
+          members: { me: o.botNickname ? { displayName: o.botNickname } : null },
+        }
+      : null,
     mentions: {
       users: { has: (id: string) => (o.mentioned ? id === BOT_ID : false) },
       repliedUser: o.isReplyToBot ? { id: BOT_ID } : null,
@@ -127,6 +135,56 @@ describe('shouldRespond (live authorized-channel set is passed in per call)', ()
       ),
     ).toBe(false);
   });
+
+  test('responds to a copy-pasted plain-text "@ChopperBot" (no mention entity)', () => {
+    expect(
+      shouldRespond(
+        makeClient(),
+        makeMessage({ content: 'ya lo anunció @ChopperBot andas emocionado?', inGuild: true }),
+        new Set([CHANNEL]),
+      ),
+    ).toBe(true);
+  });
+
+  test('plain-text mention is case-insensitive', () => {
+    expect(
+      shouldRespond(
+        makeClient(),
+        makeMessage({ content: 'oye @chopperbot qué onda', inGuild: true }),
+        new Set([CHANNEL]),
+      ),
+    ).toBe(true);
+  });
+
+  test('plain-text mention matches the guild nickname too', () => {
+    expect(
+      shouldRespond(
+        makeClient(),
+        makeMessage({ content: 'hola @Chopper dime algo', inGuild: true, botNickname: 'Chopper' }),
+        new Set([CHANNEL]),
+      ),
+    ).toBe(true);
+  });
+
+  test('ignores the bare bot name without "@" (talking ABOUT the bot)', () => {
+    expect(
+      shouldRespond(
+        makeClient(),
+        makeMessage({ content: 'chopperbot ya lo anunció ayer', inGuild: true }),
+        new Set([CHANNEL]),
+      ),
+    ).toBe(false);
+  });
+
+  test('ignores "@" + a longer name that merely starts with the bot name', () => {
+    expect(
+      shouldRespond(
+        makeClient(),
+        makeMessage({ content: 'saludos @ChopperBotFan2000', inGuild: true }),
+        new Set([CHANNEL]),
+      ),
+    ).toBe(false);
+  });
 });
 
 describe('stripBotMention', () => {
@@ -142,5 +200,17 @@ describe('stripBotMention', () => {
   test('returns content unchanged when client has no user', () => {
     const c = { user: null } as unknown as Client;
     expect(stripBotMention(c, '<@999> x')).toBe('<@999> x');
+  });
+  test('strips the plain-text "@ChopperBot" form (copy-pasted mention)', () => {
+    expect(stripBotMention(makeClient(), 'ya lo anunció @ChopperBot andas emocionado?')).toBe(
+      'ya lo anunció  andas emocionado?',
+    );
+  });
+  test('strips the plain-text guild nickname when a guild is passed', () => {
+    const guild = { members: { me: { displayName: 'Chopper' } } } as never;
+    expect(stripBotMention(makeClient(), 'hola @Chopper dime', guild)).toBe('hola  dime');
+  });
+  test('leaves longer names that start with the bot name alone', () => {
+    expect(stripBotMention(makeClient(), 'saludos @ChopperBotFan')).toBe('saludos @ChopperBotFan');
   });
 });
