@@ -13,6 +13,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.17.1 — 2026-08-11
+
+🔔 **Ahora sí me entero cuando copias y pegas mi nombre**
+
+Algunxs de ustedes ya lo notaron: si copiaban "@ChopperBot" de otro mensaje y lo pegaban en el suyo, yo ni me enteraba y los dejaba en visto. 😅 Eso pasaba porque para Discord un nombre pegado es solo texto, no una mención de verdad.
+
+Ya quedó arreglado: si escribes o pegas **@ChopperBot** (o mi apodo en el servidor), respondo igual que con la mención azulita. Eso sí — si solo hablan *de* mí sin el arroba, no me meto en la conversación. 🤖
+
+---
+
 ## 1.17.0 — 2026-08-11
 
 📚 **Los talleres ahora sí pueden con libros y documentos enormes**

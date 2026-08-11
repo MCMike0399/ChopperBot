@@ -1,4 +1,4 @@
-import { Client, Events, Message, type CloseEvent } from 'discord.js';
+import { Client, Events, Message, type CloseEvent, type Guild } from 'discord.js';
 import { log } from '../log.js';
 import { ask } from '../llm/client.js';
 import { chunkBotReply } from './chunk.js';
@@ -75,7 +75,7 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
       if (deps.claimedChannel?.(message)) return;
       if (!shouldRespond(client, message, deps.router.allChannelIds())) return;
 
-      const userText = stripBotMention(client, message.content).trim();
+      const userText = stripBotMention(client, message.content, message.guild).trim();
       if (!userText) return;
 
       // Lazily register the Discord user. Idempotent; refreshes tag +
@@ -205,8 +205,14 @@ export function shouldRespond(
   const isReplyToBot =
     message.reference?.messageId !== undefined &&
     message.mentions.repliedUser?.id === client.user.id;
+  // A copy-pasted mention arrives as the literal text "@ChopperBot" with no
+  // mention entity, so message.mentions is empty — accept it too. The leading
+  // "@" is required: a bare "chopperbot" is someone talking ABOUT the bot.
+  const plainTextMention = plainTextMentionPattern(client, message.guild)?.test(
+    message.content ?? '',
+  ) ?? false;
 
-  if (!mentioned && !isReplyToBot) {
+  if (!mentioned && !isReplyToBot && !plainTextMention) {
     log.debug(
       { user: message.author.tag, reason: 'no_mention_or_reply', hasMentions: message.mentions.users.size > 0 },
       'Ignoring message',
@@ -217,11 +223,28 @@ export function shouldRespond(
   return true;
 }
 
-export function stripBotMention(client: Client, content: string): string {
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** Matches "@<bot username or guild nickname>" typed as plain text. */
+function plainTextMentionPattern(client: Client, guild: Guild | null): RegExp | null {
+  if (!client.user) return null;
+  const names = new Set<string>([client.user.username]);
+  const nickname = guild?.members?.me?.displayName;
+  if (nickname) names.add(nickname);
+  const alternatives = [...names].filter(Boolean).map(escapeRegExp).join('|');
+  if (!alternatives) return null;
+  return new RegExp(`@(?:${alternatives})(?!\\w)`, 'gi');
+}
+
+export function stripBotMention(client: Client, content: string, guild: Guild | null = null): string {
   if (!client.user) return content;
   const patterns = [
     new RegExp(`<@!?${client.user.id}>`, 'g'),
   ];
+  const plainText = plainTextMentionPattern(client, guild);
+  if (plainText) patterns.push(plainText);
   let out = content;
   for (const p of patterns) out = out.replace(p, '');
   return out;
