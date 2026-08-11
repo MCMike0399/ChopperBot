@@ -13,6 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.16.2 — 2026-08-11
+
+📣 **Un solo aviso por evento (adiós al anuncio triplicado)**
+
+Esta mañana el aviso de las 10 del conversatorio salió **tres veces seguidas**, cada una con su notificación a todo el server. No fue la primera vez: pasó también el 5, el 6 y el 8 de agosto. Ya está arreglado de raíz.
+
+- **Qué pasaba.** El internet del bot es lento, y cuando Discord tardaba más de 15 segundos en confirmarle "listo, ya lo publiqué", el bot creía que se había caído el mensaje y lo mandaba otra vez. Pero Discord sí lo había publicado — así que quedaban dos o tres anuncios idénticos.
+- **Qué cambia.** Ahora cada anuncio lleva una especie de folio único, y Discord reconoce que es el mismo aviso de siempre: si ya lo publicó, no lo vuelve a publicar. **El aviso duplicado ya no existe, y por lo tanto tampoco la notificación repetida.**
+- **De pilón.** El bot ya no puede empezar a preparar el anuncio del día si todavía está terminando el anterior, que era otra manera de que se colara repetido.
+
+Antes el bot borraba las copias unos segundos después, pero la notificación ya les había llegado igual (y varias veces les tocó borrarlas a mano antes que él). Eso se acabó: ahora la copia no llega a existir.
+
 ## 1.16.1 — 2026-08-11
 
 🔧 **El bot volvió a responder, y ya no se le pierden posts**
