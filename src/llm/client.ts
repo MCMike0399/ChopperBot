@@ -602,6 +602,7 @@ async function askBedrock({
   const trace: AgentTrace = { iterations: 0, toolCalls: [], inputTokens: 0, outputTokens: 0 };
   let finalText = '';
   let lastStopReason: string | undefined;
+  let emptyRetries = 0;
 
   const toolCache = new Map<string, ToolHandlerResult>();
   const toolConfig = buildToolConfig(tools.tools);
@@ -646,6 +647,26 @@ async function askBedrock({
 
     if (response.stopReason !== 'tool_use' || toolUses.length === 0) {
       finalText = extractTextBlocks(blocks);
+      if (!finalText) {
+        // Empty content on a non-tool finish — Nova sometimes closes the loop
+        // with `end_turn` and no text block at all once the tool results land
+        // (observed live 2026-08-13: a calendar turn created + synced +
+        // published the event, then ended textless and the user got the
+        // fallback). Same policy as the Kimi path: drop the empty assistant
+        // echo so the retry resends the same convo, and give the model
+        // another shot. The retry carries toolConfig, but an identical
+        // duplicate call is served from the per-turn toolCache and does NOT
+        // re-execute — so a write can't be doubled by the retry itself.
+        convo.pop();
+        emptyRetries += 1;
+        if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
+          log.warn(
+            { stopReason: lastStopReason, attempt: emptyRetries },
+            'Bedrock returned empty text on a non-tool finish — retrying',
+          );
+          continue;
+        }
+      }
       break;
     }
 

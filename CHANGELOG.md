@@ -13,6 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.19.0 — 2026-08-13
+
+🎬 **Ya sé actualizar la peli de la semana (sin duplicar el club)**
+
+Cuando lxs mods me avisan qué se ve esta semana en el club de cine — o el tema de cualquier actividad semanal — aunque solo me manden el cartel, ahora actualizo **la sesión de esa semana** en la serie que ya existe: le pongo el título ("Club de cine: Persepolis"), la descripción si el cartel la trae, la hora si esa semana cambia, y dejo el evento de Discord listo para que la gente se apunte. Antes me podía dar por crear un evento nuevo y el club salía duplicado en el calendario, la tarjeta del mes y los anuncios. Ya no.
+
+🙈 **Y dejo de decir "no pude" cuando sí había podido**
+
+Cuando me mandaban un cartel de evento como imagen, a veces respondía *"No pude generar una respuesta esta vez"* aunque **el evento sí se había creado bien** en el calendario — con su evento de Discord y todo. Lo que fallaba no era el evento, sino mi mensaje de confirmación: el modelo que lee imágenes a veces termina su trabajo sin escribir el texto final, y yo me rendía en vez de volver a pedírselo. Ahora lo intento de nuevo hasta dos veces antes de rendirme. Y tranquilidad — reintentar nunca crea el evento dos veces.
+
+---
+
 ## 1.18.0 — 2026-08-13
 
 🐢 **Bajo el ritmo en Instagram, a propósito**
