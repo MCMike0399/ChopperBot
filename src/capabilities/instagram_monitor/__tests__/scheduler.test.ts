@@ -1,10 +1,11 @@
 import { describe, test, expect, vi } from 'vitest';
 import type { Client } from 'discord.js';
 import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
-import { InstagramMonitorStore, INSTAGRAM_MONITOR_MIGRATIONS } from '../store.js';
+import { InstagramMonitorStore, INSTAGRAM_MONITOR_MIGRATIONS, HARD_PAUSE_THRESHOLD } from '../store.js';
 import { InstagramMonitorScheduler } from '../scheduler.js';
 import {
   InstagramAuthError,
+  InstagramHardAccountError,
   InstagramRateLimitError,
   type InstagramFetcher,
   type RecentPost,
@@ -598,7 +599,7 @@ describe('InstagramMonitorScheduler — guardrails', () => {
   test('global_stop halts the tick entirely — nothing is fetched', async () => {
     const { store, mem } = await newStore();
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.markPollSuccess(a.account.id, Date.now() - 20 * 60 * 60 * 1000, 'P0');
+    store.markPollSuccess(a.account.id, Date.now() - 25 * 60 * 60 * 1000, 'P0');
     store.tripGlobalStop('flagged earlier', Date.now());
     const fetcher = spyFetcher();
     const sch = new InstagramMonitorScheduler({
@@ -621,8 +622,8 @@ describe('InstagramMonitorScheduler — guardrails', () => {
     const a = store.upsertAccount({ username: 'aaa', added_by: 'U' });
     const b = store.upsertAccount({ username: 'bbb', added_by: 'U' });
     // aaa is the oldest poll → picked first (ACCOUNTS_PER_TICK=1).
-    store.markPollSuccess(a.account.id, now - 20 * 60 * 60 * 1000, 'A0');
-    store.markPollSuccess(b.account.id, now - 19 * 60 * 60 * 1000, 'B0');
+    store.markPollSuccess(a.account.id, now - 25 * 60 * 60 * 1000, 'A0');
+    store.markPollSuccess(b.account.id, now - 24 * 60 * 60 * 1000, 'B0');
 
     const publish = vi.fn();
     const sch = new InstagramMonitorScheduler({
@@ -653,7 +654,7 @@ describe('InstagramMonitorScheduler — guardrails', () => {
     const { store, mem } = await newStore();
     const now = Date.now();
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.markPollSuccess(a.account.id, now - 20 * 60 * 60 * 1000, 'P0');
+    store.markPollSuccess(a.account.id, now - 25 * 60 * 60 * 1000, 'P0');
     store.record429Event(now - 60_000); // one prior throttle in the window
     const sch = new InstagramMonitorScheduler({
       store,
@@ -672,7 +673,7 @@ describe('InstagramMonitorScheduler — guardrails', () => {
   test('a session-level auth failure (checkpoint) trips the breaker immediately', async () => {
     const { store, mem } = await newStore();
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.markPollSuccess(a.account.id, Date.now() - 20 * 60 * 60 * 1000, 'P0');
+    store.markPollSuccess(a.account.id, Date.now() - 25 * 60 * 60 * 1000, 'P0');
     const sch = new InstagramMonitorScheduler({
       store,
       fetcher: spyFetcher(
@@ -697,10 +698,10 @@ describe('InstagramMonitorScheduler — guardrails', () => {
     const now = Date.now();
     const bad = store.upsertAccount({ username: 'restricted', added_by: 'U' });
     const good = store.upsertAccount({ username: 'healthy', added_by: 'U' });
-    store.markPollSuccess(bad.account.id, now - 20 * 60 * 60 * 1000, 'R0');
+    store.markPollSuccess(bad.account.id, now - 25 * 60 * 60 * 1000, 'R0');
     // Anchor H0 present in the window (with a recorded time) so the new post
     // above it publishes normally.
-    store.markPollSuccess(good.account.id, now - 19 * 60 * 60 * 1000, 'H0', 1_000);
+    store.markPollSuccess(good.account.id, now - 24 * 60 * 60 * 1000, 'H0', 1_000);
 
     const publish = vi.fn(async () => ({ ok: true, messageId: 'm' } as PublishResult));
     const sch = new InstagramMonitorScheduler({
@@ -726,10 +727,67 @@ describe('InstagramMonitorScheduler — guardrails', () => {
     mem.close();
   });
 
+  test('a deterministic hard failure counts separately and auto-pauses at HARD_PAUSE_THRESHOLD', async () => {
+    // Mirrors the 2026-07 laser.provider incident: IG rejects one account's
+    // pk-resolve the SAME way on every poll. The scheduler counts these on
+    // their own counter, alerts once at the crossing, and dueAccounts then
+    // skips the account — retrying forever is pure automation-signature
+    // traffic for zero yield.
+    const { store, mem } = await newStore();
+    const now = Date.now();
+    const broken = store.upsertAccount({ username: 'broken', added_by: 'U' });
+    const healthy = store.upsertAccount({ username: 'healthy', added_by: 'U' });
+    store.markPollSuccess(healthy.account.id, now - 25 * 60 * 60 * 1000, 'H0', 1_000);
+    // Seed the streak one below the threshold, with the last poll far enough
+    // back that the account is due despite backoff + worst-case jitter.
+    for (let i = 0; i < HARD_PAUSE_THRESHOLD - 1; i++) {
+      store.markPollFailure(broken.account.id, now - (26 - i) * 60 * 60 * 1000, { hard: true });
+    }
+
+    const fetchPosts = vi.fn(async (u: string) => {
+      if (u === 'broken') {
+        throw new InstagramHardAccountError(
+          'deterministic 400 resolving @broken (laser.provider)',
+          'laser.provider',
+        );
+      }
+      return [post('H1', { takenAtMs: 2_000 })];
+    });
+    const notifyAccountAutoPaused = vi.fn(async () => {});
+    const sch = new InstagramMonitorScheduler({
+      store,
+      fetcher: { fetchRecentPosts: fetchPosts },
+      client: fakeClient,
+      getBoundChannels: ONE_CHANNEL,
+      classify: async () => ({ relevant: true, type: 'evento', title: 't', summary: 's', when: null, where: null, tags: [] }),
+      publish: (async () => ({ ok: true, messageId: 'm' })) as unknown as (...args: unknown[]) => Promise<PublishResult>,
+      fetchCover: async () => null,
+      notifyAccountAutoPaused,
+    });
+
+    await sch.tickOnce(); // 'healthy' is oldest-due → polls fine; streak untouched
+    expect(store.getAccount('broken')?.consecutive_hard_failures).toBe(HARD_PAUSE_THRESHOLD - 1);
+    expect(notifyAccountAutoPaused).not.toHaveBeenCalled();
+
+    await sch.tickOnce(); // 'broken' → 5th deterministic failure → auto-pause + one alert
+    expect(store.getAccount('broken')?.consecutive_hard_failures).toBe(HARD_PAUSE_THRESHOLD);
+    expect(store.getAccount('broken')?.consecutive_auth_failures).toBe(0); // NOT an auth failure
+    expect(notifyAccountAutoPaused).toHaveBeenCalledTimes(1);
+    expect(notifyAccountAutoPaused.mock.calls[0][0]).toMatchObject({
+      account: 'broken',
+      failures: HARD_PAUSE_THRESHOLD,
+    });
+
+    await sch.tickOnce(); // gated out of dueAccounts → nothing else fetches
+    expect(fetchPosts).toHaveBeenCalledTimes(2);
+    expect(notifyAccountAutoPaused).toHaveBeenCalledTimes(1); // no alert flapping
+    mem.close();
+  });
+
   test('the daily request budget soft-pauses the next tick and alerts once', async () => {
     const { store, mem } = await newStore();
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.markPollSuccess(a.account.id, Date.now() - 20 * 60 * 60 * 1000, 'P0');
+    store.markPollSuccess(a.account.id, Date.now() - 25 * 60 * 60 * 1000, 'P0');
 
     // Fetcher that reports 2 outbound HTTP requests per poll via the observer.
     let cb = () => {};
@@ -770,7 +828,7 @@ describe('InstagramMonitorScheduler — resume alerts', () => {
   test('fires once when polling resumes after the budget window drains', async () => {
     const { store, mem } = await newStore();
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.markPollSuccess(a.account.id, Date.now() - 20 * 60 * 60 * 1000, 'P0');
+    store.markPollSuccess(a.account.id, Date.now() - 25 * 60 * 60 * 1000, 'P0');
     let cb = () => {};
     const fetcher: InstagramFetcher = {      observeRequests(c) {
         cb = c;
@@ -811,7 +869,7 @@ describe('InstagramMonitorScheduler — resume alerts', () => {
   test('fires once when the kill-switch is cleared (running process)', async () => {
     const { store, mem } = await newStore();
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.markPollSuccess(a.account.id, Date.now() - 20 * 60 * 60 * 1000, 'P0');
+    store.markPollSuccess(a.account.id, Date.now() - 25 * 60 * 60 * 1000, 'P0');
     store.tripGlobalStop('flagged', Date.now());
     const notifyResumed = vi.fn(async () => {});
     const sch = new InstagramMonitorScheduler({
@@ -900,7 +958,7 @@ describe('InstagramMonitorScheduler — adaptive cadence wiring', () => {
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
     const T = Date.now() - 60 * 60 * 1000;
     seedHistory(store, 'foo', T, 14, 7 * 60 * 60 * 1000); // 14 posts, ~91h span
-    store.markPollSuccess(a.account.id, Date.now() - 20 * 60 * 60 * 1000, 'H0', T);
+    store.markPollSuccess(a.account.id, Date.now() - 25 * 60 * 60 * 1000, 'H0', T);
     const sch = new InstagramMonitorScheduler({
       store,
       fetcher: {        async fetchRecentPosts() {
@@ -929,7 +987,7 @@ describe('InstagramMonitorScheduler — adaptive cadence wiring', () => {
     const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
     const T = Date.now() - 60 * 60 * 1000;
     seedHistory(store, 'foo', T, 14, 7 * 60 * 60 * 1000);
-    store.markPollSuccess(a.account.id, Date.now() - 20 * 60 * 60 * 1000, 'H0', T);
+    store.markPollSuccess(a.account.id, Date.now() - 25 * 60 * 60 * 1000, 'H0', T);
     const sch = new InstagramMonitorScheduler({
       store,
       fetcher: {        async fetchRecentPosts() {

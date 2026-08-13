@@ -28,8 +28,10 @@ import { setIgCdnUserAgent } from './publisher.js';
 import { renderInstagramMonitorPrompt } from './preamble.js';
 import { formatDurationEs, formatStatusDigest } from './format.js';
 
-/** Probability of skipping a whole scheduler tick (anti-metronome). */
-const TICK_SKIP_PROBABILITY = 0.08;
+/** Probability of skipping a whole scheduler tick (anti-metronome). Raised
+ * 0.08 → 0.15 on 2026-08-13 after IG flagged the polling account for suspected
+ * automation — wider gaps in the per-minute tick cadence. */
+const TICK_SKIP_PROBABILITY = 0.15;
 
 export const INSTAGRAM_MONITOR_CAPABILITY_ID = 'instagram_monitor';
 
@@ -96,6 +98,8 @@ export class InstagramMonitorCapability implements Capability {
         postBudgetExhaustedAlert(client, requests24h, budget),
       notifyResumed: ({ reason, pausedForMs }) =>
         postResumedAlert(client, reason, pausedForMs),
+      notifyAccountAutoPaused: ({ account, reason, failures }) =>
+        postAccountAutoPausedAlert(client, account, reason, failures),
       notifyStatusDigest: () =>
         postStatusDigest(
           client,
@@ -229,6 +233,30 @@ export async function postResumedAlert(
     `Estuvo pausado ~${formatDurationEs(pausedForMs)}.`,
     '',
     'El monitor volvió a sondear las cuentas con normalidad. No se requiere ninguna acción.',
+  ]);
+}
+
+/**
+ * Posted when an account is AUTO-PAUSED after {@link HARD_PAUSE_THRESHOLD}
+ * consecutive deterministic failures (e.g. IG's 2026-07 `laser.provider` 400,
+ * which failed 100% of polls on 5 accounts for weeks — pure automation-signature
+ * traffic for zero yield). Wired as the scheduler's `notifyAccountAutoPaused`
+ * dep; fires once per streak, at the crossing.
+ */
+export async function postAccountAutoPausedAlert(
+  client: Client,
+  account: string,
+  reason: string,
+  failures: number,
+): Promise<void> {
+  await sendAdminAlert(client, [
+    '⏸️ **Instagram monitor: cuenta auto-pausada**',
+    `Cuenta: \`@${account}\` — ${failures} fallos deterministas seguidos.`,
+    `Detalle: ${reason}`,
+    '',
+    'Instagram rechaza esta consulta siempre de la misma forma; reintentarla no sirve y delata automatización. La cuenta queda fuera del sondeo hasta que:',
+    '1. Verifiques a mano que el perfil existe y es público, y',
+    '2. La reanudes con `config_instagram action:pause_account` (`paused:false`) o `action:force_poll`.',
   ]);
 }
 

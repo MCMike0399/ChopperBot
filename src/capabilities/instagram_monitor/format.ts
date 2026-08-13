@@ -16,6 +16,7 @@
 
 import {
   AUTH_PAUSE_THRESHOLD,
+  HARD_PAUSE_THRESHOLD,
   effectiveBaseIntervalMs,
   nextDueAtMs,
   type MonitoredAccount,
@@ -196,7 +197,9 @@ export function formatStatusDigest(input: StatusDigestInput): string[] {
 
   const pausedCount = accounts.filter((a) => a.paused === 1).length;
   const blockedCount = accounts.filter(
-    (a) => a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD,
+    (a) =>
+      a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD ||
+      a.consecutive_hard_failures >= HARD_PAUSE_THRESHOLD,
   ).length;
   head.push(`Cuentas: ${accounts.length} (pausadas ${pausedCount} · bloqueadas ${blockedCount})`);
 
@@ -243,7 +246,11 @@ export function formatStatusDigest(input: StatusDigestInput): string[] {
 
 /** 0 = most interesting (kept under truncation), higher = dropped first. */
 function interestRank(a: MonitoredAccount): number {
-  if (a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) return 0;
+  if (
+    a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD ||
+    a.consecutive_hard_failures >= HARD_PAUSE_THRESHOLD
+  )
+    return 0;
   if (a.paused === 1) return 1;
   if (a.consecutive_failures > 0) return 2;
   return 3;
@@ -278,7 +285,12 @@ function nextCell(
   stretch: number,
   now: number,
 ): string {
-  if (a.paused === 1 || a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) return '—';
+  if (
+    a.paused === 1 ||
+    a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD ||
+    a.consecutive_hard_failures >= HARD_PAUSE_THRESHOLD
+  )
+    return '—';
   const nd = nextDueAtMs(a, defaultMs, stretch);
   if (nd === null || nd <= now) return 'due';
   return formatAgeEs(nd - now);
@@ -287,6 +299,7 @@ function nextCell(
 function stCell(a: MonitoredAccount): string {
   if (a.paused === 1) return 'P';
   if (a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD) return 'A';
+  if (a.consecutive_hard_failures >= HARD_PAUSE_THRESHOLD) return 'D';
   if (a.consecutive_failures > 0) return `!${Math.min(a.consecutive_failures, 9)}`;
   return '·';
 }

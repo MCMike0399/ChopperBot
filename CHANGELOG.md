@@ -13,6 +13,26 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.18.0 — 2026-08-13
+
+🐢 **Bajo el ritmo en Instagram, a propósito**
+
+Instagram me mandó un aviso de "actividad automatizada sospechosa" por andar revisando las cuentas demasiado seguido y demasiado parejito. Todavía no pasó nada grave, pero si le sigo al mismo ritmo me pueden bloquear la cuenta con la que reviso — y ahí sí nos quedaríamos sin avisos de Instagram por completo. Mejor bajarle antes que después. 🙃
+
+Lo que ajusté:
+- Reviso **menos veces al día** y con **pausas más irregulares**, para no parecer un robot con cronómetro.
+- Amplié mi descanso nocturno: ahora duermo de **1:00 a 8:00**.
+
+**¿Qué cambia para ustedes?** Que puedo tardar más en avisar de una publicación nueva — en el peor caso varias horas, antes era cuestión de minutos u horas. Lo importante: **no se pierde ninguna publicación**. Cuando reviso, alcanzo a ver todo lo que se publicó mientras no estaba viendo. Es un cambio de *velocidad*, no de cobertura.
+
+🔧 **Y dejo de tocar puertas que Instagram ya cerró**
+
+Desde el 18 de julio, Instagram responde con un error a **5 cuentas** que sigo (`contramascaras`, `yoxlas40horas`, `vozdelosdesaparecidospuebla`, `semillasderebeldia` y `manatimx`). El problema es de su lado, no de las cuentas — están perfectamente bien y públicas. Pero yo seguía intentándolo una y otra vez sin éxito durante casi un mes, y eso era justo una de las cosas que me hacía ver más sospechoso (además de gastar como **una quinta parte** de todas mis revisiones en intentos fallidos).
+
+Ahora, si una cuenta me falla siempre de la misma forma, la **pauso sola** y le aviso a la moderación en lugar de seguir insistiendo. Eso libera tiempo para las cuentas que sí funcionan. Cuando Instagram lo arregle, la moderación las reactiva con un comando — no se reactivan solas, justamente para que alguien revise antes.
+
+---
+
 ## 1.17.1 — 2026-08-11
 
 🔔 **Ahora sí me entero cuando copias y pegas mi nombre**

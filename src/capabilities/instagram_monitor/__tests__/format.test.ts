@@ -42,6 +42,7 @@ function account(p: Partial<MonitoredAccount> = {}): MonitoredAccount {
     last_post_at: null,
     consecutive_failures: 0,
     consecutive_auth_failures: 0,
+    consecutive_hard_failures: 0,
     poll_interval_ms: null,
     posts_per_day: null,
     cadence_updated_at: null,

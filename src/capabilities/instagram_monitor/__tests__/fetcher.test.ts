@@ -4,8 +4,10 @@ import {
   parseUserFeedBody,
   parseWebProfileBody,
   InstagramAuthError,
+  InstagramHardAccountError,
   InstagramRateLimitError,
   detectAuthBlock,
+  detectHardAccountBlock,
   detectRateLimit,
   DEFAULT_IG_USER_AGENT,
   type InstagramAuth,
@@ -293,6 +295,79 @@ describe('DirectInstagramFetcher (authenticated)', () => {
       .catch((e) => e);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(InstagramAuthError);
+  });
+
+  test('HTTP 400 laser.provider "deleted schema" body on web_profile_info surfaces InstagramHardAccountError', async () => {
+    // The exact 2026-07-18 incident response: deterministic, account-specific,
+    // non-retryable — must NOT be classified as auth (session is fine) nor as a
+    // plain transient error (it fails the same way 100% of the time).
+    globalThis.fetch = vi.fn(async () => ({
+      ok: false,
+      status: 400,
+      async text() {
+        return JSON.stringify({
+          message:
+            'Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema',
+          status: 'fail',
+        });
+      },
+    })) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0)
+      .fetchRecentPosts('foo')
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(InstagramHardAccountError);
+    expect(err).not.toBeInstanceOf(InstagramAuthError);
+    expect(err.reason).toBe('laser.provider');
+  });
+
+  test('the same laser.provider body on feed/user also surfaces InstagramHardAccountError', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('web_profile_info')) {
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({ data: { user: { id: '5005' } } });
+          },
+        };
+      }
+      return {
+        ok: false,
+        status: 400,
+        async text() {
+          return JSON.stringify({
+            message:
+              'Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema',
+            status: 'fail',
+          });
+        },
+      };
+    }) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0)
+      .fetchRecentPosts('foo')
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(InstagramHardAccountError);
+    expect(err).not.toBeInstanceOf(InstagramAuthError);
+  });
+});
+
+describe('detectHardAccountBlock', () => {
+  test('matches only HTTP 400 carrying a deterministic-failure marker', () => {
+    expect(
+      detectHardAccountBlock(
+        400,
+        '{"message":"Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema","status":"fail"}',
+      ),
+    ).toBe('laser.provider');
+    expect(detectHardAccountBlock(400, 'YOU CANNOT USE THIS SCHEMA')).toBe(
+      'you cannot use this schema',
+    );
+    expect(detectHardAccountBlock(400, 'something_else')).toBeNull();
+    // Other statuses never count — 4xx/5xx stay on auth/rate-limit/transient paths.
+    expect(detectHardAccountBlock(401, 'laser.provider')).toBeNull();
+    expect(detectHardAccountBlock(500, 'laser.provider')).toBeNull();
   });
 });
 
