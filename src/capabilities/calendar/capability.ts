@@ -494,6 +494,7 @@ ${
 # Imágenes adjuntas en ESTE mensaje
 La persona adjuntó ${imageAttachments.length === 1 ? 'una imagen' : `${imageAttachments.length} imágenes`} en su mensaje. Si la quiere como **portada del evento de Discord** ("pon esta imagen de portada", "usa este flyer"), llama \`calendar_sync_discord_event\` pasando \`image_url\` EXACTAMENTE una de estas (no inventes ni modifiques ninguna):
 ${imageAttachments.map((a) => `- ${a.url} (${a.name})`).join('\n')}
+Funciona igual si el evento de Discord **ya existe**: la portada se pone o se reemplaza y el enlace no cambia — no hace falta crear nada nuevo.
 Si acaba de crear un evento y subió la imagen en el mismo mensaje, ofrécelo tú una vez: *"¿la pongo de portada del evento de Discord?"*
 `;
 

@@ -13,6 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.19.1 — 2026-08-13
+
+🎟️ **Los tickets ya no se quedan atrás**
+
+Cuando lxs mods ajustan un evento desde su ticket (mover la fecha, corregir el título…), yo actualizaba el calendario pero a veces **el evento de Discord ya no existía** — por ejemplo, si la fecha original ya había pasado — y mi confirmación decía "el evento de Discord se refleja solo"… sin que hubiera nada que reflejar. 🙃 Ahora lo detecto en el momento: si falta, lo creo de nuevo ahí mismo (con el flyer del ticket de portada) y anexo el enlace en mi confirmación.
+
+Y dos ajustes finos del mismo día:
+- En los tickets también puedo actualizar la peli/tema de la semana de un club que ya existe, sin duplicar nada (la herramienta nueva de hoy ahora también jala ahí).
+- Si me adjuntas la imagen del evento, puedo ponerla o cambiarla de portada del evento de Discord **aunque el evento ya exista** — el enlace para apuntarse no cambia.
+
+---
+
 ## 1.19.0 — 2026-08-13
 
 🎬 **Ya sé actualizar la peli de la semana (sin duplicar el club)**
