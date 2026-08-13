@@ -12,6 +12,8 @@ import {
   CADENCE_MIN_INTERVAL_MS,
   CADENCE_MAX_INTERVAL_MS,
   CADENCE_INTERVAL_FACTOR,
+  HARD_PAUSE_THRESHOLD,
+  POLL_JITTER_FRACTION,
   type MonitoredAccount,
 } from '../store.js';
 
@@ -57,11 +59,19 @@ describe('InstagramMonitorStore', () => {
     store.setPaused('paused', true);
 
     const now = 100_000_000;
-    store.markPollSuccess(a.account.id, now - 5 * 60_000, 'A1'); // 5 min ago — not due
-    store.markPollSuccess(b.account.id, now - 30 * 60_000, 'B1'); // 30 min ago — due
-    store.markPollSuccess(p.account.id, now - 60 * 60_000, 'P1');
+    const interval = 20 * 60_000;
+    // dueAt = last_polled + interval + jitter, jitter ∈ [0, POLL_JITTER_FRACTION
+    // × interval). Both bounds are derived from the constant rather than
+    // hardcoded: at the old 0.5 fraction a flat "30 min ago" sat safely past the
+    // ceiling (30 max), but the 2026-08-13 bump to 0.75 raised the ceiling to 35
+    // and turned this assertion into a ~2-in-3 coin flip. Deriving it keeps the
+    // test deterministic through any future jitter change.
+    const clearlyDue = interval * (1 + POLL_JITTER_FRACTION) + 5 * 60_000;
+    store.markPollSuccess(a.account.id, now - 5 * 60_000, 'A1'); // 5 min ago — under interval, never due
+    store.markPollSuccess(b.account.id, now - clearlyDue, 'B1'); // past interval+max jitter — always due
+    store.markPollSuccess(p.account.id, now - clearlyDue, 'P1'); // due, but paused
 
-    const due = store.dueAccounts(now, 20 * 60_000, 10);
+    const due = store.dueAccounts(now, interval, 10);
     const names = due.map((d) => d.username).sort();
     expect(names).toEqual(['never_polled', 'stale']);
     mem.close();
@@ -117,14 +127,16 @@ describe('InstagramMonitorStore', () => {
       expect(store.dueAccounts(now, interval, 10).map((a) => a.username)).not.toContain('x');
     }
 
-    // Polled 2× the interval ago: the jitter ceiling is interval/2, so
-    // dueAt ≤ now - interval/2 < now → always due, any draw.
+    // Polled 2× the interval ago: the jitter ceiling is
+    // POLL_JITTER_FRACTION × interval (< 1 × interval), so dueAt < now → always
+    // due, any draw. Holds for any fraction below 1.0.
     store.markPollSuccess(r.account.id, now - 2 * interval, 'A');
     for (let i = 0; i < 30; i++) {
       expect(store.dueAccounts(now, interval, 10).map((a) => a.username)).toContain('x');
     }
 
-    // Polled exactly one interval ago: dueAt = now + jitter, jitter ∈ [0, interval/2).
+    // Polled exactly one interval ago: dueAt = now + jitter,
+    // jitter ∈ [0, POLL_JITTER_FRACTION × interval).
     // Jitter is real → across many draws it's deferred (not always due).
     store.markPollSuccess(r.account.id, now - interval, 'A');
     let deferred = 0;
@@ -270,6 +282,7 @@ function acct(p: Partial<MonitoredAccount>): MonitoredAccount {
     last_post_at: null,
     consecutive_failures: 0,
     consecutive_auth_failures: 0,
+    consecutive_hard_failures: 0,
     poll_interval_ms: null,
     posts_per_day: null,
     cadence_updated_at: null,
@@ -362,6 +375,68 @@ describe('adaptive cadence — effectiveBaseIntervalMs / nextDueAtMs', () => {
   });
 });
 
+describe('hard deterministic-failure auto-pause (migration v8)', () => {
+  test('v8 column defaults to 0; markPollFailure({hard}) increments only its counter', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    expect(store.getAccount('foo')?.consecutive_hard_failures).toBe(0);
+    store.markPollFailure(a.account.id, 1_000, { hard: true });
+    const after = store.getAccount('foo')!;
+    expect(after.consecutive_hard_failures).toBe(1);
+    expect(after.consecutive_failures).toBe(1); // shared counter still moves (backoff)
+    expect(after.consecutive_auth_failures).toBe(0);
+    mem.close();
+  });
+
+  test('dueAccounts skips accounts at HARD_PAUSE_THRESHOLD; success re-arms them', async () => {
+    const { store, mem } = await newStore();
+    const now = Date.now();
+    const broken = store.upsertAccount({ username: 'broken', added_by: 'U' });
+    const healthy = store.upsertAccount({ username: 'healthy', added_by: 'U' });
+    store.markPollSuccess(healthy.account.id, now - 25 * HOUR, 'H1');
+    for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
+      store.markPollFailure(broken.account.id, now - (26 - i) * HOUR, { hard: true });
+    }
+    const due = store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username);
+    expect(due).toContain('healthy');
+    expect(due).not.toContain('broken');
+    // One below the threshold still polls.
+    const almost = store.upsertAccount({ username: 'almost', added_by: 'U' });
+    for (let i = 0; i < HARD_PAUSE_THRESHOLD - 1; i++) {
+      store.markPollFailure(almost.account.id, now - (26 - i) * HOUR, { hard: true });
+    }
+    expect(store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username)).toContain('almost');
+    // A successful poll resets the gate.
+    store.markPollSuccess(broken.account.id, now - 25 * HOUR, 'B1');
+    expect(store.getAccount('broken')?.consecutive_hard_failures).toBe(0);
+    expect(store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username)).toContain('broken');
+    mem.close();
+  });
+
+  test('clearFailureBackoff does NOT clear the hard counter; operator actions do', async () => {
+    const { store, mem } = await newStore();
+    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
+    for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
+      store.markPollFailure(a.account.id, 1_000 + i, { hard: true });
+    }
+    store.clearFailureBackoff(); // runs on every scheduler start
+    const afterClear = store.getAccount('foo')!;
+    expect(afterClear.consecutive_failures).toBe(0);
+    expect(afterClear.consecutive_auth_failures).toBe(0);
+    expect(afterClear.consecutive_hard_failures).toBe(HARD_PAUSE_THRESHOLD); // survives restarts
+
+    store.setPaused('foo', false); // operator "try again" gesture
+    expect(store.getAccount('foo')?.consecutive_hard_failures).toBe(0);
+
+    for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
+      store.markPollFailure(a.account.id, 2_000 + i, { hard: true });
+    }
+    store.resetLastPost('foo'); // operator force-poll
+    expect(store.getAccount('foo')?.consecutive_hard_failures).toBe(0);
+    mem.close();
+  });
+});
+
 describe('adaptive cadence — expectedPollsPerDay', () => {
   const QUIET = 5 * HOUR;
   const TICK = 60_000;
@@ -381,10 +456,12 @@ describe('adaptive cadence — expectedPollsPerDay', () => {
   });
 
   test('quiet hours DO cost short-interval accounts their in-window polls', () => {
-    // 1h interval: raw ~24/day, quiet-aware ~19 awake + 1 catch-up ≈ 20.
+    // 1h interval, jitter fraction 0.75: E[extra] ≈ sqrt(π/2 × 45min × 1min)
+    // ≈ 8.4min → spacing ~68.4min → raw ~21/day, quiet-aware ~16.7 awake + 1
+    // catch-up ≈ 17.7.
     const p = expectedPollsPerDay(HOUR, QUIET, TICK);
     expect(p).toBeLessThan(21);
-    expect(p).toBeGreaterThan(18);
+    expect(p).toBeGreaterThan(17);
   });
 
   test('re-rolled jitter adds a sqrt-scale delay, far below maxJitter/2', () => {
@@ -471,10 +548,11 @@ describe('adaptive cadence — budget governor', () => {
     expect(projected).toBeCloseTo(20, 4); // all clamped to 12h → 10 × 2
   });
 
-  test('disabled when budget ≤ 0; excludes paused / auth-blocked', () => {
+  test('disabled when budget ≤ 0; excludes paused / auth-blocked / hard-auto-paused', () => {
     const accounts = [
       acct({ poll_interval_ms: HOUR, paused: 1 }),
       acct({ poll_interval_ms: HOUR, consecutive_auth_failures: 5 }),
+      acct({ poll_interval_ms: HOUR, consecutive_hard_failures: HARD_PAUSE_THRESHOLD }),
     ];
     expect(
       computeGovernorStretch(accounts, {
@@ -556,7 +634,8 @@ describe('adaptive cadence — store integration', () => {
       .run(10 * 60_000, fast.account.id);
     store.markPollSuccess(fast.account.id, now - 20 * 60_000, 'A'); // 20m ago
     store.markPollSuccess(slow.account.id, now - 20 * 60_000, 'B'); // 20m ago
-    // fast (10m interval, ≤5m jitter) is due; slow (60m default) is not.
+    // fast (10m interval, so jitter ≤ 7.5m at the 0.75 fraction) is due at 20m
+    // elapsed; slow (60m default) is not.
     const due = store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username);
     expect(due).toContain('fast');
     expect(due).not.toContain('slow');

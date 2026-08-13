@@ -134,17 +134,17 @@ const ConfigSchema = z.object({
   DEEPSEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   DEEP_SEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   DEEPSEEK_BASE_URL: z.string().min(1).default('https://api.deepseek.com/v1'),
-  // The ONE text model. deepseek-v4-flash is the agentic-tuned, cheap tier
-  // ($0.14/M in, $0.28/M out, $0.0028/M on a cache hit) and serves every text
-  // turn regardless of effort — effort picks a THINKING MODE on this model
-  // (see `supportsThinkingSwitch` below), not a pricier model.
-  //
-  // There is deliberately NO second model id. V4-Pro was wired to a `high`
-  // tier on 2026-08-13 and removed the same day: measured on the calendar
-  // battery it scored 7/8 tool-calling at 10.5 s/turn vs Flash's 7/8 at
-  // 7.1 s — identical accuracy, ~48% slower, 3.1× the price. Flash WITH
-  // thinking enabled then scored 8/8. Re-measure before reintroducing a tier.
+  // The MEDIUM tier and the workhorse: deepseek-v4-flash is the agentic-tuned,
+  // cheap one ($0.14/M in, $0.28/M out, $0.0028/M on a cache hit). It serves
+  // every conversational surface (general_chat, the IG classifier's decision,
+  // the calendar announcer, workshop compaction) — i.e. essentially all volume.
   DEEPSEEK_MODEL_ID: z.string().min(1).default('deepseek-v4-flash'),
+  // There is deliberately NO second model id. V4-Pro was wired to the `high`
+  // tier on 2026-08-13 and removed the same day: measured on the calendar
+  // battery it scored **7/8 tool-calling at 10.5 s/turn vs Flash's 7/8 at
+  // 7.1 s** — identical accuracy, ~48% slower, 3.1× the price. Effort selects
+  // a THINKING MODE on the one model now (see DEEPSEEK_THINKING below), not a
+  // pricier model. Re-measure before reintroducing a tier.
 
   // Amazon Bedrock (Converse API) credentials + models. On the Pi these are the
   // static ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env (the IMAGES-ONLY
@@ -210,7 +210,7 @@ const ConfigSchema = z.object({
   // ≈ 2–3 calls: optional warmup + pk-resolve + feed). On hit, polling
   // soft-pauses (auto-recovers as the window drains) and the operator is
   // alerted. A backstop against runaway request volume.
-  IG_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(120),
+  IG_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(90),
 
   // ── VirusTotal file scanner (file_scanner capability) ──────────────────────
   // Optional. When VIRUSTOTAL_API_KEY is set, the file_scanner capability
@@ -391,8 +391,8 @@ export interface TextBackend {
   modelId: string;
   /**
    * Whether this provider honours DeepSeek's `thinking: {type}` switch, which
-   * is how the effort tier is expressed (2026-08-13). Measured on v4-flash,
-   * 3 reps per variant (`scripts/probe-deepseek-thinking.ts`):
+   * is how the effort tier is expressed now (2026-08-13). Measured on
+   * v4-flash, 3 reps per variant (`scripts/probe-deepseek-thinking.ts`):
    * `type:'disabled'` reliably yields **0 reasoning tokens, 95 output tokens,
    * 1.34 s** vs **111 / 207 / 1.89 s** with thinking on — a ~2.2× cut in
    * billed output tokens — while still tool-calling correctly 3/3.

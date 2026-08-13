@@ -91,6 +91,25 @@ export class InstagramRateLimitError extends Error {
   }
 }
 
+/** Thrown when IG rejects a request for ONE account in a deterministic,
+ * non-retryable way (see {@link detectHardAccountBlock}) — e.g. the 2026-07-18
+ * `laser.provider ... has been deleted` 400 that made pk resolution fail for
+ * 100% of polls on 5 accounts for weeks. Retrying that class of error forever
+ * is pure anti-detection surface (a scraper hammering dead endpoints) for zero
+ * yield, so the scheduler counts these separately and auto-pauses the account
+ * at {@link HARD_PAUSE_THRESHOLD}. Distinct from {@link InstagramAuthError}
+ * (session/account auth) and transient failures (network, 5xx, IG blips). */
+export class InstagramHardAccountError extends Error {
+  readonly hardAccountFailure = true;
+  /** Short machine-readable cause (the matched marker), for logs/alerts. */
+  readonly reason: string;
+  constructor(message: string, reason: string) {
+    super(message);
+    this.name = 'InstagramHardAccountError';
+    this.reason = reason;
+  }
+}
+
 /**
  * Body markers IG returns alongside a throttle. The status code (429) is the
  * primary signal; these catch cases where IG returns 200/400 with a "slow
@@ -154,6 +173,32 @@ export function detectAuthBlock(status: number, body: string): string | null {
     for (const marker of AUTH_BLOCK_MARKERS) {
       if (body.includes(marker)) return `HTTP 400 ${marker}`;
     }
+  }
+  return null;
+}
+
+/**
+ * Body markers IG returns on DETERMINISTIC, account-specific, non-retryable
+ * failures — the response will be the same on every retry until something
+ * changes server-side. First observed 2026-07-18: HTTP 400
+ * `{"message":"Asset asset://laser.provider/ig_business_category_subvertical
+ * has been deleted. You cannot use this schema","status":"fail"}` resolving
+ * the pk of 5 accounts, which then failed 100% of polls for weeks.
+ */
+const HARD_ACCOUNT_MARKERS = ['laser.provider', 'you cannot use this schema'];
+
+/**
+ * Returns the matched marker if the (status, body) pair is a deterministic
+ * per-account failure (→ {@link InstagramHardAccountError}), null otherwise.
+ * Checked AFTER {@link detectAuthBlock} and {@link detectRateLimit} so a
+ * session/throttle signal always wins; 400-only, matching the observed class
+ * (other 4xx/5xx stay on the generic transient path).
+ */
+export function detectHardAccountBlock(status: number, body: string): string | null {
+  if (status !== 400) return null;
+  const lower = body.toLowerCase();
+  for (const marker of HARD_ACCOUNT_MARKERS) {
+    if (lower.includes(marker)) return marker;
   }
   return null;
 }
@@ -340,6 +385,13 @@ export class DirectInstagramFetcher implements InstagramFetcher {
           parseRetryAfterMs(res),
         );
       }
+      const hardReason = detectHardAccountBlock(res.status, body);
+      if (hardReason) {
+        throw new InstagramHardAccountError(
+          `Instagram returned a deterministic ${res.status} resolving @${username} (${hardReason}) — retrying is futile until IG changes server-side`,
+          hardReason,
+        );
+      }
       throw new Error(
         `Instagram returned HTTP ${res.status} resolving @${username} (direct)${body ? `: ${body.slice(0, 200)}` : ''}`,
       );
@@ -384,6 +436,13 @@ export class DirectInstagramFetcher implements InstagramFetcher {
         throw new InstagramRateLimitError(
           `Instagram throttled an authenticated feed request (HTTP ${res.status})`,
           parseRetryAfterMs(res),
+        );
+      }
+      const hardReason = detectHardAccountBlock(res.status, body);
+      if (hardReason) {
+        throw new InstagramHardAccountError(
+          `Instagram returned a deterministic ${res.status} on feed/user/${pk} (${hardReason}) — retrying is futile until IG changes server-side`,
+          hardReason,
         );
       }
       throw new Error(

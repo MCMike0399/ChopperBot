@@ -4,11 +4,13 @@ import {
   CADENCE_COLD_START_INTERVAL_MS,
   CADENCE_TTL_MS,
   EVENT_WINDOW_MS,
+  HARD_PAUSE_THRESHOLD,
   type InstagramMonitorStore,
   type MonitoredAccount,
 } from './store.js';
 import {
   InstagramAuthError,
+  InstagramHardAccountError,
   InstagramRateLimitError,
   type InstagramFetcher,
   type RecentPost,
@@ -44,8 +46,8 @@ const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
 // product impact (any posts published overnight surface naturally on the
 // 07:00 resume).
 const QUIET_HOURS_TZ = 'America/Mexico_City';
-const QUIET_HOURS_START_HOUR = 2;
-const QUIET_HOURS_END_HOUR = 7;
+const QUIET_HOURS_START_HOUR = 1;
+const QUIET_HOURS_END_HOUR = 8;
 // Per-day deterministic jitter (± minutes) applied to the quiet-hour
 // boundaries, so the monitor doesn't resume at exactly 07:00 every single day
 // (a perfectly fixed daily edge is itself a weak automation tell). Stable
@@ -161,6 +163,17 @@ export type NotifyResumedFn = (info: {
 /** Posted once per day at STATUS_DIGEST_HOUR with the monitor health summary. */
 export type NotifyStatusDigestFn = () => Promise<void>;
 
+/**
+ * Posted once when an account crosses {@link HARD_PAUSE_THRESHOLD} consecutive
+ * deterministic failures and gets auto-paused. Fires only at the crossing (the
+ * account is skipped afterwards), so no dedup is needed on this side.
+ */
+export type NotifyAccountAutoPausedFn = (info: {
+  account: string;
+  reason: string;
+  failures: number;
+}) => Promise<void>;
+
 export interface SchedulerDeps {
   store: InstagramMonitorStore;
   fetcher: InstagramFetcher;
@@ -187,6 +200,8 @@ export interface SchedulerDeps {
   notifyResumed?: NotifyResumedFn;
   /** Posted once per day with the status digest. Optional in tests. */
   notifyStatusDigest?: NotifyStatusDigestFn;
+  /** Posted once when an account auto-pauses on deterministic failures. Optional in tests. */
+  notifyAccountAutoPaused?: NotifyAccountAutoPausedFn;
   /**
    * Hard ceiling on outbound IG HTTP requests in a rolling 24h window. When
    * hit, polling soft-pauses (auto-recovers as the window drains) and the
@@ -746,6 +761,39 @@ export class InstagramMonitorScheduler {
             `IG throttled ${count}× within ${Math.round(EVENT_WINDOW_MS / 3_600_000)}h — polling stopped to avoid a ban`,
             now,
           );
+        }
+        return;
+      }
+
+      // Deterministic per-account failure (e.g. the 2026-07 laser.provider
+      // 400 that failed 100% of polls on 5 accounts for weeks): the identical
+      // request fails the same way every time, so retrying is pure
+      // automation-signature traffic for zero yield. Count separately and
+      // auto-pause at HARD_PAUSE_THRESHOLD (dueAccounts gate); alert once, at
+      // the crossing. The counter survives restarts (clearFailureBackoff
+      // skips it), so the alert can't flap on reboot.
+      if (err instanceof InstagramHardAccountError) {
+        this.deps.store.markPollFailure(acc.id, now, { hard: true });
+        const streak = acc.consecutive_hard_failures + 1;
+        log.warn(
+          {
+            account: acc.username,
+            reason: err.reason,
+            hard_failures: streak,
+            auto_paused: streak >= HARD_PAUSE_THRESHOLD,
+          },
+          'instagram_monitor.account_hard_failed',
+        );
+        if (streak === HARD_PAUSE_THRESHOLD && this.deps.notifyAccountAutoPaused) {
+          try {
+            await this.deps.notifyAccountAutoPaused({
+              account: acc.username,
+              reason: String(err),
+              failures: streak,
+            });
+          } catch (notifyErr) {
+            log.warn({ err: notifyErr }, 'instagram_monitor.hard_pause_notify_failed');
+          }
         }
         return;
       }

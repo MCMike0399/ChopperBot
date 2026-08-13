@@ -39,6 +39,18 @@ export interface MonitoredAccount {
    */
   consecutive_auth_failures: number;
   /**
+   * Deterministic, non-retryable per-account failures in a row
+   * ({@link InstagramHardAccountError} — e.g. IG's `laser.provider ... deleted`
+   * 400). Reset only on a successful poll or an explicit operator retry
+   * (`monitor_pause_account paused:false`, `monitor_force_poll`) — deliberately
+   * NOT by `clearFailureBackoff()` at restart, because a deterministic
+   * server-side error does not heal when WE restart. At
+   * {@link HARD_PAUSE_THRESHOLD} {@link InstagramMonitorStore.dueAccounts}
+   * skips the account: retrying a request that deterministically fails forever
+   * is pure automation-signature traffic for zero yield.
+   */
+  consecutive_hard_failures: number;
+  /**
    * Cached adaptive poll interval (ms), learned from this account's posting
    * cadence (see {@link computeCadenceInterval}). NULL = not enough history yet
    * → {@link InstagramMonitorStore.dueAccounts} falls back to the global default.
@@ -258,6 +270,28 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
       ALTER TABLE instagram_monitor_runtime ADD COLUMN last_digest_at INTEGER;
     `,
   },
+  {
+    // v8 — deterministic per-account failure counter, separate from both
+    // `consecutive_failures` (transient) and `consecutive_auth_failures`
+    // (session/handle auth). Motivating incident: from 2026-07-18 IG returned
+    // a deterministic HTTP 400 ("Asset asset://laser.provider/... has been
+    // deleted. You cannot use this schema") resolving the pk of 5 accounts —
+    // 100% of their polls failed (~10 wasted calls/day) while the scheduler
+    // kept retrying them forever. That traffic is pure automation-signature
+    // for zero yield. This counter feeds a `dueAccounts` hard gate (see
+    // HARD_PAUSE_THRESHOLD) that auto-pauses such accounts. Unlike the other
+    // two counters it is NOT cleared by `clearFailureBackoff()` on restart:
+    // a deterministic server-side error does not heal because WE restarted,
+    // and clearing it would re-arm several failing polls per broken account
+    // on every boot. The operator recovery path is `monitor_pause_account
+    // paused:false` / `monitor_force_poll` (both reset it) or a successful
+    // poll (IG fixed whatever broke).
+    version: 8,
+    up: `
+      ALTER TABLE instagram_monitor_accounts
+        ADD COLUMN consecutive_hard_failures INTEGER NOT NULL DEFAULT 0;
+    `,
+  },
 ];
 
 /** Window over which the circuit breaker counts soft-block events (6h). */
@@ -271,6 +305,19 @@ export const EVENT_WINDOW_MS = 6 * 60 * 60 * 1000;
  * with zero per-account toggling.
  */
 export const AUTH_PAUSE_THRESHOLD = 5;
+
+/**
+ * Threshold of consecutive DETERMINISTIC per-account failures
+ * ({@link InstagramHardAccountError}) at which {@link InstagramMonitorStore.dueAccounts}
+ * stops returning the account — auto-pause, mirrored on the auth gate above.
+ * Kept at 5: these failures are deterministic (the identical request already
+ * failed the same way every time), so a longer streak buys nothing, and the
+ * five observed `laser.provider`-broken accounts were failing ~2×/day, so the
+ * gate trips within ~2.5 days even at a 12h cadence. Reset on any successful
+ * poll, by `monitor_pause_account paused:false`, or by `monitor_force_poll` —
+ * deliberately NOT by `clearFailureBackoff()` (see migration v8).
+ */
+export const HARD_PAUSE_THRESHOLD = 5;
 
 /**
  * Failure backoff ceiling: next allowed poll is min(base * 2^failures, max(MAX_BACKOFF, base)).
@@ -531,7 +578,12 @@ export function computeGovernorStretch(
 ): { stretch: number; projected: number } {
   if (opts.dailyRequestBudget <= 0) return { stretch: 1, projected: 0 };
   const intervals = accounts
-    .filter((a) => a.paused !== 1 && a.consecutive_auth_failures < AUTH_PAUSE_THRESHOLD)
+    .filter(
+      (a) =>
+        a.paused !== 1 &&
+        a.consecutive_auth_failures < AUTH_PAUSE_THRESHOLD &&
+        a.consecutive_hard_failures < HARD_PAUSE_THRESHOLD,
+    )
     .map((a) => a.poll_interval_ms ?? opts.defaultIntervalMs)
     .filter((iv) => iv > 0);
 
@@ -579,8 +631,12 @@ export function computeGovernorStretch(
  * scatter irregularly rather than marching in lockstep. Lives here (next to
  * {@link pollJitterMs}) so {@link InstagramMonitorStore.dueAccounts} can size
  * jitter to each account's adaptive interval without importing from scheduler.
+ * Raised 0.5 → 0.75 on 2026-08-13 after IG flagged the polling account for
+ * suspected automation — wider scatter, at the cost of slightly longer mean
+ * detection latency (the governor's spacing model reads this same constant,
+ * so projections stay honest).
  */
-export const POLL_JITTER_FRACTION = 0.5;
+export const POLL_JITTER_FRACTION = 0.75;
 
 /**
  * Per-account jitter in [0, maxJitterMs). Added to an account's next-due time
@@ -648,6 +704,17 @@ export class InstagramMonitorStore {
     this.db
       .prepare(`UPDATE instagram_monitor_accounts SET paused = ? WHERE username = ?`)
       .run(paused ? 1 : 0, username);
+    if (!paused) {
+      // Unpausing is the operator's "try this account again" gesture — clear
+      // the deterministic-failure gate so dueAccounts returns it immediately.
+      this.db
+        .prepare(
+          `UPDATE instagram_monitor_accounts
+           SET consecutive_hard_failures = 0
+           WHERE username = ?`,
+        )
+        .run(username);
+    }
     return this.getAccount(username);
   }
 
@@ -666,8 +733,9 @@ export class InstagramMonitorStore {
 
   /**
    * Accounts due for polling: paused=0 AND consecutive_auth_failures below the
-   * auto-stop threshold AND (never polled OR enough time has elapsed). Each
-   * account's interval is its LEARNED cadence (`poll_interval_ms`) — or
+   * auto-stop threshold AND consecutive_hard_failures below the deterministic-
+   * failure auto-pause threshold AND (never polled OR enough time has elapsed).
+   * Each account's interval is its LEARNED cadence (`poll_interval_ms`) — or
    * `defaultIntervalMs` when not yet learned — scaled by the global budget-governor
    * `poll_stretch`, with exponential backoff on `consecutive_failures` and
    * per-account jitter on top. Ordered oldest-first so naturally-staggered polls
@@ -684,9 +752,10 @@ export class InstagramMonitorStore {
         `SELECT * FROM instagram_monitor_accounts
          WHERE paused = 0
            AND consecutive_auth_failures < ?
+           AND consecutive_hard_failures < ?
          ORDER BY COALESCE(last_polled_at, 0) ASC`,
       )
-      .all(AUTH_PAUSE_THRESHOLD) as MonitoredAccount[];
+      .all(AUTH_PAUSE_THRESHOLD, HARD_PAUSE_THRESHOLD) as MonitoredAccount[];
     const out: MonitoredAccount[] = [];
     for (const r of rows) {
       const base = effectiveBaseIntervalMs(r, defaultIntervalMs, stretch);
@@ -718,7 +787,8 @@ export class InstagramMonitorStore {
           `UPDATE instagram_monitor_accounts
            SET last_polled_at = ?,
                consecutive_failures = 0,
-               consecutive_auth_failures = 0
+               consecutive_auth_failures = 0,
+               consecutive_hard_failures = 0
            WHERE id = ?`,
         )
         .run(nowMs, id);
@@ -728,7 +798,8 @@ export class InstagramMonitorStore {
           `UPDATE instagram_monitor_accounts
            SET last_polled_at = ?, last_post_id = ?, last_post_at = ?,
                consecutive_failures = 0,
-               consecutive_auth_failures = 0
+               consecutive_auth_failures = 0,
+               consecutive_hard_failures = 0
            WHERE id = ?`,
         )
         .run(nowMs, newLastPostId, newLastPostAt, id);
@@ -738,32 +809,28 @@ export class InstagramMonitorStore {
   /**
    * Record a poll failure. Pass `{ auth: true }` for auth-class failures (the
    * IG session is bad: 401/403, checkpoint_required, challenge_required,
-   * require_login). Auth failures also increment {@link MonitoredAccount.consecutive_auth_failures}
-   * and, at the {@link AUTH_PAUSE_THRESHOLD}, cause `dueAccounts` to skip the
-   * account until a successful poll resets the counter (or `clearFailureBackoff`
-   * is called at restart).
+   * require_login) and/or `{ hard: true }` for deterministic, non-retryable
+   * per-account failures ({@link InstagramHardAccountError}). Each flagged
+   * class also increments its own counter; at {@link AUTH_PAUSE_THRESHOLD} /
+   * {@link HARD_PAUSE_THRESHOLD} `dueAccounts` skips the account until a
+   * successful poll resets the counters (or, for the auth counter only,
+   * `clearFailureBackoff` is called at restart).
    */
-  markPollFailure(id: number, nowMs: number, opts: { auth?: boolean } = {}): void {
-    if (opts.auth) {
-      this.db
-        .prepare(
-          `UPDATE instagram_monitor_accounts
-           SET last_polled_at = ?,
-               consecutive_failures = consecutive_failures + 1,
-               consecutive_auth_failures = consecutive_auth_failures + 1
-           WHERE id = ?`,
-        )
-        .run(nowMs, id);
-    } else {
-      this.db
-        .prepare(
-          `UPDATE instagram_monitor_accounts
-           SET last_polled_at = ?,
-               consecutive_failures = consecutive_failures + 1
-           WHERE id = ?`,
-        )
-        .run(nowMs, id);
-    }
+  markPollFailure(
+    id: number,
+    nowMs: number,
+    opts: { auth?: boolean; hard?: boolean } = {},
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE instagram_monitor_accounts
+         SET last_polled_at = ?,
+             consecutive_failures = consecutive_failures + 1,
+             consecutive_auth_failures = consecutive_auth_failures + ?,
+             consecutive_hard_failures = consecutive_hard_failures + ?
+         WHERE id = ?`,
+      )
+      .run(nowMs, opts.auth ? 1 : 0, opts.hard ? 1 : 0, id);
   }
 
   /**
@@ -771,6 +838,13 @@ export class InstagramMonitorStore {
    * scheduler on `start()` so that the operator's "refresh cookies and restart"
    * flow re-enables polling immediately — no per-account unpause needed, no
    * waiting for an 8-hour exponential backoff window to elapse.
+   *
+   * `consecutive_hard_failures` is deliberately NOT zeroed here: a
+   * deterministic server-side failure (e.g. IG's laser.provider 400) does not
+   * heal because WE restarted, and clearing it would re-arm
+   * {@link HARD_PAUSE_THRESHOLD} failing polls per broken account on every
+   * boot. The operator recovery path is `setPaused(username, false)` /
+   * `resetLastPost(username)` (both clear it) or a successful poll.
    */
   clearFailureBackoff(): { cleared: number } {
     const info = this.db
@@ -784,14 +858,20 @@ export class InstagramMonitorStore {
     return { cleared: info.changes };
   }
 
-  /** Reset the dedup anchor so the next poll re-classifies the most recent posts. */
+  /**
+   * Reset the dedup anchor so the next poll re-classifies the most recent
+   * posts. Also clears `consecutive_hard_failures`: `monitor_force_poll` is
+   * the operator's "retry this account NOW" tool, which requires the
+   * {@link HARD_PAUSE_THRESHOLD} auto-pause gate to let it through.
+   */
   resetLastPost(username: string): MonitoredAccount | null {
     const existing = this.getAccount(username);
     if (!existing) return null;
     this.db
       .prepare(
         `UPDATE instagram_monitor_accounts
-         SET last_post_id = NULL, last_post_at = NULL, last_polled_at = NULL
+         SET last_post_id = NULL, last_post_at = NULL, last_polled_at = NULL,
+             consecutive_hard_failures = 0
          WHERE username = ?`,
       )
       .run(username);
