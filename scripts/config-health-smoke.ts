@@ -76,6 +76,11 @@ router = buildRouter(new Map([['CH_CAL', 'calendar'], ['CH_IG', 'instagram_monit
 async function say(user: string, history: Turn[] = []): Promise<{ reply: string; tools: string[]; inputs: unknown[] }> {
   const bundle = await configCap.buildTurn({
     channelId: 'CONFIG_CHAN', guildId: 'G1', userId: OPERATOR, userTag: 'op', now: NOW,
+    // The console is mod-gated and fails closed (2026-08-13): an unresolvable
+    // author gets the unauthorized prompt and ZERO tools, so without this the
+    // smoke asserts the deny path instead of the console. See the fuller note in
+    // scripts/text-backend-trial.ts.
+    isAdministrator: true,
   });
   const tools: string[] = [];
   const inputs: unknown[] = [];

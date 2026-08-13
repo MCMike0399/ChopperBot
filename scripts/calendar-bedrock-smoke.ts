@@ -72,6 +72,12 @@ function newChain() {
   return async function say(user: string, userTag = 'mod'): Promise<{ reply: string; tools: string[] }> {
     const bundle = await cap.buildTurn({
       channelId: 'INPUT', guildId: 'G1', userId: `U_${userTag}`, userTag, now: NOW,
+      // Every scene below is a moderation action, and the calendar's write tools
+      // are mod-gated and fail closed (2026-08-13) — `userTag: 'mod'` is just a
+      // display name and grants nothing. Without this the smoke would run the
+      // whole script against the 3-tool read-only bundle. See the fuller note in
+      // scripts/text-backend-trial.ts.
+      isAdministrator: true,
     });
     const tools: string[] = [];
     const spied: ComposedTools = {

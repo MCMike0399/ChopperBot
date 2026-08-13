@@ -60,7 +60,11 @@ async function freshCap() {
 
 /** Send a single user message (optionally with an image) to a fresh-or-seeded cap. */
 async function send(cap: CalendarCapability, text: string, img?: ImageAttachable): Promise<{ reply: string; tools: string[] }> {
-  const bundle = await cap.buildTurn({ channelId: 'C', guildId: 'G', userId: 'U', userTag: 'mod', now: NOW });
+  // `isAdministrator` is what makes this a MOD turn: the calendar's write tools
+  // are mod-gated and fail closed (2026-08-13), so without it every scene here
+  // gets the 3-tool read-only bundle and the competition scores the auth gate
+  // instead of the models. See the same note in scripts/text-backend-trial.ts.
+  const bundle = await cap.buildTurn({ channelId: 'C', guildId: 'G', userId: 'U', userTag: 'mod', now: NOW, isAdministrator: true });
   const tools: string[] = [];
   const spied: ComposedTools = { tools: bundle.tools.tools, handle: (n, i) => { tools.push(n); return bundle.tools.handle(n, i); } };
   const turn: Turn = { role: 'user', content: text, ...(img ? { attachments: [img] } : {}) };

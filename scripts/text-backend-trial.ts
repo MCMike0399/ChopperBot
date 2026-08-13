@@ -80,6 +80,14 @@ async function send(
 ): Promise<{ reply: string; tools: string[]; ms: number }> {
   const bundle = await cap.buildTurn({
     channelId: 'C', guildId: 'G', userId: 'U', userTag: 'mod', now: NOW,
+    // The calendar's write tools are mod-gated (2026-08-13) and the gate fails
+    // CLOSED, so a synthetic caller with no roles gets the read-only bundle.
+    // Without this the battery silently measures the auth gate instead of the
+    // model: every write scene scores 0 because no write tool was ever offered,
+    // and `dedup` still "passes" because doing nothing also fails to duplicate.
+    // That looked exactly like a backend regression (2/8 on both Flash and Pro,
+    // vs 8/8 at the pre-gate commit) until the ctx was the difference.
+    isAdministrator: true,
   });
   const tools: string[] = [];
   const spied: ComposedTools = {
@@ -89,7 +97,10 @@ async function send(
   const turn: Turn = { role: 'user', content: text };
   const t0 = Date.now();
   try {
-    const reply = await ask({ system: bundle.system, messages: [turn], tools: spied });
+    // Take the tier from the bundle, like discord/handlers.ts does, so the
+    // banner's "effort 'high'" claim is true by construction rather than by
+    // coinciding with ask()'s own default.
+    const reply = await ask({ system: bundle.system, messages: [turn], tools: spied, effort: bundle.effort });
     return { reply, tools, ms: Date.now() - t0 };
   } catch (e) {
     const err = e as Error;
@@ -152,15 +163,26 @@ async function battery(): Promise<Battery> {
     const t0 = Date.now();
     let reply = '';
     try {
-      reply = await ask({ system, messages: [{ role: 'user', content: '¿de qué va este servidor y qué puedo hacer aquí?' }], tools: noTools });
+      // `medium` = thinking off, which is what general_chat actually runs in
+      // production: it declares no tier, so handlers.ts applies its `?? 'medium'`
+      // default. ask()'s own default is 'high', so leaving this off measured a
+      // tier no conversational turn ever uses (and cost ~2× the output tokens).
+      reply = await ask({ system, messages: [{ role: 'user', content: '¿de qué va este servidor y qué puedo hacer aquí?' }], tools: noTools, effort: 'medium' });
     } catch (e) {
       reply = `[ERR ${(e as Error).message.slice(0, 90)}]`;
       b.err = reply;
     }
     b.ms += Date.now() - t0;
     replies.push(reply);
-    // Spanish, substantive, and not an error/fallback string.
-    if (reply.length > 80 && !/^\[ERR/.test(reply) && /\b(comunidad|servidor|puedes|aquí)\b/i.test(reply)) b.voice = 1;
+    // Spanish, substantive, and not an error/fallback string. NO `\b` around the
+    // accented alternatives: `\b` is ASCII-only in JS (the `u` flag doesn't change
+    // it), so `/\baquí\b/` can never match — "í" is not a word character, so the
+    // trailing boundary never fires. That silently reduced this to a 3-keyword
+    // ASCII test and scored a perfectly in-character reply 0 for saying "server"
+    // instead of "servidor" — a harness false negative that reads as a backend
+    // voice regression.
+    const inCharacter = /(comunidad|servidor|server|puedes|aquí|revoluci)/i.test(reply);
+    if (reply.length > 80 && !/^\[ERR/.test(reply) && inCharacter) b.voice = 1;
   }
 
   b.leak = replies.some((r) => /<\/?thinking|<\|/i.test(r));
@@ -225,9 +247,9 @@ async function filterProbe(): Promise<{ refused: number; classified: number; emp
 async function main(): Promise<void> {
   console.log('=== Text-backend trial ===');
   console.log(`backend : ${textBackend.provider} · ${textBackend.modelId} @ ${textBackend.baseUrl}`);
-  // The calendar battery runs at effort 'high', which means "thinking enabled"
-  // on the same model rather than a different model. Say so, or a thinking-off
-  // run and a thinking-on run look identical in the scrollback.
+  // The calendar battery runs at effort 'high', which now means "thinking
+  // enabled" on the same model rather than a different model. Say so, or a
+  // thinking-off run and a thinking-on run look identical in the scrollback.
   console.log(
     `battery : calendar scenes run at effort 'high'` +
       `${textBackend.supportsThinkingSwitch ? ' → thinking enabled' : ''}`,
