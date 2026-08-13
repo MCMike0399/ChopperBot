@@ -196,8 +196,18 @@ export function prefixMentions(text: string, mentionText: string): string {
  * Brief for the model that WRITES the announcement. The examples are condensed
  * from real posts by this community's admins — the voice is the point of using a
  * model here at all, and it isn't derivable from the calendar row.
+ *
+ * `framing` is `'today'` for the daily same-day announcement (the announcer).
+ * `'advance'` is the ahead-of-time heads-up used by `scripts/announce-upcoming-event.ts`
+ * (e.g. an event created after today's run — the announcer itself never posts
+ * those, it only handles the day of). The default path is byte-identical to
+ * what the announcer has always sent.
  */
-export function renderAnnouncementPrompt(target: AnnounceTarget, nowMs: number): string {
+export function renderAnnouncementPrompt(
+  target: AnnounceTarget,
+  nowMs: number,
+  framing: 'today' | 'advance' = 'today',
+): string {
   const { occurrence: o } = target;
   const clock = formatLocalClock(o.startAtMs);
   const weekday = new Intl.DateTimeFormat('es-MX', {
@@ -206,12 +216,13 @@ export function renderAnnouncementPrompt(target: AnnounceTarget, nowMs: number):
     day: 'numeric',
     month: 'long',
   }).format(new Date(o.startAtMs));
+  const advance = framing === 'advance';
 
-  return `Eres ChopperBot, el bot de la comunidad **Revolución Z** (Discord, en español de México). Vas a escribir el **anuncio del día** para un evento que ocurre HOY, en el canal de anuncios.
+  return `Eres ChopperBot, el bot de la comunidad **Revolución Z** (Discord, en español de México). Vas a escribir ${advance ? 'un **aviso anticipado** para un evento que se acerca' : 'el **anuncio del día** para un evento que ocurre HOY'}, en el canal de anuncios.
 
-# El evento de hoy
+# ${advance ? 'El evento próximo' : 'El evento de hoy'}
 - **Título:** ${o.title}
-- **Cuándo:** hoy ${weekday}, a las ${clock} (hora CDMX)
+- **Cuándo:** ${advance ? `${weekday}` : `hoy ${weekday}`}, a las ${clock} (hora CDMX)${advance ? ' — NO es hoy: falta unos días, y el anuncio tiene que dejar eso claro' : ''}
 - **Lugar:** ${o.location ?? '(no especificado — no lo inventes, mejor no menciones lugar)'}
 - **Detalles del calendario:** ${o.description ?? '(sin detalles extra)'}
 - Hora local actual: ${formatInTimezone(nowMs)}
@@ -225,7 +236,7 @@ Ejemplos reales de anunciantes del server:
 Rasgos del estilo: cálido, cómplice, informal, lenguaje incluyente ("lxs", "camaradas", "amixes"), 1–2 emojis, un cierre afectuoso ("lxs tqm", "ahí nos vemos", "caiganle"). Entusiasmo sí, cursilería no.
 
 # Reglas (importantes)
-- **Menciona claramente que es HOY y la hora** ("hoy a las ${clock}"), en hora CDMX.
+- ${advance ? `**Menciona claramente la fecha y la hora** ("este ${weekday} a las ${clock}"), en hora CDMX — nunca digas ni insinúes que es hoy` : `**Menciona claramente que es HOY y la hora** ("hoy a las ${clock}"), en hora CDMX`}.
 - 2 a 5 líneas. Es un anuncio, no un ensayo.
 - **NO escribas menciones** de nadie: ni \`@everyone\`, ni \`@here\`, ni roles (\`<@&…>\`), ni usuarixs. La mención se agrega sola.
 - **NO escribas ningún enlace ni URL.** El enlace al evento de Discord se agrega solo al final.

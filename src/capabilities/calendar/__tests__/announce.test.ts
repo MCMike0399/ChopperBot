@@ -199,6 +199,29 @@ describe('renderAnnouncementPrompt', () => {
     );
     expect(p).toMatch(/no lo inventes/);
   });
+
+  test('advance framing is an upcoming-event notice that must never say "today"', () => {
+    const p = renderAnnouncementPrompt(
+      { occurrence: occ(), discordEvent: null, discordEventUrl: null },
+      AUG5_10AM,
+      'advance',
+    );
+    expect(p).toMatch(/aviso anticipado/);
+    expect(p).toMatch(/nunca digas ni insinúes que es hoy/);
+    expect(p).toMatch(/8:00 PM/);
+    // The same-day rules survive: no mentions, no links from the model.
+    expect(p).toMatch(/NO escribas menciones/);
+    expect(p).toMatch(/NO escribas ningún enlace/);
+  });
+
+  test('default framing stays the same-day announcement', () => {
+    const p = renderAnnouncementPrompt(
+      { occurrence: occ(), discordEvent: null, discordEventUrl: null },
+      AUG5_10AM,
+    );
+    expect(p).toMatch(/anuncio del día/);
+    expect(p).toMatch(/ocurre HOY/);
+  });
 });
 
 /**

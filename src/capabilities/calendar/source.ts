@@ -32,6 +32,7 @@ const WRITE_TOOL_NAMES = new Set([
   'calendar_delete_event',
   'calendar_publish',
   'calendar_sync_discord_event',
+  'calendar_set_session_theme',
 ]);
 
 /**
@@ -212,6 +213,34 @@ export class CalendarToolSource implements ToolSource {
         },
       },
       {
+        name: 'calendar_set_session_theme',
+        description:
+          'Set the theme/movie of ONE session of an EXISTING recurring series — the "esta semana en el club de cine vemos Persepolis" flow. Use THIS, never calendar_create_event, when mods announce what a recurring weekly activity is showing/reading this week (they often just send the flyer): creating a new event duplicates the club on the calendar, the month card and the announcements. Sets that one session\'s title (e.g. "Club de cine: Persepolis"), optional description and optional SAME-DAY time change, then republishes and creates/refreshes the linked Discord event. The series rhythm is untouched. Find the series id by searching the ACTIVITY name ("club de cine"), never the movie title.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'integer', minimum: 1, description: 'Id of the recurring series (NOT a one-off event).' },
+            occurrence_date_iso: {
+              type: 'string',
+              description: 'Which session, as its local date (e.g. "2026-08-13") or ISO datetime.',
+            },
+            title: {
+              type: 'string',
+              minLength: 1,
+              maxLength: 200,
+              description: 'Full title for this session, e.g. "Club de cine: Persepolis".',
+            },
+            description: { type: 'string', description: 'Optional details for this session (e.g. from the flyer).' },
+            start_at_iso: {
+              type: 'string',
+              description: 'Optional new start time for this session (ISO 8601 UTC), SAME day only — for "esta semana es a las 9 en vez de las 8".',
+            },
+            location: { type: 'string', description: 'Optional, only if this session moves room.' },
+          },
+          required: ['id', 'occurrence_date_iso', 'title'],
+        },
+      },
+      {
         name: 'calendar_delete_event',
         description:
           'Delete an event by id. For a RECURRING series, `scope`:\n' +
@@ -304,6 +333,8 @@ export class CalendarToolSource implements ToolSource {
           return await this.handleCreate(obj, t0);
         case 'calendar_update_event':
           return await this.handleUpdate(obj, t0);
+        case 'calendar_set_session_theme':
+          return await this.handleSetSessionTheme(obj, t0);
         case 'calendar_delete_event':
           return await this.handleDelete(obj, t0);
         case 'calendar_publish':
@@ -475,6 +506,64 @@ export class CalendarToolSource implements ToolSource {
     return { status: 'success', payload: { updated_scope: 'series', event: serializeMaster(updated), published, ...(discordEvent ? { discord_event: discordEvent } : {}) } };
   }
 
+  /**
+   * "Esta semana vemos Persepolis": theme ONE session of a recurring series —
+   * the mod-facing shape of the occurrence override. It exists as its own tool
+   * because the generic update asks the model to assemble scope + anchor + ISO
+   * math correctly; live 2026-08-13, handed a flyer, it created a duplicate
+   * "Cine Club: Persepolis" series instead of theming the club's session. One
+   * call here = override + republish + Discord create/refresh, with the
+   * series' rhythm untouched.
+   */
+  private async handleSetSessionTheme(obj: Record<string, unknown>, t0: number): Promise<ToolHandlerResult> {
+    const id = asPositiveInt(obj.id, 'id');
+    const master = this.store.get(id);
+    if (!master) return { status: 'error', payload: { error: `Event #${id} not found.` } };
+    if (master.recurrence_freq === null) {
+      return {
+        status: 'error',
+        payload: { error: `El evento #${id} no es una serie recurrente — edítalo con calendar_update_event.` },
+      };
+    }
+    const anchor = resolveOccurrence(master, obj.occurrence_date_iso);
+    if (anchor === null) {
+      return { status: 'error', payload: { error: 'No encontré una ocurrencia de esa serie en esa fecha.' } };
+    }
+    const patch: import('./store.js').OverridePatch = { title: asNonEmptyString(obj.title, 'title') };
+    if (obj.description !== undefined) patch.description = asOptionalString(obj.description);
+    if (obj.location !== undefined) patch.location = asOptionalString(obj.location);
+    if (obj.start_at_iso !== undefined) {
+      const newStart = parseRequiredIso(obj.start_at_iso, 'start_at_iso');
+      if (localDateKey(newStart) !== localDateKey(anchor)) {
+        return {
+          status: 'error',
+          payload: {
+            error:
+              'El cambio de hora debe quedar el MISMO día. Si la sesión se mueve a otro día, cancela esa ocurrencia y crea un evento aparte.',
+          },
+        };
+      }
+      patch.start_at = newStart;
+    }
+    this.store.upsertOverride(id, anchor, patch);
+    log.info(
+      { tool: 'calendar_set_session_theme', id, occurrence: anchor, ms: Date.now() - t0 },
+      'tool_call',
+    );
+    const published = await this.publishNow();
+    const discordEvent = await this.ensureDiscordEventSynced(id);
+    return {
+      status: 'success',
+      payload: {
+        updated: 'session',
+        occurrence_local: formatInTimezone(patch.start_at ?? anchor),
+        series: serializeMaster(this.store.get(id)!),
+        published,
+        ...(discordEvent ? { discord_event: discordEvent } : {}),
+      },
+    };
+  }
+
   private async handleDelete(obj: Record<string, unknown>, t0: number): Promise<ToolHandlerResult> {
     const id = asPositiveInt(obj.id, 'id');
     const master = this.store.get(id);
@@ -547,6 +636,34 @@ export class CalendarToolSource implements ToolSource {
         : undefined;
     } catch (err) {
       log.warn({ err, id, kind }, 'calendar.discord_event_propagation_failed');
+      return undefined;
+    }
+  }
+
+  /**
+   * The set-session-theme companion to {@link propagateToDiscordEvent}: that
+   * helper only refreshes an already-linked event, but "the movie was just
+   * decided" is exactly when the Discord event often doesn't exist yet — so
+   * here an unlinked row CREATES it (the occurrence override is already in
+   * place, so the event lands on the right session and time).
+   */
+  private async ensureDiscordEventSynced(id: number): Promise<Record<string, unknown> | undefined> {
+    if (!this.syncer) return undefined;
+    const row = this.store.get(id);
+    if (!row) return undefined;
+    try {
+      if (row.discord_event_id) {
+        const res = await this.syncer.refresh(id);
+        if (!res.ok) return { action: 'error', message: res.message };
+        return res.action === 'updated'
+          ? { action: 'updated', url: res.url, changed: res.changed, ...(res.venue ? { venue: res.venue } : {}) }
+          : undefined;
+      }
+      const res = await this.syncer.sync(id);
+      if (!res.ok) return { action: 'error', message: res.message };
+      return { action: res.created ? 'created' : 'linked', url: res.url, venue: res.venue };
+    } catch (err) {
+      log.warn({ err, id }, 'calendar.discord_event_propagation_failed');
       return undefined;
     }
   }

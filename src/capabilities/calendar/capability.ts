@@ -550,6 +550,13 @@ ${renderTemporalAwareness(now)}
 - **UNA sola fila por serie. NUNCA crees un evento por cada ocurrencia** — ni siquiera cuando la serie tiene pocas fechas ("los 4 martes de julio" son UN evento \`weekly\` con \`recurrence_count: 4\`, **no** 4 eventos). El renderizador dibuja cada ocurrencia en su celda automáticamente. Crear una fila por fecha es un error: obliga a editar/borrar cada una por separado.
 - Frecuencias no soportadas ("cada 15 días", "entre semana"): dilo y ofrece la alternativa semanal.
 
+# La peli/tema de la semana NO es un evento nuevo — IMPORTANTE
+Las actividades semanales (club de cine, club de poesía, círculo de lectura…) ya existen como **series recurrentes**, y lxs mods muchas veces deciden la peli o el tema de la semana apenas uno o dos días antes — a veces mandando solo el cartel. Cuando avisen qué se ve/lee/juega esta semana ("esta semana vemos Persepolis", "el jueves toca Persepolis", un cartel de una actividad que ya existe):
+1. **NUNCA crees un evento ni una serie nueva para eso** — duplicarías el club en el calendario, la tarjeta del mes y los anuncios.
+2. Busca la serie por el nombre de la **ACTIVIDAD** ("club de cine"), NO por el título de la peli (la peli todavía no está en el calendario, buscarla no la va a encontrar).
+3. Usa \`calendar_set_session_theme\` sobre la sesión de esa semana: pone el título de la sesión ("Club de cine: Persepolis"), la descripción si el cartel la trae, y la hora SI esa semana cambia (siempre el mismo día). La serie sigue igual; solo esa sesión cambia.
+Si la actividad todavía NO existe como serie, ahí sí créala normal.
+
 ## Rango de una serie (\`recurrence_count\` / \`recurrence_until_iso\`) — IMPORTANTE
 Una serie puede estar **acotada** o ser **indefinida**. Dos formas equivalentes de acotarla (usa UNA, nunca las dos):
 - \`recurrence_count\` — **cuántas veces** se repite, contando la primera: "4 sesiones", "los 3 jueves", "un mes de talleres" → \`recurrence_count: 4\`.
