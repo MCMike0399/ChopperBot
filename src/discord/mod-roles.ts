@@ -88,6 +88,36 @@ export function isModByRole(
   return matchModRoles(memberRoles, tokens).length > 0;
 }
 
+/**
+ * Who is asking, as far as authorization goes — the snapshot the message
+ * handler takes of the Discord member and hands to `buildTurn`.
+ *
+ * `memberRoles` is `undefined` (not `[]`) when the member could not be resolved
+ * at all (a DM, a fetch failure): {@link isModCaller} treats that as "not a
+ * mod", never as "no roles, therefore allowed".
+ */
+export interface TurnAuthority {
+  memberRoles?: readonly NamedRole[];
+  isAdministrator?: boolean;
+}
+
+/**
+ * The single privileged-action gate for channel-bound capabilities: an approver
+ * role, or Discord's Administrator permission. **Fails closed** — an unresolved
+ * member is not a mod.
+ *
+ * This exists because channel permissions were the *only* thing standing
+ * between a member and the admin console / the calendar's write tools. That was
+ * already thin; it stopped being acceptable when the bot was granted
+ * Administrator in the guild (2026-08-13), which is also what made every role
+ * pingable — see `createClient`'s `allowedMentions`.
+ */
+export function isModCaller(caller: TurnAuthority, tokens: readonly string[]): boolean {
+  if (caller.isAdministrator === true) return true;
+  if (!caller.memberRoles) return false;
+  return isModByRole(caller.memberRoles, tokens);
+}
+
 // ── Mentioning them ─────────────────────────────────────────────────────────
 //
 // The hard constraint this half encodes: Discord only *notifies* a role mention

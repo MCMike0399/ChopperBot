@@ -27,3 +27,29 @@ describe('createClient — conditional MessageContent intent', () => {
     await client.destroy();
   });
 });
+
+/**
+ * The bot-wide mention policy. Without an explicit default, discord.js omits
+ * `allowed_mentions` and Discord parses EVERY mention class in whatever the
+ * model wrote — and the bot now holds Administrator, so every role is pingable.
+ * This is the code gate behind a rule that used to live only in prompt text.
+ */
+describe('createClient — mention policy', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    process.env = { ...originalEnv };
+  });
+
+  test('defaults to users-only: @everyone/@here and role pings are denied bot-wide', async () => {
+    const { createClient } = await import('../client.js');
+    const client = createClient();
+    const allowed = client.options.allowedMentions;
+    expect(allowed).toBeDefined();
+    expect(allowed?.parse).toEqual(['users']);
+    expect(allowed?.parse).not.toContain('everyone');
+    expect(allowed?.parse).not.toContain('roles');
+    // The reply ping is normal bot behavior and must survive the lockdown.
+    expect(allowed?.repliedUser).toBe(true);
+    await client.destroy();
+  });
+});

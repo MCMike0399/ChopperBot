@@ -9,6 +9,7 @@ import { ReactionTurnPresenter, WorkshopTurnPresenter, type PresentableMessage }
  */
 function fakeMessage() {
   const ops: string[] = [];
+  const sends: Array<{ content: string; allowedMentions?: unknown }> = [];
   let typingCount = 0;
   const mkPosted = (): Message =>
     ({
@@ -32,8 +33,12 @@ function fakeMessage() {
     }),
     reactions: { cache: { get: () => undefined } },
     channel: {
-      send: vi.fn(async (options: string | { content: string }) => {
+      send: vi.fn(async (options: string | { content: string; allowedMentions?: unknown }) => {
         const content = typeof options === 'string' ? options : options.content;
+        sends.push({
+          content,
+          allowedMentions: typeof options === 'string' ? undefined : options.allowedMentions,
+        });
         ops.push(`send:${content}`);
         return mkPosted();
       }),
@@ -44,6 +49,7 @@ function fakeMessage() {
   };
   return {
     ops,
+    sends,
     message: message as unknown as PresentableMessage,
     typing: () => typingCount,
   };
@@ -117,6 +123,27 @@ describe('ReactionTurnPresenter (public conversation style)', () => {
     const anchor = await p.deliver(['respuesta']);
     expect(anchor).not.toBeNull();
     expect(ops).toContain('send:respuesta');
+  });
+
+  /**
+   * A message-level `allowedMentions` REPLACES the client default rather than
+   * merging with it, so these sends must repeat the users-only allowlist. They
+   * used to pass `{ repliedUser: false }` alone, which handed @everyone and
+   * role pings back to whatever the model wrote.
+   */
+  test('every channel send carries the users-only mention policy', async () => {
+    const { sends, message } = fakeMessage();
+    (message as unknown as { reply: unknown }).reply = vi.fn(async () => {
+      throw new Error('Unknown Message'); // force the fallback path too
+    });
+    const p = new ReactionTurnPresenter(message, 'bot');
+    await p.begin();
+    await p.deliver(['@everyone hola', 'segunda parte']);
+
+    expect(sends).toHaveLength(2);
+    for (const s of sends) {
+      expect(s.allowedMentions).toEqual({ parse: ['users'], repliedUser: false });
+    }
   });
 });
 

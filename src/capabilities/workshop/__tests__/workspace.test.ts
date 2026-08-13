@@ -1,15 +1,21 @@
 import { describe, test, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { safeJoin, PathEscapeError, SessionWorkspace, workspaceDirFor, isDeliverablePath, listUndeliveredDeliverables } from '../workspace.js';
 
 let root: string;
+/** Stands in for the host secrets a workspace escape would reach (.env, dist/). */
+let outside: string;
 beforeEach(() => {
-  root = mkdtempSync(join(tmpdir(), 'workshop-ws-'));
+  const base = mkdtempSync(join(tmpdir(), 'workshop-ws-'));
+  root = join(base, 'session');
+  outside = join(base, 'outside');
+  mkdirSync(root, { recursive: true });
+  mkdirSync(outside, { recursive: true });
 });
 afterEach(() => {
-  rmSync(root, { recursive: true, force: true });
+  rmSync(join(root, '..'), { recursive: true, force: true });
 });
 
 describe('safeJoin', () => {
@@ -65,6 +71,94 @@ describe('SessionWorkspace', () => {
   test('list on a missing root returns []', () => {
     const ws = new SessionWorkspace(join(root, 'nope'));
     expect(ws.list()).toEqual([]);
+  });
+});
+
+/**
+ * The escape `safeJoin` cannot see. Sandboxed python can't read the host, but
+ * it CAN drop a symlink inside its own workspace — and the file tools run in
+ * the bot process, where `readFileSync` happily follows it. Left unguarded,
+ * `os.symlink('../../.env', 'loot.pdf')` + `workshop_send_file loot.pdf` mails
+ * DISCORD_TOKEN to a Discord channel, and a write through a link to
+ * `dist/index.js` is code execution as the bot on the next restart.
+ */
+describe('SessionWorkspace — symlink containment', () => {
+  const secret = () => {
+    const p = join(outside, 'secret.env');
+    writeFileSync(p, 'DISCORD_TOKEN=supersecreto\n', 'utf-8');
+    return p;
+  };
+
+  test('reading through a symlink to a host file is refused (no token exfiltration)', () => {
+    const ws = new SessionWorkspace(root);
+    ws.ensure();
+    symlinkSync(secret(), join(root, 'loot.pdf'));
+
+    expect(() => ws.readText('loot.pdf', 10_000)).toThrow(PathEscapeError);
+    expect(() => ws.readBytes('loot.pdf')).toThrow(PathEscapeError);
+    expect(() => ws.absolute('loot.pdf')).toThrow(PathEscapeError);
+    expect(() => ws.stat('loot.pdf')).toThrow(PathEscapeError);
+    expect(() => ws.exists('loot.pdf')).toThrow(PathEscapeError);
+  });
+
+  test('writing through a symlink cannot modify a file outside the workspace', () => {
+    const ws = new SessionWorkspace(root);
+    ws.ensure();
+    const target = join(outside, 'index.js');
+    writeFileSync(target, 'original', 'utf-8');
+    symlinkSync(target, join(root, 'payload.js'));
+
+    expect(() => ws.writeText('payload.js', 'malicious')).toThrow(PathEscapeError);
+    expect(() => ws.writeBytes('payload.js', new Uint8Array([1, 2, 3]))).toThrow(PathEscapeError);
+    expect(readFileSync(target, 'utf-8')).toBe('original');
+  });
+
+  test('a symlinked DIRECTORY component is refused too (the whole path is walked)', () => {
+    const ws = new SessionWorkspace(root);
+    ws.ensure();
+    symlinkSync(outside, join(root, 'escape'));
+    writeFileSync(join(outside, 'nota.txt'), 'de afuera', 'utf-8');
+
+    expect(() => ws.readText('escape/nota.txt', 1000)).toThrow(PathEscapeError);
+    expect(() => ws.writeText('escape/nuevo.txt', 'x')).toThrow(PathEscapeError);
+    // …and nothing was created out there on the way to failing.
+    expect(() => readFileSync(join(outside, 'nuevo.txt'))).toThrow();
+  });
+
+  test('a symlink pointing INSIDE the workspace is refused as well (flat ban)', () => {
+    const ws = new SessionWorkspace(root);
+    ws.ensure();
+    ws.writeText('real.txt', 'contenido');
+    symlinkSync(join(root, 'real.txt'), join(root, 'alias.txt'));
+
+    expect(() => ws.readText('alias.txt', 1000)).toThrow(PathEscapeError);
+    expect(ws.readText('real.txt', 1000).content).toBe('contenido'); // the real file still works
+  });
+
+  test('symlinks never appear in listings (so the model is never offered one)', () => {
+    const ws = new SessionWorkspace(root);
+    ws.ensure();
+    ws.writeText('informe.docx', 'x');
+    symlinkSync(secret(), join(root, 'loot.pdf'));
+    symlinkSync(outside, join(root, 'escape'));
+
+    expect(ws.list().map((f) => f.path)).toEqual(['informe.docx']);
+  });
+
+  test('ordinary files, nested dirs and overwrites keep working', () => {
+    const ws = new SessionWorkspace(root);
+    ws.ensure();
+    ws.writeText('sub/dir/a.txt', 'uno');
+    ws.writeText('sub/dir/a.txt', 'dos'); // overwrite truncates, no leftovers
+    ws.writeBytes('bin.dat', new Uint8Array([7, 8, 9]));
+
+    expect(ws.readText('sub/dir/a.txt', 100).content).toBe('dos');
+    expect([...ws.readBytes('bin.dat')]).toEqual([7, 8, 9]);
+    expect(ws.stat('bin.dat').bytes).toBe(3);
+    expect(ws.exists('sub/dir/a.txt')).toBe(true);
+    expect(ws.exists('sub/dir/falta.txt')).toBe(false);
+    ws.remove('bin.dat');
+    expect(ws.exists('bin.dat')).toBe(false);
   });
 });
 

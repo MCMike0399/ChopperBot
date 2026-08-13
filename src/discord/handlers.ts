@@ -1,4 +1,11 @@
-import { Client, Events, Message, type CloseEvent, type Guild } from 'discord.js';
+import {
+  Client,
+  Events,
+  Message,
+  PermissionFlagsBits,
+  type CloseEvent,
+  type Guild,
+} from 'discord.js';
 import { log } from '../log.js';
 import { ask } from '../llm/client.js';
 import { chunkBotReply } from './chunk.js';
@@ -6,6 +13,7 @@ import { buildHistory, normalizeTurns, type Turn } from './history.js';
 import { ReactionTurnPresenter } from './presenter.js';
 import { QueueBusyError, type TurnQueue } from './turn-queue.js';
 import { resolveAttachments, listImageAttachments } from '../attachments/resolver.js';
+import type { TurnAuthority } from './mod-roles.js';
 import type { CapabilityRegistry } from '../capabilities/registry.js';
 import type { CapabilityRouter } from '../capabilities/routing.js';
 import { GENERAL_CHAT_CAPABILITY_ID } from '../capabilities/general_chat/constants.js';
@@ -125,6 +133,7 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
               userTag: message.author.tag,
               now: new Date(),
               attachments: listImageAttachments(message),
+              ...(await resolveAuthority(message)),
             });
 
             log.info(
@@ -177,6 +186,32 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
       await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
     }
   });
+}
+
+/**
+ * The caller's Discord standing for this turn: their guild roles and whether
+ * they hold Administrator. Capabilities that gate privileged tools read this
+ * (via `isModTurn`) instead of trusting "you can post in this channel".
+ *
+ * Roles come from the MESSAGE_CREATE payload's partial member — no privileged
+ * GuildMembers intent needed, since the ids resolve against the guild role
+ * cache the Guilds intent already fills. A member we cannot resolve leaves
+ * `memberRoles` undefined, which every gate reads as "not a mod" (fail closed).
+ */
+async function resolveAuthority(message: Message): Promise<TurnAuthority> {
+  if (!message.inGuild()) return {};
+  let member = message.member;
+  if (!member) {
+    member = await message.guild.members.fetch(message.author.id).catch((err) => {
+      log.warn({ err, user: message.author.id }, 'authority.member_fetch_failed');
+      return null;
+    });
+  }
+  if (!member) return {};
+  return {
+    memberRoles: member.roles.cache.map((r) => ({ id: r.id, name: r.name })),
+    isAdministrator: member.permissions.has(PermissionFlagsBits.Administrator),
+  };
 }
 
 export function shouldRespond(
