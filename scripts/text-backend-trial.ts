@@ -225,6 +225,13 @@ async function filterProbe(): Promise<{ refused: number; classified: number; emp
 async function main(): Promise<void> {
   console.log('=== Text-backend trial ===');
   console.log(`backend : ${textBackend.provider} · ${textBackend.modelId} @ ${textBackend.baseUrl}`);
+  // The calendar battery runs at effort 'high', which means "thinking enabled"
+  // on the same model rather than a different model. Say so, or a thinking-off
+  // run and a thinking-on run look identical in the scrollback.
+  console.log(
+    `battery : calendar scenes run at effort 'high'` +
+      `${textBackend.supportsThinkingSwitch ? ' → thinking enabled' : ''}`,
+  );
   console.log(`scope   : ${filterOnly ? 'risk filter only' : `${RUNS} run(s) of the full battery`}   now(local): ${localStr(NOW.getTime())}\n`);
 
   const agg = { create: 0, override: 0, dedup: 0, oneoff: 0, voice: 0, leaks: 0, ms: 0 };

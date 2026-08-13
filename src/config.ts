@@ -134,9 +134,16 @@ const ConfigSchema = z.object({
   DEEPSEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   DEEP_SEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   DEEPSEEK_BASE_URL: z.string().min(1).default('https://api.deepseek.com/v1'),
-  // deepseek-v4-flash is the agentic-tuned tier and the cheap one ($0.14/M in,
-  // $0.28/M out, $0.0028/M on a cache hit). deepseek-v4-pro costs ~3× for no
-  // measured gain on this workload.
+  // The ONE text model. deepseek-v4-flash is the agentic-tuned, cheap tier
+  // ($0.14/M in, $0.28/M out, $0.0028/M on a cache hit) and serves every text
+  // turn regardless of effort — effort picks a THINKING MODE on this model
+  // (see `supportsThinkingSwitch` below), not a pricier model.
+  //
+  // There is deliberately NO second model id. V4-Pro was wired to a `high`
+  // tier on 2026-08-13 and removed the same day: measured on the calendar
+  // battery it scored 7/8 tool-calling at 10.5 s/turn vs Flash's 7/8 at
+  // 7.1 s — identical accuracy, ~48% slower, 3.1× the price. Flash WITH
+  // thinking enabled then scored 8/8. Re-measure before reintroducing a tier.
   DEEPSEEK_MODEL_ID: z.string().min(1).default('deepseek-v4-flash'),
 
   // Amazon Bedrock (Converse API) credentials + models. On the Pi these are the
@@ -380,7 +387,23 @@ export interface TextBackend {
   provider: 'kimi' | 'deepseek';
   apiKey: string | undefined;
   baseUrl: string;
+  /** The one text model. Every text tier runs on it; effort picks a mode. */
   modelId: string;
+  /**
+   * Whether this provider honours DeepSeek's `thinking: {type}` switch, which
+   * is how the effort tier is expressed (2026-08-13). Measured on v4-flash,
+   * 3 reps per variant (`scripts/probe-deepseek-thinking.ts`):
+   * `type:'disabled'` reliably yields **0 reasoning tokens, 95 output tokens,
+   * 1.34 s** vs **111 / 207 / 1.89 s** with thinking on — a ~2.2× cut in
+   * billed output tokens — while still tool-calling correctly 3/3.
+   *
+   * Its sibling `reasoning_effort` is NOT honoured on Flash and must not be
+   * sent: across the same reps `low` produced MORE reasoning than `high`, and
+   * a deliberately invalid value ("banana") returned 200 and landed mid-pack.
+   * An ignored knob that never errors is worse than no knob, so only the
+   * on/off switch is wired.
+   */
+  supportsThinkingSwitch: boolean;
   /** Only the Kimi coding endpoint gates on this; DeepSeek ignores it. */
   userAgent: string;
   maxOutputTokens: number;
@@ -394,6 +417,7 @@ export const textBackend: TextBackend =
         apiKey: config.DEEPSEEK_API_KEY ?? config.DEEP_SEEK_API_KEY,
         baseUrl: config.DEEPSEEK_BASE_URL,
         modelId: config.DEEPSEEK_MODEL_ID,
+        supportsThinkingSwitch: true,
         userAgent: config.KIMI_USER_AGENT,
         maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
         maxConcurrent: config.KIMI_MAX_CONCURRENT,
@@ -403,6 +427,10 @@ export const textBackend: TextBackend =
         apiKey: config.KIMI_API_KEY,
         baseUrl: config.KIMI_BASE_URL,
         modelId: config.KIMI_MODEL_ID,
+        // Moonshot's endpoint is not known to accept `thinking`, and it 400s on
+        // unexpected params (it already does for `temperature`), so never send
+        // it there — the tier is a no-op on kimi, as it was before 2026-08-13.
+        supportsThinkingSwitch: false,
         userAgent: config.KIMI_USER_AGENT,
         maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
         maxConcurrent: config.KIMI_MAX_CONCURRENT,

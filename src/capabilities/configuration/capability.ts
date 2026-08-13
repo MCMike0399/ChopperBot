@@ -153,6 +153,10 @@ export class ConfigurationCapability implements Capability {
     return {
       system: renderConfigurationPrompt(ctx.now),
       tools: composeToolSources([core, instagram, calendar, filescanner, eventintake, workshop, database]),
+      // High tier: the admin console carries the widest tool surface in the
+      // bot (7 sources) and its calls mutate live config. Admin-only, so the
+      // extra output tokens ride on negligible volume.
+      effort: 'high',
     };
   }
 }

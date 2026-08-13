@@ -449,6 +449,11 @@ export class WorkshopWatcher {
         system,
         messages: turns,
         tools,
+        // High tier (2026-08-13): a workshop turn is the longest tool loop in
+        // the bot — sandboxed Python, doc indexing, file send — and it runs up
+        // to MAX_TOOL_ITERATIONS. Weak tool-calling here burns the whole
+        // iteration budget and lands the member on the forcing-pass fallback.
+        effort: 'high',
         onPhase: (phase, detail) => presenter.onPhase(phase, detail),
         shouldAbort: () => abortFlag.aborted,
       });

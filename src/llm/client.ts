@@ -311,7 +311,19 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
       `${textBackend.provider} text backend selected but no API key is set — set ${textBackend.provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'KIMI_API_KEY'}, or LLM_TEXT_BACKEND=bedrock for AWS-native runs`,
     );
   }
+  // ONE text model — effort no longer buys a pricier one (V4-Pro measured
+  // identical to Flash on the tool battery while being slower and 3.1× the
+  // price). `low` never reaches here: ask() routes it to Nova, images-only.
   const modelId = textBackend.modelId;
+  // Effort selects the THINKING MODE instead. `high` = reason before acting,
+  // for the multi-turn tool loops that plan across calls. `medium` = answer
+  // directly, which measured ~2.2× fewer billed output tokens and ~30% faster
+  // with no loss of tool-calling — the right default for conversational turns,
+  // which are essentially all the volume. Omitted entirely on providers that
+  // don't support the switch, so their request shape is unchanged.
+  const thinking = textBackend.supportsThinkingSwitch
+    ? { thinking: { type: effort === 'high' ? ('enabled' as const) : ('disabled' as const) } }
+    : {};
   const convo: ChatMessage[] = [
     { role: 'system', content: system },
     ...messages.map((m): ChatMessage =>
@@ -353,6 +365,7 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
             messages: convo.slice() as never,
             tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
             max_tokens: textBackend.maxOutputTokens,
+            ...thinking,
           } as never),
         ),
       trace,
@@ -493,6 +506,9 @@ async function askKimi({ system, messages, tools, effort = 'high', onPhase, shou
               model: modelId,
               messages: convo.slice() as never,
               max_tokens: textBackend.maxOutputTokens,
+              // Same mode as the main loop: the forcing pass must not silently
+              // change the model's behavior relative to the turn it's rescuing.
+              ...thinking,
             } as never),
           ),
         );
