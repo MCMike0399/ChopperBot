@@ -653,7 +653,9 @@ export class CalendarAnnouncer {
         log.warn({ err, channelId: managementChannelId }, 'calendar.announce.nudge_failed');
       }
     }
-    await sendAdminAlert(this.deps.client, [body], 'calendar.announce.nudge');
+    // Fallback surface (no mod-facing channel resolvable): the nudge still has
+    // to ring the approver roles, so they're passed as the explicit allowlist.
+    await sendAdminAlert(this.deps.client, [body], 'calendar.announce.nudge', mentions.notifyIds);
     return true;
   }
 

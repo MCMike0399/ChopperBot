@@ -1,4 +1,4 @@
-import type { Message } from 'discord.js';
+import type { Message, MessageMentionOptions } from 'discord.js';
 import { log } from '../log.js';
 import type { AskPhase } from '../llm/client.js';
 import { StatusReactor } from './status-reactions.js';
@@ -54,11 +54,21 @@ export interface PresentableMessage {
   reply(content: string): Promise<Message>;
   channel: {
     send(
-      options: string | { content: string; allowedMentions?: { repliedUser?: boolean } },
+      options: string | { content: string; allowedMentions?: MessageMentionOptions },
     ): Promise<Message>;
     sendTyping(): Promise<unknown>;
   };
 }
+
+/**
+ * Mention policy for the presenter's channel sends. It must be spelled out
+ * here: a message-level `allowedMentions` REPLACES the client default
+ * (`createClient`), so sending `{ repliedUser: false }` alone would drop the
+ * `parse` allowlist and hand @everyone/role pings back to whatever the model
+ * wrote. Same policy as the default, minus the reply ping (these are plain
+ * channel sends, not replies).
+ */
+const SEND_MENTIONS: MessageMentionOptions = { parse: ['users'], repliedUser: false };
 
 /** Base: the status reaction + typing heartbeat both styles share. */
 abstract class BasePresenter implements TurnPresenter {
@@ -131,7 +141,7 @@ export class ReactionTurnPresenter extends BasePresenter {
     if (!anchor) {
       // The user's message may be gone (deleted) — the answer must still land.
       anchor = await this.message.channel
-        .send({ content: parts[0], allowedMentions: { repliedUser: false } })
+        .send({ content: parts[0], allowedMentions: SEND_MENTIONS })
         .catch((err) => {
           log.error({ err }, 'presenter.reply_delivery_failed');
           return null;
@@ -140,7 +150,7 @@ export class ReactionTurnPresenter extends BasePresenter {
     this.stopTimers();
     for (let i = 1; anchor && i < parts.length; i++) {
       anchor = await this.message.channel
-        .send({ content: parts[i], allowedMentions: { repliedUser: false } })
+        .send({ content: parts[i], allowedMentions: SEND_MENTIONS })
         .catch(() => anchor);
     }
     this.reactor.resolve();

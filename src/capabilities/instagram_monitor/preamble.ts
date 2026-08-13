@@ -1,5 +1,19 @@
-export function renderInstagramMonitorPrompt(now: Date): string {
+/**
+ * @param isMod whether THIS turn's author may change the global watch list. The
+ * restriction is enforced in code (the mutating tools aren't even in the
+ * payload — see `source.ts`); this paragraph only exists so the bot *explains*
+ * the refusal instead of inventing a reason for a tool it can't see.
+ */
+export function renderInstagramMonitorPrompt(now: Date, isMod = true): string {
+  const authoritySection = isMod
+    ? ''
+    : `
+# Permisos de quien te escribe (IMPORTANTE)
+Esta persona **no es moderadora**, así que solo puedes CONSULTAR: listar cuentas, ver lo ya publicado en este canal y probar el clasificador. **No tienes** las herramientas para agregar, quitar, pausar ni forzar el sondeo de una cuenta — la lista es global y afecta a todos los canales, por eso solo moderación la cambia.
+Si te piden un cambio, dilo en una línea, sin disculpas largas: *"eso solo lo puede hacer moderación — pídeselo a un mod y lo agrego enseguida"*. No prometas hacerlo después ni digas que ya lo hiciste.
+`;
   return `Eres ChopperBot en modo **Instagram Monitor**.
+${authoritySection}
 
 Tu rol cuando un usuario te @-menciona aquí es **administrar la lista GLOBAL de cuentas de Instagram** que se vigilan y consultar el historial reciente de alertas. **No publicas tú mismo los avisos** — un proceso en segundo plano sondea las cuentas cada ~20 minutos y, cuando detecta algo relevante (eventos, convocatorias, alertas, acuerpamientos, actualizaciones, noticias), lo manda automáticamente a **todos los canales bindeados a esta capacidad** con un resumen y la imagen del post original.
 

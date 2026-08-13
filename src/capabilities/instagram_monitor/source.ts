@@ -4,12 +4,34 @@ import type { InstagramMonitorStore, MonitoredAccount, SeenPost } from './store.
 import { classifyPost } from './classifier.js';
 import type { RecentPost } from './fetcher.js';
 
+/**
+ * Tools that CHANGE the global watch list. Everything here is server-wide: the
+ * account list is shared by every bound channel, so "add an account" means "push
+ * this account's posts into every community channel bound to this capability".
+ * That is a moderation action, and until 2026-08-13 it had no authorization at
+ * all — any member who could mention the bot in a bound channel could add their
+ * own account and have the bot republish whatever they posted.
+ */
+const MUTATING_TOOLS = new Set([
+  'monitor_add_account',
+  'monitor_remove_account',
+  'monitor_pause_account',
+  'monitor_force_poll',
+]);
+
 export interface InstagramMonitorToolSourceDeps {
   store: InstagramMonitorStore;
   /** Channel the caller is in. Used ONLY by monitor_recent_pushed; account ops are global. */
   channelId: string;
   userId: string;
   nowMs: number;
+  /**
+   * Whether THIS turn's author may change the watch list (an approver role or
+   * Administrator — see `isModTurn`). Non-mods keep the read-only tools; the
+   * mutating ones are removed from the payload entirely, so no prompt injection
+   * can call what the model was never handed.
+   */
+  isMod: boolean;
 }
 
 export class InstagramMonitorToolSource implements ToolSource {
@@ -22,6 +44,11 @@ export class InstagramMonitorToolSource implements ToolSource {
   }
 
   tools(): ToolSpec[] {
+    const specs = this.allTools();
+    return this.deps.isMod ? specs : specs.filter((t) => !MUTATING_TOOLS.has(t.name));
+  }
+
+  private allTools(): ToolSpec[] {
     return [
       {
         name: 'monitor_add_account',
@@ -104,6 +131,19 @@ export class InstagramMonitorToolSource implements ToolSource {
   async handle(toolName: string, input: unknown): Promise<ToolHandlerResult> {
     const t0 = Date.now();
     try {
+      // Defense in depth behind the `tools()` filter: the gate is enforced at
+      // the point of effect too, so a mutating tool can never run for a non-mod
+      // even if it reached the dispatcher some other way.
+      if (MUTATING_TOOLS.has(toolName) && !this.deps.isMod) {
+        log.warn({ tool: toolName, user: this.deps.userId }, 'instagram_monitor.tool_denied');
+        return {
+          status: 'error',
+          payload: {
+            error:
+              'Solo moderación puede modificar la lista global de cuentas vigiladas (afecta a todos los canales). Pídeselo a un mod.',
+          },
+        };
+      }
       const obj = (input ?? {}) as Record<string, unknown>;
       switch (toolName) {
         case 'monitor_add_account': {

@@ -19,7 +19,8 @@ import { ConfigFileScannerAdminSource } from './filescanner-admin-source.js';
 import { ConfigEventIntakeAdminSource } from './eventintake-admin-source.js';
 import { ConfigWorkshopAdminSource, type ConfigWorkshopAdminDeps } from './workshop-admin-source.js';
 import { ConfigDbSource } from './db-source.js';
-import { renderConfigurationPrompt } from './preamble.js';
+import { renderConfigurationPrompt, renderUnauthorizedConfigurationPrompt } from './preamble.js';
+import { isModTurn } from '../mod-authority.js';
 import type { SkippedCapability } from './health.js';
 
 /**
@@ -97,6 +98,21 @@ export class ConfigurationCapability implements Capability {
   async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
     if (!this.store || !this.db) {
       throw new Error('ConfigurationCapability.buildTurn called before init');
+    }
+    // Authorization is no longer "you can see the channel". This console can
+    // re-bind capabilities into any channel, read the whole DB and purge a
+    // capability's data — with the bot holding Administrator, one misconfigured
+    // channel override would hand all of that to a member. The gate is here (not
+    // in the prompt) and it fails closed: an unresolvable author gets NO tools.
+    if (!isModTurn(this.db, ctx)) {
+      log.warn(
+        { capability: this.id, user: ctx.userId, tag: ctx.userTag, channel: ctx.channelId },
+        'configuration.turn_denied',
+      );
+      return {
+        system: renderUnauthorizedConfigurationPrompt(),
+        tools: composeToolSources([]),
+      };
     }
     if (
       !this.getDiscordClient ||

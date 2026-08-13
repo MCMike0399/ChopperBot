@@ -1,4 +1,5 @@
 import { type Client } from 'discord.js';
+import type Database from 'better-sqlite3';
 import { config } from '../../config.js';
 import { log } from '../../log.js';
 import { composeToolSources } from '../../tools/source.js';
@@ -20,6 +21,7 @@ import {
   type InstagramAuth,
   type InstagramFetcher,
 } from './fetcher.js';
+import { isModTurn } from '../mod-authority.js';
 import { InstagramMonitorScheduler } from './scheduler.js';
 import { InstagramMonitorToolSource } from './source.js';
 import { setIgCdnUserAgent } from './publisher.js';
@@ -39,9 +41,12 @@ export class InstagramMonitorCapability implements Capability {
   private store: InstagramMonitorStore | null = null;
   private fetcher: InstagramFetcher | null = null;
   private scheduler: InstagramMonitorScheduler | null = null;
+  /** Shared handle, kept so a turn can read who counts as a moderator. */
+  private db: Database.Database | null = null;
 
   async init({ memory }: CapabilityInitDeps): Promise<void> {
     await memory.migrate(this.id, INSTAGRAM_MONITOR_MIGRATIONS);
+    this.db = memory.db();
     this.store = new InstagramMonitorStore(memory.db());
 
     const auth: InstagramAuth | null =
@@ -109,14 +114,19 @@ export class InstagramMonitorCapability implements Capability {
     if (!this.store || !this.fetcher) {
       throw new Error('InstagramMonitorCapability.buildTurn called before init');
     }
+    // Changing the watch list fans out to every bound channel, so it's mod-only
+    // (fail-closed). Non-mods keep the read tools — "¿qué publicaste hoy?" is a
+    // fair question for anyone in the channel.
+    const isMod = isModTurn(this.db, ctx);
     const source = new InstagramMonitorToolSource({
       store: this.store,
       channelId: ctx.channelId,
       userId: ctx.userId,
       nowMs: ctx.now.getTime(),
+      isMod,
     });
     return {
-      system: renderInstagramMonitorPrompt(ctx.now),
+      system: renderInstagramMonitorPrompt(ctx.now, isMod),
       tools: composeToolSources([source]),
     };
   }

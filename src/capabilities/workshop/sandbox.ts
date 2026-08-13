@@ -106,9 +106,21 @@ export async function runPython(code: string, opts: SandboxOptions): Promise<San
   }
   const maxOut = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT;
   const runDir = join(opts.workspaceDir, RUN_DIR);
+  // Rebuild the staging dir from scratch every run instead of `mkdir -p`-ing
+  // whatever is there. A previous run's python could have left `.workshop` as a
+  // SYMLINK (recursive mkdir happily accepts an existing link-to-dir), and the
+  // script write below — which happens in the bot process, outside the sandbox
+  // — would then follow it and write user-supplied code anywhere the bot can
+  // write. `rmSync` unlinks a symlink rather than following it, so what mkdir
+  // creates next is always a real directory. The dir is wiped after each run
+  // anyway (see `finish`), so nothing is lost.
+  rmSync(runDir, { recursive: true, force: true });
   mkdirSync(runDir, { recursive: true });
   const scriptRel = `${RUN_DIR}/run.py`;
-  writeFileSync(join(opts.workspaceDir, scriptRel), code, 'utf-8');
+  writeFileSync(join(opts.workspaceDir, scriptRel), code, {
+    encoding: 'utf-8',
+    flag: 'wx', // fail if it somehow exists: never write through a leftover link
+  });
 
   const cpuSeconds = Math.max(5, Math.ceil(opts.timeoutMs / 1000) + 5);
   const args = buildBwrapArgs({

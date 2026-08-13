@@ -24,5 +24,20 @@ export function createClient(): Client {
     // arrive partial (the welcome message usually predates the process), so the
     // workshop listener must be able to `fetch()` them.
     partials: [Partials.Channel, Partials.Message, Partials.Reaction, Partials.User],
+    // Bot-wide mention policy — the ONE place @everyone/@here/role pings are
+    // denied. Without it discord.js omits `allowed_mentions` entirely and
+    // Discord parses EVERY mention class in whatever the model wrote; since
+    // 2026-08-13 the bot holds Administrator in the guild, so every role is
+    // pingable and a single successful jailbreak (or a hostile Instagram
+    // caption echoed into a card) would ring the whole server. The rule against
+    // mass pings lived only in prompt text — a promise, not a gate.
+    //
+    // `parse: ['users']` keeps ordinary "@fulanx" replies working; `repliedUser`
+    // keeps the reply ping the bot has always sent. Paths that legitimately DO
+    // ping roles (the calendar announcement + nudge, event_intake's mod ping)
+    // pass their own `allowedMentions` with an explicit role allowlist —
+    // message-level policy REPLACES this default, it does not merge, so any new
+    // send that needs a role ping must opt in by id.
+    allowedMentions: { parse: ['users'], repliedUser: true },
   });
 }

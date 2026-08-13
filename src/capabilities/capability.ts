@@ -5,6 +5,7 @@ import type { UserDirectory } from '../users/store.js';
 import type { CapabilityRegistry } from './registry.js';
 import type { MutableCapabilityRouter } from './routing.js';
 import type { ImageAttachmentRef } from '../attachments/resolver.js';
+import type { TurnAuthority } from '../discord/mod-roles.js';
 import type { Effort } from '../llm/client.js';
 
 /**
@@ -84,8 +85,16 @@ export interface CapabilityStartDeps {
   userDirectory: UserDirectory;
 }
 
-/** Per-turn context derived from the Discord message. */
-export interface CapabilityTurnContext {
+/**
+ * Per-turn context derived from the Discord message.
+ *
+ * It extends {@link TurnAuthority}: `memberRoles` + `isAdministrator` are the
+ * caller's Discord standing, resolved once per turn by the message handler.
+ * Capabilities that gate privileged tools (configuration, calendar,
+ * instagram_monitor) read them through `isModTurn()` — never by re-deriving
+ * authorization from the channel id.
+ */
+export interface CapabilityTurnContext extends TurnAuthority {
   channelId: string;
   guildId: string | null;
   userId: string;

@@ -104,7 +104,17 @@ export async function publishPost(
   if (video) files.push(video);
 
   try {
-    const msg: Message = await (channel as TextChannel).send({ content: text, files });
+    const msg: Message = await (channel as TextChannel).send({
+      content: text,
+      files,
+      // Nothing in an IG card may ever ping. The text is model output written
+      // from a caption on someone ELSE's Instagram account — i.e. attacker-
+      // controlled input that this bot re-publishes, unread, to every bound
+      // community channel. `parse: []` (stricter than the client default) means
+      // a caption engineered into "@everyone …" renders as text and notifies
+      // nobody.
+      allowedMentions: { parse: [] },
+    });
     log.info(
       {
         channelId,
