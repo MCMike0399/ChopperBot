@@ -84,6 +84,9 @@ async function main(): Promise<void> {
   });
   const source = new CalendarToolSource(store, 'script', Date.now(), publisher, {
     syncer: createEventSyncer({ client, guildId, store }),
+    // The image-URL allowlist exists so a MODEL can't fetch invented URLs; here
+    // the operator is the authority, so a payload image_url is pre-allowed.
+    allowedImageUrls: typeof payload.image_url === 'string' ? [payload.image_url] : [],
   });
 
   // A payload with only an id means "no calendar edit — just the --sync-discord".

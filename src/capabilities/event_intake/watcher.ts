@@ -65,6 +65,7 @@ const MOD_TOOLS = [
   'calendar_create_event',
   'calendar_update_event',
   'calendar_sync_discord_event',
+  'calendar_set_session_theme',
 ] as const;
 
 export interface EventIntakeWatcherDeps {
@@ -76,6 +77,8 @@ export interface EventIntakeWatcherDeps {
   getModRoles: () => string[];
   /** Present at runtime so an approved create auto-publishes the PDF/ICS. */
   publisher?: CalendarPublisher;
+  /** Test seam: overrides the real syncer factory ({@link makeSyncer}). */
+  makeEventSyncer?: (message: Message) => DiscordEventSyncer | undefined;
   now?: () => number;
 }
 
@@ -216,6 +219,8 @@ export class EventIntakeWatcher {
     let reply: string;
     /** Set by the tool tap below when THIS turn actually created the event. */
     let createdEventId: number | null = null;
+    /** Set when THIS turn edited/themed an event (the ticket's own or any other). */
+    let updatedEventId: number | null = null;
     try {
       const history = await buildHistory(this.deps.client, message);
       const turns: Turn[] = normalizeTurns([...history, { role: 'user', content: userText }]);
@@ -232,6 +237,9 @@ export class EventIntakeWatcher {
           write: isMod,
           onCreated: (id) => {
             createdEventId = id;
+          },
+          onUpdated: (id) => {
+            updatedEventId = id;
           },
           imageUrls: flyer ? [flyer.url] : [],
         }),
@@ -265,6 +273,12 @@ export class EventIntakeWatcher {
       // scheduled event → the link the daily announcement will carry.
       body += await this.syncDiscordEventFor(message, createdEventId);
       body = appendModPing(body, mentions, 'created');
+    } else if (updatedEventId !== null) {
+      // An edit only REFRESHES a live Discord event — it never creates one. If
+      // the ticket's own event lost its card (the original date passed and
+      // Discord completed it), the confirmation must not claim it "se refleja
+      // solo" while nothing exists: recreate it, deterministically.
+      body += await this.ensureDiscordEventAfterUpdate(message, updatedEventId);
     }
     const wanted = mentionedRoleIds(body, mentions.notifyIds);
     const notify =
@@ -342,12 +356,18 @@ export class EventIntakeWatcher {
 
   /**
    * A calendar tool source restricted for the ticket flow: read tools always,
-   * plus `calendar_create_event` only when `write` (the author is a mod). A
-   * successful create is tapped to mark the ticket resolved.
+   * plus the MOD_TOOLS write bundle only when `write` (the author is a mod). A
+   * successful create is tapped to mark the ticket resolved; a successful
+   * update/theme is tapped so the ticket can repair a missing Discord event.
    */
   private calendarSource(
     message: Message,
-    opts: { write: boolean; onCreated?: (eventId: number) => void; imageUrls?: readonly string[] },
+    opts: {
+      write: boolean;
+      onCreated?: (eventId: number) => void;
+      onUpdated?: (eventId: number) => void;
+      imageUrls?: readonly string[];
+    },
   ): ToolSource {
     const include = opts.write ? [...READ_TOOLS, ...MOD_TOOLS] : [...READ_TOOLS];
     const inner = new CalendarToolSource(
@@ -378,6 +398,15 @@ export class EventIntakeWatcher {
             log.info({ channelId, eventId }, 'event_intake.event_created');
           }
         }
+        if (
+          (name === 'calendar_update_event' || name === 'calendar_set_session_theme') &&
+          res.status === 'success'
+        ) {
+          const eventId = (input as { id?: unknown })?.id;
+          if (typeof eventId === 'number' && Number.isInteger(eventId) && eventId > 0) {
+            opts.onUpdated?.(eventId);
+          }
+        }
         return res;
       },
     };
@@ -385,6 +414,7 @@ export class EventIntakeWatcher {
 
   /** Discord-scheduled-event access for this ticket's guild (null in a DM). */
   private makeSyncer(message: Message): DiscordEventSyncer | undefined {
+    if (this.deps.makeEventSyncer) return this.deps.makeEventSyncer(message);
     if (!message.guildId) return undefined;
     return createEventSyncer({
       client: this.deps.client,
@@ -437,7 +467,35 @@ export class EventIntakeWatcher {
         'Es lo que enlaza el anuncio del día para que la gente se apunte.'
       );
     }
+    // A past event neither needs nor accepts a Discord card — stay silent.
+    if (result.reason === 'in_past') return '';
     return '\n\n⚠️ No pude crear el evento de Discord; créenlo a mano en **Eventos → Crear evento** para que la gente se apunte.';
+  }
+
+  /**
+   * After a ticket edit to the ticket's OWN event, guarantee the Discord card
+   * still exists — because an edit only REFRESHES a live link. The card is
+   * legitimately gone when the original date passed and Discord completed the
+   * event (ticket-0006, Calibán rescheduled 2026-08-13: the mod was told "el
+   * evento de Discord se refleja solo" while no event existed). Restricted to
+   * the ticket's own event on purpose: a drive-by edit of some unrelated row
+   * must not spawn Discord cards from a ticket. Returns '' when the row is
+   * linked (the update propagation already refreshed it) or the event isn't
+   * the ticket's own.
+   */
+  private async ensureDiscordEventAfterUpdate(
+    message: GatewayMessage,
+    eventId: number,
+  ): Promise<string> {
+    const ticket = this.deps.store.getTicket(message.channelId);
+    if (ticket?.created_event_id !== eventId) return '';
+    const row = this.deps.calendarStore.get(eventId);
+    if (!row || row.discord_event_id) return '';
+    log.info(
+      { channelId: message.channelId, eventId },
+      'event_intake.discord_event.recreate_on_update',
+    );
+    return this.syncDiscordEventFor(message, eventId);
   }
 
   /**
