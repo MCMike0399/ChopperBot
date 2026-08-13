@@ -5,6 +5,7 @@ import type { UserDirectory } from '../users/store.js';
 import type { CapabilityRegistry } from './registry.js';
 import type { MutableCapabilityRouter } from './routing.js';
 import type { ImageAttachmentRef } from '../attachments/resolver.js';
+import type { Effort } from '../llm/client.js';
 
 /**
  * A Capability bundles one coherent mode of the bot: a system prompt, a set
@@ -105,4 +106,16 @@ export interface CapabilityTurnBundle {
   system: string;
   /** Already collision-checked, ready to pass to llm/client.ts:ask(). */
   tools: ComposedTools;
+  /**
+   * Which text tier this capability's turns need (2026-08-13). Omit — the
+   * default — to get `medium`, which answers directly and is the cheap,
+   * fast path that should serve almost every turn. Declare `'high'` ONLY for
+   * capabilities that drive multi-turn tool loops where a wrong call writes
+   * bad state (calendar, workshop, event_intake, the config console); it
+   * enables the model's thinking mode, roughly doubling billed output tokens.
+   *
+   * `'low'` is meaningless here: it is the images-only Nova tier, and ask()
+   * already routes any turn carrying an image there regardless of this field.
+   */
+  effort?: Effort;
 }

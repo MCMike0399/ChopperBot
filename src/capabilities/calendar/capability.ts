@@ -164,7 +164,10 @@ export class CalendarCapability implements Capability {
       syncer,
       allowedImageUrls: imageAttachments.map((a) => a.url),
     });
-    return { system, tools: composeToolSources([source]) };
+    // High tier: a calendar turn is a multi-step tool loop (search → create /
+    // update → sync the Discord event), and a mis-called tool writes bad state
+    // — a duplicated series, a wrong recurrence — not just a weaker sentence.
+    return { system, tools: composeToolSources([source]), effort: 'high' };
   }
 
   /**

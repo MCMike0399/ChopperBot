@@ -149,6 +149,9 @@ export class EventIntakeWatcher {
       system,
       messages: [{ role: 'user', content: 'Genera la propuesta para esta solicitud.' }],
       tools,
+      // High tier: this proposal is what a mod approves into a real calendar
+      // event, so a mis-read date/time propagates straight into the calendar.
+      effort: 'high',
     });
 
     // The proposal is THE message mods must not miss, so the ping is appended
@@ -237,7 +240,9 @@ export class EventIntakeWatcher {
         { channelId: message.channelId, user: message.author?.tag, isMod },
         'event_intake.conversation',
       );
-      reply = await ask({ system, messages: turns, tools });
+      // High tier: this is the turn where a mod's approval runs the real
+      // calendar_create_event tool loop.
+      reply = await ask({ system, messages: turns, tools, effort: 'high' });
     } finally {
       clearInterval(heartbeat);
       if (reaction && this.deps.client.user) {

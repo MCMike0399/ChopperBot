@@ -237,6 +237,9 @@ describe('boot validation (LLM text backend + AWS credential pair)', () => {
     expect(textBackend.apiKey).toBe('sk-deepseek-test');
     expect(textBackend.baseUrl).toBe('https://api.deepseek.com/v1');
     expect(textBackend.modelId).toBe('deepseek-v4-flash');
+    // ONE model for every text tier — no second, pricier id. V4-Pro measured
+    // identical to Flash on the tool battery while being slower and 3.1×.
+    expect(textBackend.supportsThinkingSwitch).toBe(true);
   });
 
   test('DEEP_SEEK_API_KEY is accepted as an alias (the spelling already in .env)', async () => {
@@ -269,5 +272,8 @@ describe('boot validation (LLM text backend + AWS credential pair)', () => {
     expect(textBackend.apiKey).toBe('sk-kimi-test');
     expect(textBackend.baseUrl).toBe(config.KIMI_BASE_URL);
     expect(textBackend.modelId).toBe(config.KIMI_MODEL_ID);
+    // Moonshot 400s on unexpected params (it already does for `temperature`),
+    // so the DeepSeek-only `thinking` switch must never be sent there.
+    expect(textBackend.supportsThinkingSwitch).toBe(false);
   });
 });
