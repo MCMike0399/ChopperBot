@@ -2,8 +2,12 @@ import type Database from 'better-sqlite3';
 import type { Migration } from '../../memory/store.js';
 import type { ParsedForm } from './parse.js';
 
-/** Lifecycle of a ticket the intake has seen. */
-export type TicketStatus = 'proposed' | 'created' | 'dismissed';
+/**
+ * Lifecycle of a ticket the intake has seen. `cancelled` = the event this ticket
+ * approved was later deleted from the calendar (a mod can now cancel from the
+ * ticket itself), so the row no longer points at a live calendar id.
+ */
+export type TicketStatus = 'proposed' | 'created' | 'dismissed' | 'cancelled';
 
 /** One row per ticket channel — dedup anchor + approval-flow state. */
 export interface TicketRow {
@@ -163,6 +167,22 @@ export class EventIntakeStore {
          WHERE channel_id = ?`,
       )
       .run(eventId, Date.now(), channelId);
+  }
+
+  /**
+   * The event this ticket approved was deleted from the calendar (whole series).
+   * Clears the id as well as the status: everything that reads `created_event_id`
+   * — the missing-Discord-card repair, `recent_tickets` — must not chase a row
+   * that no longer exists. No migration: `status` is a plain TEXT column.
+   */
+  markEventDeleted(channelId: string): void {
+    this.db
+      .prepare(
+        `UPDATE event_intake_tickets
+           SET status = 'cancelled', created_event_id = NULL, updated_at = ?
+         WHERE channel_id = ?`,
+      )
+      .run(Date.now(), channelId);
   }
 
   recentTickets(limit: number): TicketRow[] {

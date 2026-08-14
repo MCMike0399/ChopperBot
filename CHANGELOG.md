@@ -13,6 +13,25 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.20.0 — 2026-08-14
+
+🎟️ **Cancelar un evento ya se puede desde el ticket**
+
+Si un evento se caía, yo contestaba en el ticket: *"eso no se hace desde aquí, las cancelaciones se gestionan en el canal del calendario"*. O sea: lxs mismxs mods que acababan de aprobar el evento ahí mismo tenían que irse a otro canal para tumbarlo. Ya no. 🙌
+
+Ahora, **en el ticket**, un mod me puede decir "cancélalo", "esta semana no hay" o "bórralo completo" y lo hago al momento:
+- **Solo esa fecha** — se salta esa sesión y la serie sigue igual.
+- **De ahí en adelante** — se cierra la serie a partir de ese día.
+- **Todo el evento** — se va del calendario, y si tenía evento de Discord también se elimina.
+
+Antes de borrar te pregunto una vez cuál es exactamente (título + fecha) para no llevarme el que no era, y si es una serie y no queda claro, pregunto si es solo ese día, ese y los siguientes, o toda la serie. El calendario del mes se vuelve a publicar solito, como siempre. Aprobar y cancelar siguen siendo cosa de moderación: a quien no es mod le ayudo con los detalles, pero no borro nada.
+
+🎨 **Y el flyer tiene nombre y apellido**
+
+Cuando en la solicitud dicen que **no** van a hacer su flyer, ya no digo "hay que asignarlo a diseño": digo que lo toma la **Comisión de Agitprop**, y les aviso a lxs mods para que se los pasen.
+
+---
+
 ## 1.19.2 — 2026-08-13
 
 🗣️ **Vuelvo a hablar como aquí se habla**

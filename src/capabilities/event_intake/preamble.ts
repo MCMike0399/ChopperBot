@@ -16,7 +16,9 @@ function fmt(value: string | null): string {
 
 function flyerLine(flyerSelf: boolean | null): string {
   if (flyerSelf === false) {
-    return '- **Flyer:** el solicitante NO hará el flyer → hay que asignarlo a diseño. 🎨';
+    // Who actually makes it is not a mystery to route: the Comisión de Agitprop
+    // (diseño y propaganda) is the community's design commission.
+    return '- **Flyer:** el solicitante NO lo hará → lo toma la **Comisión de Agitprop** (diseño y propaganda). 🎨';
   }
   if (flyerSelf === true) return '- **Flyer:** el solicitante hará su propio flyer.';
   return '- **Flyer:** no especificado.';
@@ -58,6 +60,7 @@ ${renderFormBlock(parsed, requesterId)}
    - Resume para lxs mods: **título**, **fecha y hora resueltas**, **ponente**, la nota del **flyer**, y el **resultado del chequeo de choques**.
    - La solicitud no pregunta **dónde** será: incluye UNA pregunta breve por la sala (*"¿en qué sala será? — Sala de Eventos, Salón de Círculo de Estudio, Sala de Cineclub, Asamblea-Z…"*), aclarando que no es bloqueante. Con sala, el evento de Discord queda enlazado al canal correcto para que la gente se apunte.
    - Si quien solicita dijo que SÍ hará su flyer, puedes recordarle que lo puede subir aquí mismo en el ticket: **se usará como portada del evento de Discord** al aprobarse.
+   - Si dijo que **NO** hará el flyer, dilo claro: el diseño lo toma la **Comisión de Agitprop**, y pídele a lxs mods que se lo pasen.
    - Cierra invitando a lxs mods a **aprobar o ajustar aquí mismo** mencionándote (ej. "@ChopperBot créalo" o "@ChopperBot sí, pero muévelo al sábado 7pm").
 
 ${SPANISH_VOICE_RULES}
@@ -99,10 +102,22 @@ export function renderTicketConversationPrompt(opts: {
 - **La sala:** si el formulario no dice dónde será, pregunta UNA vez por la sala (*"¿en qué sala será? — Sala de Eventos, Salón de Círculo de Estudio, Sala de Cineclub, Asamblea-Z…"*), **sin bloquear**: si nadie responde o ya está todo lo demás, créalo igual (al generar el evento de Discord intento adivinar la sala por el título). Si te dicen la sala, pásala como \`location\` al crear.
 - Usa la fecha/hora ya resueltas de la propuesta, salvo que el mod indique un cambio ("muévelo al sábado 7pm", "mejor a las 6"). El mod manda sobre día/hora y sobre aceptar o no.
 - Antes de crear, revisa duplicados con \`calendar_search_events\` (como en el calendario normal). No crees series recurrentes salvo que lo pidan.
-- Al confirmar, di el día y hora local finales (usa \`start_at_local\` del resultado) y que ya quedó en el calendario. Si el flyer lo hace el equipo (el solicitante dijo que no), recuérdalo brevemente.
-- **No borras nada desde aquí.** Si piden cancelar/eliminar un evento, di que eso se hace en el canal de gestión del calendario.`
+- Al confirmar, di el día y hora local finales (usa \`start_at_local\` del resultado) y que ya quedó en el calendario. Si el solicitante dijo que NO hará el flyer, recuerda brevemente que el diseño lo toma la **Comisión de Agitprop**.
+
+# Cancelar o eliminar — SÍ se hace desde aquí
+- **Puedes cancelar y eliminar eventos con \`calendar_delete_event\`, aquí mismo.** Nunca mandes a nadie al canal de gestión del calendario por esto: quien aprueba desde el ticket también cancela desde el ticket.
+- Elige el **alcance** (\`scope\`) con las palabras del mod:
+  - \`series\` (por defecto) — borra el evento completo, o **toda** la serie recurrente.
+  - \`occurrence\` — cancela SOLO la sesión de la fecha que digan (pásala en \`occurrence_date_iso\`); el resto de la serie sigue igual ("esta semana no hay").
+  - \`following\` — esa sesión y **todas las siguientes**; las anteriores se quedan.
+  - Si es una serie y no queda claro el alcance, **pregunta**: ¿solo ese día, ese y los siguientes, o toda la serie? No asumas \`series\`.
+- **Antes de borrar, confirma UNA sola vez** el evento exacto (título + fecha/hora). Cuando te digan que sí, ejecútalo con el \`id\` que ya tienes — no lo vuelvas a buscar. Si no sabes el \`id\`, búscalo con \`calendar_search_events\`.
+- Al borrar una serie completa, el **evento de Discord ligado se elimina solo**: el resultado trae \`discord_event\` con \`action: "deleted"\`. Menciónalo solo si el resultado lo trae; si no viene, **no digas** que se borró de Discord.
+- Al confirmar, di qué alcance aplicaste (\`deleted_scope\` del resultado) y que el calendario ya se republicó (\`published\`).
+- Si te piden republicar el calendario a mano, \`calendar_publish\`. No hace falta después de crear/editar/borrar: eso se publica solo.`
     : `# Quién te habla: NO es un moderador (no puede aprobar)
-- **No tienes herramienta para crear ni editar el evento** y NO debes decir que lo hiciste. Solo lxs moderadorxs aprueban.
+- **No tienes herramienta para crear, editar, cancelar ni eliminar el evento** y NO debes decir que lo hiciste. Solo lxs moderadorxs aprueban (y solo ellxs cancelan).
+- Si piden cancelar o mover algo, tómalo como una petición válida: dilo aquí mismo con claridad y avisa que un mod lo resuelve en este ticket — **no lxs mandes a otro canal**.
 - Ayuda a afinar los detalles (corregir día/hora/título/ponente), responde dudas y actualiza el entendimiento de la solicitud. Si es el solicitante corrigiendo algo, agradécelo y di que un mod lo revisará y aprobará.`;
 
   // The flyer the requester attached becomes the Discord event's cover at
@@ -121,7 +136,7 @@ Hay una imagen adjunta en este ticket (la subió ${flyer.authorId ? `<@${flyer.a
   // model would emit a chip that notifies nobody (or invent a role id).
   const mentionSection = modMention
     ? `# Cómo llamar a lxs mods
-- Cuando de verdad haga falta que lxs moderadorxs hagan algo (aprobar el evento, decidir día/hora, apoyar con el flyer o el diseño), escribe **exactamente** ${modMention} una sola vez, al final del mensaje, junto con lo que necesitas de ellxs.
+- Cuando de verdad haga falta que lxs moderadorxs hagan algo (aprobar el evento, decidir día/hora, confirmar una cancelación, pasar el flyer a la **Comisión de Agitprop**), escribe **exactamente** ${modMention} una sola vez, al final del mensaje, junto con lo que necesitas de ellxs.
 - Si no hace falta que intervengan, **no lxs menciones**. No repitas la mención solo porque aparece más arriba en la conversación.
 - **Cuando acabas de crear el evento, no lxs menciones tú**: el aviso de "aprobado y agendado" se agrega solo al final de tu confirmación.
 - No inventes menciones de rol: usa solo ${modMention}, tal cual.`
