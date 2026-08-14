@@ -1,0 +1,55 @@
+# Runner pipeline for ChopperBot. Validated against @runner/shared's PipelineYamlSchema —
+# see /Users/burbujamc/Developer/runner/CONTRACT.md for the full spec.
+#
+# ASSUMED / VERIFIED live checkout path: /home/burbujamc/Documentos/ChopperBot — this is
+# the systemd user unit's WorkingDirectory (`systemctl --user cat chopperbot.service`),
+# not the more obvious /home/burbujamc/ChopperBot. Keep this in sync with the unit if it
+# ever moves.
+name: chopperbot
+
+trigger:
+  branches: [main]
+
+stages:
+  - stage: Build_Test
+    displayName: Build & test
+    jobs:
+      - job: build_test
+        displayName: Install, typecheck, test
+        pool: pi
+        steps:
+          # No `checkout: none` here, so a `checkout: self` step is implicitly prepended:
+          # the agent clones a fresh, throwaway workspace copy for this job — this never
+          # touches the live checkout at /home/burbujamc/Documentos/ChopperBot.
+          - script: pnpm install --frozen-lockfile
+            displayName: Install dependencies
+          - script: pnpm run typecheck
+            displayName: Typecheck
+          - script: pnpm test
+            displayName: Test
+            env:
+              CI: 'true'
+
+  - stage: Deploy
+    displayName: Deploy to Pi
+    # dependsOn omitted -> defaults to depending on Build_Test (ADO semantics): only
+    # deploys once the throwaway-workspace build+test has succeeded.
+    jobs:
+      - job: deploy_app
+        displayName: Update live checkout & restart
+        pool: pi
+        steps:
+          - checkout: none
+          # Fast-forward only: refuses to deploy if the live checkout has diverged
+          # (e.g. someone hand-edited it on the Pi) instead of silently overwriting.
+          - script: git pull --ff-only
+            displayName: Update live checkout
+            workingDirectory: /home/burbujamc/Documentos/ChopperBot
+          # systemd harness: runs `build` (compile TS) in the live checkout, then
+          # restarts the user unit so the new dist/ takes effect.
+          - harness: systemd
+            displayName: Rebuild and restart chopperbot.service
+            with:
+              unit: chopperbot.service
+              build: pnpm install --frozen-lockfile && pnpm run build
+              workingDirectory: /home/burbujamc/Documentos/ChopperBot
