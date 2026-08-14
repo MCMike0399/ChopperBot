@@ -53,21 +53,29 @@ const READ_TOOLS = [
 ] as const;
 
 /**
- * What a MOD additionally gets in a ticket. `calendar_update_event` is here
- * because of a real dead end (ticket-0005, 2026-08-04): a mod approved an event
- * whose title had a typo, asked the bot to fix it, and the bot had to answer
- * "no tengo herramienta para editar" and hand the job back to a human — for a
- * one-word change it had every right to make. Correcting what you just approved,
- * in the ticket where you approved it, is part of approving.
+ * What a MOD additionally gets in a ticket — the SAME write surface the calendar
+ * channel gives a mod, by design. `calendar_update_event` arrived first, from a
+ * real dead end (ticket-0005, 2026-08-04): a mod approved an event whose title
+ * had a typo, asked the bot to fix it, and the bot had to answer "no tengo
+ * herramienta para editar" and hand the job back to a human.
  *
- * `calendar_delete_event` is deliberately still absent: fixing your own event is
- * ticket work, wiping events off the shared calendar is not.
+ * `calendar_delete_event` (cancel/delete) used to be deliberately absent on the
+ * theory that "wiping events off the shared calendar isn't ticket work" — the
+ * ticket answered *"eso no se hace desde el ticket: las cancelaciones se
+ * gestionan en el canal de gestión del calendario"*. That was the same dead end
+ * one door over: the mod who may approve an event in a ticket is exactly the mod
+ * who may cancel it, and bouncing them to another channel to undo what they just
+ * did here is a handoff, not a guardrail. Authority is still enforced where it
+ * always was (mod-only tool availability + `allowWrite`), and the prompt keeps
+ * the calendar's own safety rule: confirm the exact event once before deleting.
  */
 const MOD_TOOLS = [
   'calendar_create_event',
   'calendar_update_event',
+  'calendar_delete_event',
   'calendar_sync_discord_event',
   'calendar_set_session_theme',
+  'calendar_publish',
 ] as const;
 
 export interface EventIntakeWatcherDeps {
@@ -370,7 +378,9 @@ export class EventIntakeWatcher {
    * A calendar tool source restricted for the ticket flow: read tools always,
    * plus the MOD_TOOLS write bundle only when `write` (the author is a mod). A
    * successful create is tapped to mark the ticket resolved; a successful
-   * update/theme is tapped so the ticket can repair a missing Discord event.
+   * update/theme is tapped so the ticket can repair a missing Discord event; a
+   * whole-series delete of the ticket's OWN event is tapped so the row stops
+   * claiming an event that no longer exists.
    */
   private calendarSource(
     message: Message,
@@ -417,6 +427,21 @@ export class EventIntakeWatcher {
           const eventId = (input as { id?: unknown })?.id;
           if (typeof eventId === 'number' && Number.isInteger(eventId) && eventId > 0) {
             opts.onUpdated?.(eventId);
+          }
+        }
+        // A whole-series delete of THIS ticket's own event un-approves it: the
+        // row must not keep pointing at a calendar id that's gone (the Discord
+        // repair path and `recent_tickets` both read it). Occurrence/following
+        // scopes only trim a series that still exists → leave the row alone.
+        if (name === 'calendar_delete_event' && res.status === 'success') {
+          const scope = (res.payload as { deleted_scope?: string })?.deleted_scope;
+          const eventId = (input as { id?: unknown })?.id;
+          if (scope === 'series' && typeof eventId === 'number') {
+            const ticket = store.getTicket(channelId);
+            if (ticket?.created_event_id === eventId) {
+              store.markEventDeleted(channelId);
+              log.info({ channelId, eventId }, 'event_intake.event_deleted');
+            }
           }
         }
         return res;
