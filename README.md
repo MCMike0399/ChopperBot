@@ -1,6 +1,6 @@
 # ChopperBot
 
-A multi-capability Discord assistant for a fintech/community project, powered by the Moonshot Kimi Code API. Each authorized Discord channel is bound to exactly one **Capability** — a self-contained bundle of system prompt, tools, and a private SQLite namespace. Bindings are managed live from chat via an admin console; no restart needed. Any unbound channel where the bot is @-mentioned falls back to `general_chat`. Image attachments (PNG/JPEG/GIF/WebP) are forwarded to the model as vision input in any capability; documents are not supported.
+A multi-capability Discord assistant for a community project, powered by the Moonshot Kimi Code API. Each authorized Discord channel is bound to exactly one **Capability** — a self-contained bundle of system prompt, tools, and a private SQLite namespace. Bindings are managed live from chat via an admin console; no restart needed. Any unbound channel where the bot is @-mentioned falls back to `general_chat`. Image attachments (PNG/JPEG/GIF/WebP) are forwarded to the model as vision input in any capability; documents are not supported.
 
 Four capabilities ship in this repo:
 

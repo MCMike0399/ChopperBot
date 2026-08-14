@@ -312,7 +312,7 @@ describe('ask — routing between Kimi (text) and Bedrock (vision)', () => {
             output: {
               message: {
                 role: 'assistant',
-                content: [{ toolUse: { toolUseId: 'u1', name: 'logsvc_query', input: { env: 'dev', query: 'stats count() | limit 1' } } }],
+                content: [{ toolUse: { toolUseId: 'u1', name: 'logs_query', input: { env: 'dev', query: 'stats count() | limit 1' } } }],
               },
             },
             stopReason: 'tool_use',
@@ -326,7 +326,7 @@ describe('ask — routing between Kimi (text) and Bedrock (vision)', () => {
           tools,
         });
         expect(out).toBe('0 errores en dev');
-        expect(tools.handle).toHaveBeenCalledWith('logsvc_query', { env: 'dev', query: 'stats count() | limit 1' });
+        expect(tools.handle).toHaveBeenCalledWith('logs_query', { env: 'dev', query: 'stats count() | limit 1' });
         expect(sendMock).toHaveBeenCalledTimes(2);
         expect(kimiMock).not.toHaveBeenCalled();
       } finally {

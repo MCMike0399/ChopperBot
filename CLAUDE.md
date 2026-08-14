@@ -16,7 +16,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | Working on… | Read first |
 |---|---|
-| **Onboarding / "what does this bot do?"** — one deep, self-contained tour of every RevZ capability, the live channel wiring, config reference, runbook and failure-mode index. **Orientation only — never the change-gated source of truth; the topic docs below are.** | [docs/revolucion-z-capabilities.md](docs/revolucion-z-capabilities.md) |
+| **Onboarding / "what does this bot do?"** — one deep, self-contained tour of every RevZ capability, the live channel wiring, config reference, runbook and failure-mode index. **Orientation only — never the change-gated source of truth; the topic docs below are.** **Local-only/untracked** (present on the Mac + Pi working trees, not in the public repo). | [docs/revolucion-z-capabilities.md](docs/revolucion-z-capabilities.md) |
 | LLM client — dual backend (selectable text brain, **live: Kimi** — recovered from the 2026-08-11 outage same day; DeepSeek takes over permanently 2026-08-23 / Nova vision), effort tiers, content-filter recovery, tool loop, health watchdog, image attachments | [docs/llm.md](docs/llm.md) |
 | Framework internals — boot sequence, per-turn pipeline, tool composition, persistence, capability routing | [docs/framework.md](docs/framework.md) |
 | `calendar` — global calendar, recurrence, PDF/ICS publishing, month rollover, daily announcements, Discord-event sync | [docs/capabilities/calendar.md](docs/capabilities/calendar.md) |
@@ -26,8 +26,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `file_scanner` — VirusTotal uploads scanning | [docs/capabilities/file-scanner.md](docs/capabilities/file-scanner.md) |
 | `general_chat` — community assistant, guild profiles, server-directory tools | [docs/capabilities/general-chat.md](docs/capabilities/general-chat.md) |
 | `configuration` — admin console, `config_system action:health`, per-capability admin sources | [docs/capabilities/configuration.md](docs/capabilities/configuration.md) |
-| Pi deployment, systemd unit, alert surfaces, crash-restart detection, logs | [docs/deployment.md](docs/deployment.md) |
-| Any env var, config seeding rules, AWS account wiring | [docs/environment.md](docs/environment.md) |
+| Pi deployment, systemd unit, alert surfaces, crash-restart detection, logs — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo) | [docs/deployment.md](docs/deployment.md) |
+| Any env var, config seeding rules, AWS account wiring — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo) | [docs/environment.md](docs/environment.md) |
 
 ## Commands
 
@@ -86,7 +86,7 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 - `workshop` — **passive, NOT channel-bound**: react 🎓 in `#bienvenidx` → private channel with a web-LLM-style assistant (sandboxed Python, document skills, MinIO-backed files) → [doc](docs/capabilities/workshop.md)
 - `general_chat` — **the community assistant**: answers @-mentions in unbound channels; guild profiles (today: Revolución Z) ground it in the community → [doc](docs/capabilities/general-chat.md)
 
-`src/capabilities/redacted-ops/` ships in the repo but is **intentionally NOT registered** here (removed from `app.ts`'s `candidates` 2026-08-06 — registering it leaks it into general_chat's capability snapshot and the LLM advertised it to users). Kept for its separate deploy; do not add it back.
+Capabilities that exist only for other/private deploys are **not kept in this repo** (a registered capability leaks into general_chat's capability snapshot and the LLM advertises it to users; and this repo is public). The one private-deploy capability that used to live here was removed 2026-08-13 — its source is preserved under `pi:~/ChopperBot-private-assets/` and lives canonically in its own repo.
 
 ### Repository layout (where the big pieces live)
 
@@ -102,8 +102,8 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 - `src/users/` — the framework Discord-user directory (the reserved `__framework__` namespace).
 - `src/attachments/` — image (vision) resolution for incoming Discord attachments.
 - `scripts/` — dev/proof/calibration scripts, **not tests** (some spend real Bedrock/IG budget — see the per-doc notes).
-- `deploy/` — the reference `systemd/` unit (live) plus the decommissioned macOS `launchd/`+`bin/` artifacts (reference/rollback only).
-- `calendar/` — the 7 Canva month-PDF templates; **tracked in git** and read at runtime from the repo root.
+- `deploy/` — the reference `systemd/` unit (live, tracked). The decommissioned macOS `launchd/`+`bin/` artifacts are **local-only/untracked** (reference/rollback only; backed up at `pi:~/ChopperBot-private-assets/`).
+- `calendar/` — the 7 Canva month-PDF templates; **local-only/untracked** (private assets, licensing) but read at runtime from the repo root, so they MUST exist in the deployment working tree (Pi backup: `pi:~/ChopperBot-private-assets/calendar-backup-2026-08-13/`).
 - `docs/` — the topic documentation routed by the map at the top of this file.
 
 ### Framework essentials — summary

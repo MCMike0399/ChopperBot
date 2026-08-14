@@ -83,8 +83,8 @@ const ConfigSchema = z.object({
   // `kimi` (default, self-hosted/Pi): every text turn runs on Moonshot Kimi 2.7
   // Thinking (KIMI_API_KEY required). `deepseek`: the same OpenAI-compatible
   // code path pointed at DeepSeek V4-Flash (DEEPSEEK_API_KEY required) — see the
-  // DEEPSEEK_ block below. `bedrock` (AWS-native deploys, e.g. the ECS redacted
-  // ops bot): text turns run on Amazon Bedrock Converse with BEDROCK_MODEL_ID,
+  // DEEPSEEK_ block below. `bedrock` (AWS-native deploys):
+  // text turns run on Amazon Bedrock Converse with BEDROCK_MODEL_ID,
   // authenticated by the ambient AWS credential chain (task role on ECS, named
   // profile locally) — no external API key needed.
   //
@@ -308,28 +308,6 @@ const ConfigSchema = z.object({
   MINIO_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
   MINIO_SECRET_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
 
-  // ── redacted-ops copilot (redacted-ops capability) ─────────────────────────────
-  // A strictly READ-ONLY ops assistant for the redacted platform. Observes the
-  // backend only through CloudWatch Logs Insights (logsvc wide events) and
-  // read-only GitHub — it never touches a live system.
-  //
-  // AWS named profile used for the CloudWatch client (self-hosted runs: the
-  // process runs as burbujamc, whose ~/.aws/config has the `redacted` profile).
-  // Credentials resolve lazily on first query, so a missing profile does NOT
-  // break boot. Set to the literal `default` to skip fromIni and use the AWS
-  // default credential chain instead (ECS task role / instance profile).
-  redacted-ops_AWS_PROFILE: z.string().min(1).default('redacted'),
-  // Region of the logsvc log groups. Pinned to us-east-2 (account 000000000000).
-  redacted-ops_AWS_REGION: z.string().min(1).default('us-east-2'),
-  // Which environments the copilot may query, comma-separated. Filtered against
-  // the known log groups (dev|qa|prod); an empty result falls back to all three.
-  redacted-ops_logsvc_ENVS: z.string().min(1).default('dev,qa,prod'),
-  // Read-only GitHub token for the `github` tool. Optional: when unset the
-  // capability falls back to `gh auth token`, and degrades gracefully (the tool
-  // reports itself unavailable) if neither is present.
-  GITHUB_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // GitHub org the redacted app repos live under.
-  GITHUB_ORG: z.string().min(1).default('redacted-org'),
 }).superRefine((c, ctx) => {
   if (c.LLM_TEXT_BACKEND === 'kimi' && !c.KIMI_API_KEY) {
     ctx.addIssue({
