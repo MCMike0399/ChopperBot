@@ -7,6 +7,7 @@
  * embarrass us in front of the whole community — announcing the wrong day, or
  * announcing twice — are unit-testable.
  */
+import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
 import { localParts } from './grid.js';
 import { formatInTimezone, formatLocalClock, DEFAULT_TIMEZONE } from './time.js';
 import type { MatchCandidate, MatchableDiscordEvent, MatchableOccurrence } from './match.js';
@@ -234,6 +235,8 @@ Ejemplos reales de anunciantes del server:
 > Muchachooooos! Hoy es un gran día, hoy haremos nuestra respectiva ASAMBLEA SEMANAL! Se llevará a cabo a las 8:00 pm. Caiganle, se va a poner chingón.
 
 Rasgos del estilo: cálido, cómplice, informal, lenguaje incluyente ("lxs", "camaradas", "amixes"), 1–2 emojis, un cierre afectuoso ("lxs tqm", "ahí nos vemos", "caiganle"). Entusiasmo sí, cursilería no.
+
+${SPANISH_VOICE_RULES}
 
 # Reglas (importantes)
 - ${advance ? `**Menciona claramente la fecha y la hora** ("este ${weekday} a las ${clock}"), en hora CDMX — nunca digas ni insinúes que es hoy` : `**Menciona claramente que es HOY y la hora** ("hoy a las ${clock}"), en hora CDMX`}.

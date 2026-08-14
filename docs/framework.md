@@ -39,6 +39,18 @@ Two consequences to keep in mind when writing a new send:
 - **A message-level `allowedMentions` REPLACES the client default; it does not merge.** So `{ repliedUser: false }` alone silently re-opens @everyone. Anything that passes its own policy must respell the safe parts — `presenter.ts` (`SEND_MENTIONS`) and `admin-alert.ts` do.
 - **Legitimate role pings opt in by id**, never by `parse: ['roles']`: the calendar announcement + mod nudge and event_intake's mod ping pass `roles: [...]` allowlists built by `resolveModMentions`. `sendAdminAlert(client, lines, tag, roleIds)` takes that allowlist for the nudge's fallback path. The Instagram publisher goes the other way — `parse: []`, nothing in an attacker-authored card may ping at all.
 
+## The Spanish voice contract (`src/lang/`, added 2026-08-13, v1.19.2)
+
+How the bot *sounds* is framework state, not per-capability taste. Three pieces:
+
+- **`voice.ts` — `SPANISH_VOICE_RULES`.** One block, interpolated verbatim into every community-facing system prompt: calendar (mod + read-only), general_chat (generic + assistant), workshop, event_intake (proposal + ticket), instagram_monitor, and the daily calendar announcement. It fixes the register (**tuteo**, never usted), the inclusive forms the community actually uses (`lxs`, `todxs`, `bienvenidx`, `amix` — but never an invented pronoun like `elx`/`unx`/`lx`), the ban on quoting its own rules (ALL-CAPS emphasis, tool/field names), service-desk closers, and enclitic accents. `src/lang/__tests__/voice-contract.test.ts` fails if any of those prompts drops it. **Not** applied to `configuration` (operator console — its prompt tells it to name tools out loud).
+- **`spanish-style.ts` — `lintSpanish()`.** Deterministic, high-precision rules for the same defects, over prose only (code fences, inline code, URLs, mentions and custom emoji are masked out). Rules: `usted`, `mixed_register`, `inclusive_malformed`, `scaffolding`, `service_closer`, `enclitic_accent`. It grades known defects, never taste — a false positive is worse than a miss, since it runs on every live reply.
+- **`report.ts` — `reportSpanishStyle()`.** Called at each delivery site (`discord/handlers.ts`, workshop watcher, event_intake proposal + ticket turns). Logs `style.spanish_voice_drift` at warn level with the rules and snippets; never edits or blocks a reply. `journalctl --user -u chopperbot | grep style.spanish` is the drift alarm.
+
+**Why:** the 2026-08-13 Kimi→DeepSeek cutover held tool-calling parity and changed the voice the same afternoon — one calendar reply carried usted (`se le habla`), an invented pronoun (`para elx`) and a verbatim prompt rule (`le pregunto UNA cosa a la vez`). Nothing in the suite could see it. The regression corpus in `src/lang/__tests__/corpus.ts` is the real transcript of that channel, Kimi replies and DeepSeek replies both, joined to their backend by journal timestamp.
+
+**Changing text backend?** `scripts/text-backend-trial.ts` now lints every reply of its battery (`spanish voice` line on the scorecard), and `scripts/spanish-voice-probe.ts` replays the scenes that broke — including the exact turn that shipped the bad reply — against the live backend. Run both before switching `.env`.
+
 ## Capabilities and tools
 
 Each Capability composes one or more `ToolSource`s via `composeToolSources()` (`src/tools/source.ts`). Tool specs are **provider-neutral** (`{ name, description, inputSchema }`); the LLM client is the only place that knows how to wrap them into Bedrock Converse's `{ toolSpec: { name, description, inputSchema: { json } } }` shape. Tool name collisions across sources fail at boot — fix the duplicate, don't suppress.

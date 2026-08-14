@@ -14,8 +14,9 @@ import { OutputChannelPublisher, type CalendarPublisher } from '../calendar/publ
 import { parseChannelIdEnv } from '../file_scanner/store.js';
 import { EVENT_INTAKE_MIGRATIONS, EventIntakeStore } from './store.js';
 import { EventIntakeWatcher } from './watcher.js';
+import { EVENT_INTAKE_CAPABILITY_ID } from './constants.js';
 
-export const EVENT_INTAKE_CAPABILITY_ID = 'event_intake';
+export { EVENT_INTAKE_CAPABILITY_ID };
 
 /** How long the watched-category set is cached before re-reading from SQLite. */
 const WATCHED_CACHE_TTL_MS = 10_000;

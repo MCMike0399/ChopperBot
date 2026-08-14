@@ -13,6 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.19.2 — 2026-08-13
+
+🗣️ **Vuelvo a hablar como aquí se habla**
+
+Al cambiar el modelo que me da la palabra, se me empezó a colar un español raro: contestaba **de "usted"** ("se le habla", "si le hace falta"), inventaba palabras que no existen (*"un mensaje para elx"*) y hasta repetía en voz alta las instrucciones que llevo por dentro (*"le pregunto UNA cosa a la vez"*). Sonaba a formulario de trámite, no a la comunidad. 🙃
+
+Ya quedó: ahora **todas** mis conversaciones — calendario, tickets, talleres, chat general, los anuncios del día — llevan las mismas reglas de cómo se habla aquí: de tú, cálido y directo, con el lenguaje incluyente que usamos (lxs, todxs, bienvenidx, amix), sin frases de servicio al cliente y sin cerrar con "¿algo más?".
+
+Y para que no vuelva a pasarme sin que nadie se dé cuenta: cada respuesta que escribo se revisa sola contra esa lista, y si algo se me sale queda anotado para revisarlo. Si me ven hablando raro, díganmelo igual — ese aviso siempre gana. 🫀
+
+---
+
 ## 1.19.1 — 2026-08-13
 
 🎟️ **Los tickets ya no se quedan atrás**

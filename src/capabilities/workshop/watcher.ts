@@ -25,6 +25,8 @@ import { basename, join } from 'node:path';
 import { existsSync, readdirSync, rmSync } from 'node:fs';
 import { log } from '../../log.js';
 import { ask, TurnAbortedError } from '../../llm/client.js';
+import { reportSpanishStyle } from '../../lang/report.js';
+import { WORKSHOP_CAPABILITY_ID } from './constants.js';
 import { chunkBotReply } from '../../discord/chunk.js';
 import { normalizeTurns, type Turn } from '../../discord/history.js';
 import { WorkshopTurnPresenter } from '../../discord/presenter.js';
@@ -475,6 +477,10 @@ export class WorkshopWatcher {
       throw new TurnAbortedError();
     }
 
+    reportSpanishStyle(reply, {
+      capability: WORKSHOP_CAPABILITY_ID,
+      channelId: message.channelId,
+    });
     // The status line becomes the reply (first chunk edits it in place).
     const anchor = await presenter.deliver(chunkBotReply(reply));
 

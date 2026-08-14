@@ -24,7 +24,11 @@
  *     of 644 turns in a 14-day sample called a tool at all, and calendar owns
  *     most of them. A backend that fails here is disqualified regardless of price.
  *   voice — general_chat answers in Spanish, in character, with no <thinking>
- *     leak. 94% of real turns are exactly this shape.
+ *     leak, and clean under the Spanish style rules in src/lang. 94% of real
+ *     turns are exactly this shape. Every reply of the run is linted, not just
+ *     this scene: the DeepSeek cutover kept tool-calling parity and still
+ *     changed the register (usted, invented "elx", prompt rules quoted back at
+ *     the channel), which the old length+keyword check scored a clean 1/1.
  *   filter — the RevZ political prompts that make a Chinese provider's risk
  *     filter fire (see scripts/probe-content-filter.ts and the 2026-08-06
  *     incident). Two things matter: how OFTEN the candidate refuses, and
@@ -43,6 +47,7 @@ import { CalendarCapability } from '../src/capabilities/calendar/capability.js';
 import { CalendarStore } from '../src/capabilities/calendar/store.js';
 import { ask } from '../src/llm/client.js';
 import { classifyLlmError } from '../src/llm/health.js';
+import { lintSpanish, describeFindings } from '../src/lang/spanish-style.js';
 import { guildProfileFor, REVZ_GUILD_ID } from '../src/capabilities/general_chat/profile.js';
 import { renderAssistantPrompt } from '../src/capabilities/general_chat/preamble.js';
 import type { Turn } from '../src/discord/history.js';
@@ -111,10 +116,12 @@ async function send(
 type Battery = {
   create: number; override: number; dedup: number; oneoff: number; voice: number;
   leak: boolean; ms: number; err?: string;
+  /** Spanish-voice violations across every reply of the run (src/lang). */
+  style: string[];
 };
 
 async function battery(): Promise<Battery> {
-  const b: Battery = { create: 0, override: 0, dedup: 0, oneoff: 0, voice: 0, leak: false, ms: 0 };
+  const b: Battery = { create: 0, override: 0, dedup: 0, oneoff: 0, voice: 0, leak: false, ms: 0, style: [] };
   const replies: string[] = [];
 
   // create — recurring series, right weekday + 20:00 + location, exactly one row
@@ -182,9 +189,17 @@ async function battery(): Promise<Battery> {
     // instead of "servidor" — a harness false negative that reads as a backend
     // voice regression.
     const inCharacter = /(comunidad|servidor|server|puedes|aquí|revoluci)/i.test(reply);
-    if (reply.length > 80 && !/^\[ERR/.test(reply) && inCharacter) b.voice = 1;
+    // Being in character is necessary but not sufficient: the 2026-08-13 drift
+    // (usted, "elx", prompt rules quoted back) was perfectly on-topic and still
+    // wrong. The deterministic rules in src/lang decide the rest.
+    const clean = lintSpanish(reply).length === 0;
+    if (reply.length > 80 && !/^\[ERR/.test(reply) && inCharacter && clean) b.voice = 1;
   }
 
+  for (const r of replies) {
+    const findings = describeFindings(lintSpanish(r));
+    if (findings) b.style.push(findings);
+  }
   b.leak = replies.some((r) => /<\/?thinking|<\|/i.test(r));
   if (!b.err) b.err = replies.find((r) => /^\[ERR/.test(r));
   return b;
@@ -257,16 +272,18 @@ async function main(): Promise<void> {
   console.log(`scope   : ${filterOnly ? 'risk filter only' : `${RUNS} run(s) of the full battery`}   now(local): ${localStr(NOW.getTime())}\n`);
 
   const agg = { create: 0, override: 0, dedup: 0, oneoff: 0, voice: 0, leaks: 0, ms: 0 };
+  const styleHits: string[] = [];
   let lastErr = '';
   for (let r = 0; r < (filterOnly ? 0 : RUNS); r++) {
     const b = await battery();
     agg.create += b.create; agg.override += b.override; agg.dedup += b.dedup;
     agg.oneoff += b.oneoff; agg.voice += b.voice; agg.ms += b.ms;
     if (b.leak) agg.leaks++;
+    styleHits.push(...b.style);
     if (b.err) lastErr = b.err;
     console.log(
       `run ${r + 1}: create ${b.create}  override ${b.override}  dedup ${b.dedup}  oneoff ${b.oneoff}  voice ${b.voice}  ` +
-      `${b.leak ? `${RED}LEAK${RST}` : 'clean'}  ${DIM}${(b.ms / 1000).toFixed(1)}s${RST}`,
+      `${b.leak ? `${RED}LEAK${RST}` : 'clean'}  ${b.style.length > 0 ? `${RED}style ${b.style.length}${RST}` : 'style ok'}  ${DIM}${(b.ms / 1000).toFixed(1)}s${RST}`,
     );
   }
 
@@ -285,6 +302,12 @@ async function main(): Promise<void> {
     console.log(`tool-calling : ${tool}/${toolMax}   ${DIM}(create ${agg.create} override ${agg.override} dedup ${agg.dedup} oneoff ${agg.oneoff})${RST}`);
     console.log(`voice        : ${agg.voice}/${RUNS}${agg.voice === RUNS ? ` ${GREEN}✓${RST}` : ` ${RED}✗${RST}`}`);
     console.log(`leaks        : ${agg.leaks}${agg.leaks === 0 ? ` ${GREEN}✓${RST}` : ` ${RED}✗ scaffolding reached the reply${RST}`}`);
+    // The axis that had no instrument on 2026-08-13: a backend can hold
+    // tool-calling parity and still change how the community is spoken to.
+    console.log(
+      `spanish voice: ${styleHits.length === 0 ? `${GREEN}clean ✓${RST}` : `${RED}${styleHits.length} reply/replies off-voice ✗${RST}`}`,
+    );
+    for (const hit of styleHits) console.log(`${DIM}   ${hit}${RST}`);
     console.log(`avg latency  : ${DIM}${(agg.ms / (RUNS * 5) / 1000).toFixed(1)}s per turn${RST}`);
   }
   console.log(`refusals     : ${f.refused}/${FILTER_PROMPTS.length} refused · ${f.classified} classified as content_filter · ${f.empty} empty`);
