@@ -7,6 +7,8 @@ import {
 } from 'discord.js';
 import { log } from '../../log.js';
 import { ask } from '../../llm/client.js';
+import { reportSpanishStyle } from '../../lang/report.js';
+import { EVENT_INTAKE_CAPABILITY_ID } from './constants.js';
 import { buildHistory, normalizeTurns, type Turn } from '../../discord/history.js';
 import { chunkBotReply } from '../../discord/chunk.js';
 import { stripBotMention } from '../../discord/handlers.js';
@@ -157,6 +159,11 @@ export class EventIntakeWatcher {
       effort: 'high',
     });
 
+    reportSpanishStyle(proposal, {
+      capability: EVENT_INTAKE_CAPABILITY_ID,
+      channelId: message.channelId,
+      toolNames: tools.tools.map((t) => t.name),
+    });
     // The proposal is THE message mods must not miss, so the ping is appended
     // deterministically rather than left to the model.
     const body = appendModPing(sanitizeRoleMentions(proposal, mentions.notifyIds), mentions);
@@ -251,6 +258,11 @@ export class EventIntakeWatcher {
       // High tier: this is the turn where a mod's approval runs the real
       // calendar_create_event tool loop.
       reply = await ask({ system, messages: turns, tools, effort: 'high' });
+      reportSpanishStyle(reply, {
+        capability: EVENT_INTAKE_CAPABILITY_ID,
+        channelId: message.channelId,
+        toolNames: tools.tools.map((t) => t.name),
+      });
     } finally {
       clearInterval(heartbeat);
       if (reaction && this.deps.client.user) {

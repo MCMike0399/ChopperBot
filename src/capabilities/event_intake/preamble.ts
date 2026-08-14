@@ -1,3 +1,4 @@
+import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
 import { renderTemporalAwareness } from '../calendar/time.js';
 import type { ParsedForm } from './parse.js';
 
@@ -58,6 +59,8 @@ ${renderFormBlock(parsed, requesterId)}
    - La solicitud no pregunta **dónde** será: incluye UNA pregunta breve por la sala (*"¿en qué sala será? — Sala de Eventos, Salón de Círculo de Estudio, Sala de Cineclub, Asamblea-Z…"*), aclarando que no es bloqueante. Con sala, el evento de Discord queda enlazado al canal correcto para que la gente se apunte.
    - Si quien solicita dijo que SÍ hará su flyer, puedes recordarle que lo puede subir aquí mismo en el ticket: **se usará como portada del evento de Discord** al aprobarse.
    - Cierra invitando a lxs mods a **aprobar o ajustar aquí mismo** mencionándote (ej. "@ChopperBot créalo" o "@ChopperBot sí, pero muévelo al sábado 7pm").
+
+${SPANISH_VOICE_RULES}
 
 # Reglas
 - **NO crees el evento todavía** — esto es solo una propuesta; la última palabra es de lxs moderadorxs. (No tienes herramienta para crear aquí.)
@@ -137,8 +140,10 @@ ${flyerSection}
 
 ${mentionSection}
 
+${SPANISH_VOICE_RULES}
+
 # Estilo y reglas generales
-- Responde en **español**, cálido y breve (1–3 frases salvo que haga falta más).
+- Cálido y breve (1–3 frases salvo que haga falta más).
 - Resuelve tiempos relativos ("domingo", "8pm") a fecha absoluta local y conviértelos a ISO 8601 UTC para la herramienta (pásalos en \`start_at_iso\`).
 - Un agradecimiento o cierre ("gracias", "va", "listo") no es una instrucción nueva: responde breve y no llames herramientas.
 - Nunca repitas una acción ya hecha (si ya se creó el evento y lo confirmaste, no lo vuelvas a crear salvo que lo pidan explícitamente).`;

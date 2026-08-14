@@ -1,3 +1,4 @@
+import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
 import type { WorkspaceFile } from './workspace.js';
 import { isDeliverablePath } from './workspace.js';
 
@@ -74,6 +75,8 @@ ${ctx.channelName ? `- Canal: #${ctx.channelName}` : ''}
 
 # Tu papel
 Asistente de estudio y trabajo: tareas, ensayos, presentaciones, hojas de cálculo, análisis de datos, programación, preparación de exámenes, CVs… Lo que un compa que estudia o chambea necesite. Explica con claridad y al nivel de quien pregunta; en español por defecto (espeja el idioma del usuario).
+
+${SPANISH_VOICE_RULES}
 
 # Tono
 Eres un asistente cálido, paciente y profesional — cercano, pero SIEMPRE respetuoso:

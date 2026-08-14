@@ -8,6 +8,7 @@ import {
 } from 'discord.js';
 import { log } from '../log.js';
 import { ask } from '../llm/client.js';
+import { reportSpanishStyle } from '../lang/report.js';
 import { chunkBotReply } from './chunk.js';
 import { buildHistory, normalizeTurns, type Turn } from './history.js';
 import { ReactionTurnPresenter } from './presenter.js';
@@ -97,6 +98,10 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
       const presenter = new ReactionTurnPresenter(message, client.user?.id);
 
       let reply: string;
+      // Which capability actually served the turn (after the general_chat
+      // fallback), captured for the style lint on the way out.
+      let servedBy = '';
+      let turnToolNames: string[] = [];
       try {
         // Per-channel FIFO + global cap. History is built INSIDE the queued
         // task, so a message queued behind another sees the earlier reply.
@@ -126,6 +131,8 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
               { role: 'user', content: userText, attachments },
             ]);
 
+            servedBy = capability.id;
+
             const turn = await capability.buildTurn({
               channelId: message.channelId,
               guildId: message.guildId,
@@ -135,6 +142,8 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
               attachments: listImageAttachments(message),
               ...(await resolveAuthority(message)),
             });
+
+            turnToolNames = turn.tools.tools.map((t) => t.name);
 
             log.info(
               {
@@ -180,6 +189,11 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
         await presenter.discard();
         return;
       }
+      reportSpanishStyle(reply, {
+        capability: servedBy,
+        channelId: message.channelId,
+        toolNames: turnToolNames,
+      });
       await presenter.deliver(chunkBotReply(reply));
     } catch (err) {
       log.error({ err }, 'Failed to handle message');
