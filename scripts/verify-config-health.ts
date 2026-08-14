@@ -28,7 +28,7 @@ const db = new Database(DB_PATH, { readonly: true, fileMustExist: true });
 const registry = new CapabilityRegistry();
 for (const id of [
   'configuration', 'calendar', 'instagram_monitor', 'file_scanner',
-  'event_intake', 'redacted-ops', 'general_chat',
+  'event_intake', 'general_chat',
 ]) {
   registry.register({ id, description: `${id}`, init: async () => {}, buildTurn: async () => ({ system: '', tools: { tools: [], handle: async () => ({ status: 'success', payload: {} }) } }) } as unknown as Capability);
 }

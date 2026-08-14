@@ -31,7 +31,7 @@ import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source
 // see images. DeepSeek V4 rejects `image_url` with a 400 at the deserialization
 // layer on both Flash and Pro (probed 2026-08-10).
 //
-// The bedrock text mode exists for AWS-native deploys (the ECS redacted-ops bot):
+// The bedrock text mode exists for AWS-native deploys:
 // no external LLM API key is available there, so text runs on the same Bedrock
 // client, authenticated by the task role. The Kimi coding endpoint gates by
 // client fingerprint: requests with the default openai-node User-Agent get a

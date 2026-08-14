@@ -16,12 +16,10 @@ import { FileScannerCapability } from './capabilities/file_scanner/capability.js
 import { EventIntakeCapability } from './capabilities/event_intake/capability.js';
 import { WorkshopCapability } from './capabilities/workshop/capability.js';
 import { TurnQueue } from './discord/turn-queue.js';
-// NOTE: redacted-opsCapability (src/capabilities/redacted-ops/) is intentionally NOT
-// registered in this deployment. It's a read-only ops copilot for a specific
-// external platform — out of scope for the RevZ bot, and keeping it registered
-// leaks it into general_chat's capability snapshot (the LLM then advertises it
-// to users). The code stays in the repo for that separate deploy; do not add
-// it back to `candidates` here.
+// NOTE: capabilities that exist only for other/private deploys must NOT be
+// registered here — a registered capability leaks into general_chat's
+// capability snapshot and the LLM then advertises it to users. Keep
+// `candidates` limited to what this deployment actually serves.
 import { createClient } from './discord/client.js';
 import { registerHandlers } from './discord/handlers.js';
 import { sendAdminAlert } from './discord/admin-alert.js';

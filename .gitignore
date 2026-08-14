@@ -13,3 +13,14 @@ db-export/
 
 # Local-only deployment/migration notes — kept on disk, never tracked
 RASPBERRY_PI_MIGRATION.md
+
+# Private deployment assets & internal runbooks — kept on disk (Mac + Pi,
+# backed up at pi:~/ChopperBot-private-assets/), never tracked in the
+# public repo. The bot reads calendar/*.pdf from the repo root at runtime,
+# so these files MUST stay present in the deployment working tree.
+calendar/*.pdf
+docs/revolucion-z-capabilities.md
+docs/deployment.md
+docs/environment.md
+deploy/bin/
+deploy/launchd/
