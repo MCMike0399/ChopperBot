@@ -13,6 +13,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.21.0 — 2026-08-15
+
+🗓️ **Los días con varios eventos ya se ven completos en el calendario**
+
+Si un día tenía dos actividades, el calendario del mes solo mostraba una y debajo ponía un discreto *"+1 más"* — aunque hubiera espacio de sobra en la casilla. Pasó este mismo agosto: el **lunes 10** (Círculo de Estudio de Burocracia + Repensar la burocracia) y el **domingo 16** (la charla sobre mente neurodivergente + Calibán y la Bruja) escondían la segunda actividad.
+
+Ahora acomodo cada día como un todo: **primero hago que quepan todos los eventos**, y solo después reparto el espacio que sobra para que los títulos largos se lean enteros. Si un día está de verdad hasta el tope, ajusto un poco el tamaño para que entren más, y el *"+N más"* aparece únicamente cuando ya no cabe nada. Un día con 3 o 4 actividades ahora se ve, no se resume.
+
+De paso corregí un desajuste viejito: los recuadros se dibujaban unos milímetros más abajo de lo debido y el último podía montarse sobre la línea de la semana siguiente. Ya quedaron centrados en su casilla. 🎨
+
+---
+
 ## 1.20.1 — 2026-08-15
 
 🎟️ **Los tickets de evento ya no se quedan mudos**

@@ -40,7 +40,34 @@ const events: RenderEvent[] = [
   { id: 8, title: 'Brigada de limpieza', start_at: iso('2026-06-08T15:00:00Z'), end_at: null, recurrence_freq: 'daily', recurrence_until: iso('2026-06-13T15:00:00Z') },
   // Emoji + smart punctuation, to prove sanitization.
   { id: 9, title: '🔥 ¡Fiesta! — “tardeada” antifa 🏴', start_at: iso('2026-06-27T20:00:00Z'), end_at: null, recurrence_freq: null, recurrence_until: null },
+  // Density ladder in AUGUST — the 6-row month, i.e. the tightest cells there
+  // are (~41 pt). One column per count so the cell planner's tiers can be read
+  // straight off the rendered week: 2 → 3 → 4 → 6 events in a single day, with
+  // titles long enough to want more lines than they can have.
+  ...densityDay('2026-08-03', 2, 'Círculo de estudio: la utopía de las normas'),
+  ...densityDay('2026-08-04', 3, 'Conversatorio sobre data centers y modelos de lenguaje'),
+  ...densityDay('2026-08-05', 4, 'Club de poesía: Rosario Castellanos y su obra completa'),
+  ...densityDay('2026-08-06', 6, 'Asamblea ordinaria de la comunidad'),
+  // Same ladder in a 5-row month (roomier cells, larger base type).
+  ...densityDay('2026-09-01', 3, 'Taller de serigrafía y cartelismo político'),
+  ...densityDay('2026-09-02', 5, 'Cineclub: proyección y debate abierto'),
 ];
+
+/**
+ * `count` events on one local day, 3 pm onward, each with a distinguishable
+ * title so the render shows exactly which ones survived the packing.
+ */
+function densityDay(localDate: string, count: number, title: string): RenderEvent[] {
+  const base = Date.parse(`${localDate}T21:00:00Z`); // 3 pm CDMX
+  return Array.from({ length: count }, (_, i) => ({
+    id: 1000 + Number(localDate.replace(/-/g, '').slice(4)) * 10 + i,
+    title: `${i + 1}/${count} ${title}`,
+    start_at: base + i * 3_600_000,
+    end_at: null,
+    recurrence_freq: null,
+    recurrence_until: null,
+  }));
+}
 
 async function renderMonth(monthKey: string, file: string) {
   const templateBytes = new Uint8Array(readFileSync(resolve(TPL, file)));
@@ -54,6 +81,7 @@ async function renderMonth(monthKey: string, file: string) {
 
 await renderMonth('2026-06', 'Junio 2026.pdf');
 await renderMonth('2026-08', 'Agosto 2026.pdf');
+await renderMonth('2026-09', 'Septiembre 2026.pdf');
 
 const ics: IcsEvent[] = events.map((e) => ({
   id: e.id, title: e.title, description: null, location: null,

@@ -7,14 +7,20 @@
  * pre-calibrated geometry (see template-geometry.ts). Recurring events are
  * expanded so a weekly series lands in every week's cell within the month.
  *
+ * How many chips a day shows, at what size, and with how many title lines each
+ * is decided by `cell-layout.ts` — it plans the cell as a whole so a day with
+ * two events shows two events, and "+N más" appears only when the day is
+ * genuinely full. This module owns the drawing and the WinAnsi text hygiene.
+ *
  * Text is drawn with the standard Helvetica font, so anything outside WinAnsi
  * (emoji, CJK, smart quotes) is normalized or stripped first — calendar titles
  * stay legible and pdf-lib never throws on an unencodable glyph.
  */
 import { PDFDocument, StandardFonts, rgb, type PDFFont } from 'pdf-lib';
-import { cellBox, type MonthTemplateGeometry } from './template-geometry.js';
+import { cellBox } from './template-geometry.js';
 import { TEMPLATE_GEOMETRY } from './template-geometry.generated.js';
 import { dayToCell, localParts, monthWindowUtc } from './grid.js';
+import { planCell, type CellItem, type TextMeasurer } from './cell-layout.js';
 import { expandOccurrences } from './recurrence.js';
 import { formatLocalClock } from './time.js';
 import type { OccurrenceOverride, RecurrenceFreq } from './recurrence.js';
@@ -43,7 +49,16 @@ const BLOCK_COLOR = rgb(0.66, 0.07, 0.13);
 const BLOCK_BORDER = rgb(0.92, 0.16, 0.22);
 const TEXT_COLOR = rgb(1, 1, 1);
 const OVERFLOW_COLOR = rgb(0.75, 0.75, 0.78);
+const PAD_X = 5; // horizontal text inset inside an event block
 const MAX_INSTANCES_PER_MONTH = 40; // safety cap on a daily series within a month
+
+/** Adapt the two embedded Helvetica faces to the planner's measuring interface. */
+export function helveticaMeasurer(regular: PDFFont, bold: PDFFont): TextMeasurer {
+  return {
+    width: (text, size) => regular.widthOfTextAtSize(text, size),
+    boldWidth: (text, size) => bold.widthOfTextAtSize(text, size),
+  };
+}
 
 /** Whether a month template exists for this key. */
 export function hasTemplateFor(monthKey: string): boolean {
@@ -111,57 +126,65 @@ export async function renderMonthPdf(input: RenderMonthInput): Promise<Uint8Arra
   const font = await pdf.embedFont(StandardFonts.Helvetica);
   const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-  // Smaller type in the denser 6-row months.
-  const fontSize = geom.rowPitch >= 90 ? 8 : 7;
-  const lineH = fontSize + 2.5;          // baseline-to-baseline within a block
-  const vPad = 2.5;                       // block top/bottom padding
-  const gap = 2.5;                        // gap between stacked blocks
-  const padX = 5;
-  const maxLinesPerEvent = fontSize >= 8 ? 3 : 2; // long titles wrap up to this
+  // Smaller type in the denser 6-row months. This is the cell's DEFAULT size;
+  // planCell only steps below it on a day too crowded to fit otherwise.
+  const baseFontSize = geom.rowPitch >= 90 ? 8 : 7;
+  const measurer = helveticaMeasurer(font, bold);
+  // The calibrated geometry is measured from the top of the page box, so the
+  // flip to pdf-lib coordinates has to start at the MediaBox origin (7.92 on
+  // every one of these templates), not at 0.
+  const pageOriginY = page.getMediaBox().y;
 
   for (const [key, list] of cells) {
     const [row, col] = key.split(',').map(Number);
-    const box = cellBox(geom, row, col);
+    const box = cellBox(geom, row, col, pageOriginY);
     if (!box) continue;
     list.sort((a, b) => a.startMs - b.startMs);
-    const innerW = box.width - 2 * padX;
+
+    const items: CellItem[] = list.map((e) => ({
+      time: formatLocalClock(e.startMs),
+      title: e.title,
+    }));
+    // The whole cell is planned at once (see cell-layout.ts): how many chips,
+    // at what size, with how many title lines each.
+    const plan = planCell(items, {
+      innerWidth: box.width - 2 * PAD_X,
+      height: box.height,
+      baseFontSize,
+      measurer,
+    });
+    const { fontSize, lineH, vPad, gap } = plan.style;
 
     let curTop = box.top;
-    let i = 0;
-    for (; i < list.length; i++) {
-      const time = formatLocalClock(list[i].startMs);
-      const timeW = bold.widthOfTextAtSize(time + ' ', fontSize);
-      // Title wraps: line 1 shares space with the time; the rest use full width.
-      const lines = wrapEventLines(font, fontSize, list[i].title, innerW - timeW, innerW, maxLinesPerEvent);
-      const nLines = Math.max(1, lines.length);
-      const blockH = 2 * vPad + nLines * lineH;
-
-      // Stop if this block won't fit (the first one always fits — maxLines is
-      // capped so a single event never exceeds the smallest cell).
-      if (i > 0 && blockH > curTop - box.bottom) break;
-
-      const blockBottom = curTop - blockH;
+    for (const block of plan.blocks) {
+      const blockBottom = curTop - block.height;
       page.drawRectangle({
-        x: box.x, y: blockBottom, width: box.width, height: blockH,
+        x: box.x, y: blockBottom, width: box.width, height: block.height,
         color: BLOCK_COLOR, borderColor: BLOCK_BORDER, borderWidth: 0.5,
       });
+      const nLines = Math.max(1, block.lines.length);
       for (let k = 0; k < nLines; k++) {
         const baseY = curTop - vPad - (k + 1) * lineH + (lineH - fontSize) / 2 + 0.5;
         if (k === 0) {
-          page.drawText(time, { x: box.x + padX, y: baseY, size: fontSize, font: bold, color: TEXT_COLOR });
-          if (lines[0]) page.drawText(lines[0], { x: box.x + padX + timeW, y: baseY, size: fontSize, font, color: TEXT_COLOR });
-        } else if (lines[k]) {
-          page.drawText(lines[k], { x: box.x + padX, y: baseY, size: fontSize, font, color: TEXT_COLOR });
+          page.drawText(block.time, { x: box.x + PAD_X, y: baseY, size: fontSize, font: bold, color: TEXT_COLOR });
+          if (block.lines[0]) {
+            page.drawText(block.lines[0], { x: box.x + PAD_X + block.timeWidth, y: baseY, size: fontSize, font, color: TEXT_COLOR });
+          }
+        } else if (block.lines[k]) {
+          page.drawText(block.lines[k], { x: box.x + PAD_X, y: baseY, size: fontSize, font, color: TEXT_COLOR });
         }
       }
       curTop = blockBottom - gap;
     }
 
-    if (i < list.length) {
-      const more = `+${list.length - i} más`;
-      const baseY = curTop - fontSize;
-      if (baseY >= box.bottom - 1) {
-        page.drawText(more, { x: box.x + padX, y: baseY, size: fontSize - 0.5, font: bold, color: OVERFLOW_COLOR });
+    if (plan.hidden > 0) {
+      // The plan reserved this line's height, so it lands inside the cell; the
+      // guard only covers the degenerate "not even one chip fits" fallback.
+      const baseY = curTop + gap - plan.overflowGap - plan.overflowSize;
+      if (baseY >= box.bottom - 2) {
+        page.drawText(`+${plan.hidden} más`, {
+          x: box.x + PAD_X, y: baseY, size: plan.overflowSize, font: bold, color: OVERFLOW_COLOR,
+        });
       }
     }
   }
@@ -192,65 +215,3 @@ export function sanitizeForPdf(s: string): string {
   return out.replace(/\s+/g, ' ').trim();
 }
 
-/**
- * Word-wrap a title into up to `maxLines` lines. Line 0 has `firstWidth`
- * available (it shares the row with the bold time); later lines use `restWidth`.
- * If the title doesn't fit, the last line is cut with an ellipsis.
- */
-function wrapEventLines(
-  font: PDFFont,
-  size: number,
-  title: string,
-  firstWidth: number,
-  restWidth: number,
-  maxLines: number,
-): string[] {
-  const words = sanitizeForPdf(title).split(/\s+/).filter(Boolean);
-  if (words.length === 0) return [];
-  const lines: string[] = [];
-  let i = 0;
-  while (i < words.length && lines.length < maxLines) {
-    const width = Math.max(1, lines.length === 0 ? firstWidth : restWidth);
-    let line = '';
-    while (i < words.length) {
-      const trial = line ? `${line} ${words[i]}` : words[i];
-      if (font.widthOfTextAtSize(trial, size) <= width) {
-        line = trial;
-        i++;
-      } else if (!line) {
-        // A single word too wide even for an empty line → hard-cut it.
-        line = hardTruncate(font, size, words[i], width);
-        i++;
-        break;
-      } else {
-        break;
-      }
-    }
-    lines.push(line);
-  }
-  if (i < words.length && lines.length > 0) {
-    const last = lines.length - 1;
-    const width = Math.max(1, last === 0 ? firstWidth : restWidth);
-    lines[last] = withEllipsis(font, size, lines[last], width);
-  }
-  return lines;
-}
-
-/** Longest prefix of a single (unbreakable) word + "..." that fits `width`. */
-function hardTruncate(font: PDFFont, size: number, word: string, width: number): string {
-  if (width <= 0) return '';
-  if (font.widthOfTextAtSize(word, size) <= width) return word;
-  const ell = '...';
-  let t = word;
-  while (t.length && font.widthOfTextAtSize(t + ell, size) > width) t = t.slice(0, -1);
-  return t ? t + ell : '';
-}
-
-/** Append "..." to a line, dropping trailing chars until it fits `width`. */
-function withEllipsis(font: PDFFont, size: number, text: string, width: number): string {
-  const ell = '...';
-  if (font.widthOfTextAtSize(text + ell, size) <= width) return text + ell;
-  let t = text;
-  while (t.length && font.widthOfTextAtSize(t + ell, size) > width) t = t.slice(0, -1);
-  return `${t.trimEnd()}${ell}`;
-}
