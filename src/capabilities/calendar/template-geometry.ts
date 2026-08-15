@@ -8,9 +8,17 @@
  *
  * Two coordinate systems are in play:
  *  - **bbox space** (how the geometry is stored): top-left origin, y grows
- *    DOWN, PDF points — matches poppler's `pdftotext -bbox`.
- *  - **pdf-lib space** (what the renderer draws in): bottom-left origin, y
- *    grows UP. Conversion is `pdfY = pageHeight - bboxY`.
+ *    DOWN, PDF points — matches poppler's `pdftotext -bbox`, which measures
+ *    from the TOP of the page box.
+ *  - **pdf-lib space** (what the renderer draws in): bottom-left origin of the
+ *    **MediaBox**, y grows UP. Conversion is
+ *    `pdfY = mediaBoxOriginY + pageHeight − bboxY`.
+ *
+ * That origin term is load-bearing: every Canva template here has a MediaBox
+ * of `[0, 7.92, 1440, 817.92]`, so assuming an origin of 0 drew every event
+ * chip 7.92 pt too low — invisible while cells held one chip, but enough to
+ * push the last chip of a packed cell across the week divider (found 2026-08-15
+ * while making crowded days fit).
  */
 
 /** A day column (Mon→Sun), x-extent in bbox space. */
@@ -69,11 +77,16 @@ const ROW_BOTTOM_PAD = 7; // gap above the NEXT cell's day number
  * The drawable box for the cell at grid (row, col), in pdf-lib coordinates.
  * `row`/`col` are zero-based; col 0 = Monday. Returns null if out of range for
  * this template (e.g. a 6th row in a 5-row month).
+ *
+ * `pageOriginY` is the template's MediaBox y-origin (`page.getMediaBox().y`);
+ * it defaults to 0 for the flush-origin case but must be passed for these
+ * templates, which start at 7.92.
  */
 export function cellBox(
   geom: MonthTemplateGeometry,
   row: number,
   col: number,
+  pageOriginY = 0,
 ): CellBox | null {
   if (row < 0 || row >= geom.rows.length) return null;
   if (col < 0 || col >= geom.columns.length) return null;
@@ -91,8 +104,8 @@ export function cellBox(
   const bottomBbox = nextTopBbox - ROW_BOTTOM_PAD;
 
   const width = rightBbox - leftBbox;
-  const top = geom.pageHeight - topBbox; // flip to pdf-lib
-  const bottom = geom.pageHeight - bottomBbox;
+  const top = pageOriginY + geom.pageHeight - topBbox; // flip to pdf-lib
+  const bottom = pageOriginY + geom.pageHeight - bottomBbox;
   return {
     x: leftBbox,
     top,
