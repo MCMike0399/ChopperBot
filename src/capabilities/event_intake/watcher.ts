@@ -53,6 +53,15 @@ const READ_TOOLS = [
 ] as const;
 
 /**
+ * History-rescan paging when hunting a ticket's form: 100-message pages, at
+ * most 5. The old single 25-message window was buried by one evening of ticket
+ * chatter (live, ticket-0007, 2026-08-14) — after which the not-an-event-ticket
+ * guardrail went permanently silent on a REAL event request.
+ */
+const FORM_SCAN_PAGE_SIZE = 100;
+const FORM_SCAN_MAX_PAGES = 5;
+
+/**
  * What a MOD additionally gets in a ticket — the SAME write surface the calendar
  * channel gives a mod, by design. `calendar_update_event` arrived first, from a
  * real dead end (ticket-0005, 2026-08-04): a mod approved an event whose title
@@ -348,28 +357,77 @@ export class EventIntakeWatcher {
     return this.findEventFormInHistory(message);
   }
 
-  /** Scan recent messages for the ticket-bot event form; null if none present. */
+  /**
+   * Scan the ticket's history for the ticket-bot event form, newest → oldest,
+   * null if none present. Pages backwards so a chatty ticket can't bury the
+   * form; a ticket with no form anywhere is some other ticket type. A form
+   * found here was already missed live exactly once (that's why we're
+   * scanning), so it is persisted on the spot — without the row, recognition
+   * would keep depending on how much people chat.
+   */
   private async findEventFormInHistory(
     message: GatewayMessage,
   ): Promise<{ parsed: ParsedForm; requesterId: string | null } | null> {
     try {
-      const msgs = await message.channel.messages.fetch({ limit: 25 });
-      for (const m of msgs.values()) {
-        const ml = toMessageLike(m);
-        if (isEventForm(ml, this.deps.ticketBotId)) {
-          return {
-            parsed: parseTicketForm(ml)!,
-            requesterId: extractRequesterId(m.content ?? '', [
-              this.deps.ticketBotId,
-              this.deps.botUserId,
-            ]),
-          };
+      let before: string | undefined;
+      for (let page = 0; page < FORM_SCAN_MAX_PAGES; page++) {
+        const msgs = await message.channel.messages.fetch(
+          before ? { limit: FORM_SCAN_PAGE_SIZE, before } : { limit: FORM_SCAN_PAGE_SIZE },
+        );
+        if (msgs.size === 0) return null;
+        let oldest: string | undefined;
+        for (const [id, m] of msgs) {
+          if (oldest === undefined || BigInt(id) < BigInt(oldest)) oldest = id;
+          const ml = toMessageLike(m);
+          if (isEventForm(ml, this.deps.ticketBotId)) {
+            const ctx = {
+              parsed: parseTicketForm(ml)!,
+              requesterId: extractRequesterId(m.content ?? '', [
+                this.deps.ticketBotId,
+                this.deps.botUserId,
+              ]),
+            };
+            this.persistRecoveredForm(message, ctx.parsed, ctx.requesterId);
+            return ctx;
+          }
         }
+        if (msgs.size < FORM_SCAN_PAGE_SIZE || oldest === undefined) return null;
+        before = oldest;
       }
     } catch {
       // fetch failed (perms/deleted) — treat as unrecognized, stay silent.
     }
     return null;
+  }
+
+  /**
+   * Persist a form recovered by the history rescan so the ticket is recognized
+   * from the row from now on (and approval bookkeeping — markCreated — has a
+   * row to land on). Best-effort: a store failure must not cost the ticket
+   * its answer.
+   */
+  private persistRecoveredForm(
+    message: GatewayMessage,
+    parsed: ParsedForm,
+    requesterId: string | null,
+  ): void {
+    try {
+      if (this.deps.store.getTicket(message.channelId)) return;
+      this.deps.store.recordProposal({
+        channelId: message.channelId,
+        guildId: message.guildId ?? null,
+        requesterId,
+        parsedForm: parsed,
+        resolvedStartAt: null,
+        proposalMessageId: null,
+      });
+      log.info(
+        { channelId: message.channelId, title: parsed.title },
+        'event_intake.form.recovered_from_history',
+      );
+    } catch (err) {
+      log.warn({ err, channelId: message.channelId }, 'event_intake.form.recover_persist_failed');
+    }
   }
 
   // ── Tool bundle (gated) ───────────────────────────────────────────────────

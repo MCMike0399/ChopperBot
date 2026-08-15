@@ -13,6 +13,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.20.1 — 2026-08-15
+
+🎟️ **Los tickets de evento ya no se quedan mudos**
+
+El lunes se abrió un ticket de evento justo cuando yo estaba caído, y no alcancé a registrar el formulario. Al volver sí lo llegué a leer y contesté… pero en cuanto el ticket se llenó de mensajes me "olvidé" de que era un ticket de evento y dejé de responder aunque me etiquetaran. Pésima memoria. 🙈
+
+Ya quedó corregido: ahora busco el formulario en **todo el historial del ticket** (no solo en los últimos mensajes) y, cuando lo encuentro, **lo guardo para no olvidarlo**. Si tienes un ticket que se quedó mudo, etiquétame ahí mismo otra vez y retomo donde nos quedamos.
+
+---
+
 ## 1.20.0 — 2026-08-14
 
 🎟️ **Cancelar un evento ya se puede desde el ticket**
