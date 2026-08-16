@@ -1,4 +1,4 @@
-import { describe, test, expect, vi } from 'vitest';
+import { describe, test, expect, vi, beforeEach } from 'vitest';
 import type { Client } from 'discord.js';
 import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
 import { InstagramMonitorStore, INSTAGRAM_MONITOR_MIGRATIONS, HARD_PAUSE_THRESHOLD } from '../store.js';
@@ -50,6 +50,16 @@ function post(id: string, opts: Partial<RecentPost> = {}): RecentPost {
 }
 
 const fakeClient = { channels: { cache: new Map() } } as unknown as Client;
+
+// tickOnce() consults the REAL wall clock for quiet hours (01:00–08:00
+// America/Mexico_City, widened from 02–07 on 2026-08-13), so running this
+// suite inside that window short-circuits every poll and fails ~23 tests.
+// Pin Date to local noon before EVERY test (some tests manage their own
+// clock and call useRealTimers() in a finally, undoing a file-level pin);
+// timers stay real so async backoff still works.
+beforeEach(() => {
+  vi.useFakeTimers({ now: new Date('2026-08-16T12:00:00-06:00'), toFake: ['Date'] });
+});
 
 describe('InstagramMonitorScheduler', () => {
   test('first poll seeds dedup anchor without publishing', async () => {

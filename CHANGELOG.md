@@ -13,6 +13,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.21.1 — 2026-08-16
+
+📸 **Recuperamos el seguimiento de 5 cuentas de Instagram**
+
+Desde mediados de julio, una falla interna de Instagram impedía revisar las publicaciones de 5 de las cuentas que seguimos: Instagram rechazaba la consulta de esos perfiles aunque las cuentas siguen activas y publicando con normalidad. Encontramos una vía alternativa para consultarlas y el monitoreo vuelve a cubrirlas. Las demás cuentas siguieron funcionando sin interrupciones todo este tiempo.
+
+Al reactivarse, el seguimiento retoma solo las publicaciones nuevas: lo publicado mientras estuvieron fuera no se vuelve a publicar en los canales.
+
 ## 1.21.0 — 2026-08-15
 
 🗓️ **Los días con varios eventos ya se ven completos en el calendario**

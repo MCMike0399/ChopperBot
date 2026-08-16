@@ -218,6 +218,16 @@ const IG_URL = (u: string) =>
   `https://i.instagram.com/api/v1/users/web_profile_info/?username=${encodeURIComponent(u)}`;
 const IG_FEED_URL = (pk: string, count = 12) =>
   `https://i.instagram.com/api/v1/feed/user/${encodeURIComponent(pk)}/?count=${count}`;
+// Same private feed endpoint, keyed by username instead of numeric pk —
+// bypasses web_profile_info entirely (see fetchAuthedFeedByUsername).
+const IG_FEED_BY_USERNAME_URL = (username: string, count = 12) =>
+  `https://i.instagram.com/api/v1/feed/user/${encodeURIComponent(username)}/username/?count=${count}`;
+
+/** Random feed page size in [10..16] (was a constant 12) so the request
+ * signature isn't byte-identical every poll. */
+function randomFeedCount(): number {
+  return 10 + Math.floor(Math.random() * 7);
+}
 
 /** Default desktop-Chrome UA. Overridable via the `IG_USER_AGENT` env so the
  * value can be made to MATCH the browser the session cookies were extracted
@@ -263,10 +273,20 @@ function humanDelay(minMs = 400, maxMs = 1500): Promise<void> {
  *    numeric pk once (cached), then reads the private `feed/user/{pk}`
  *    endpoint that logged-in clients use. The authed `web_profile_info`
  *    returns an EMPTY timeline, so feed/user is required to actually see
- *    posts. Authed requests get far higher rate limits.
+ *    posts. Authed requests get far higher rate limits. When pk resolution
+ *    fails with a deterministic per-account error ({@link
+ *    InstagramHardAccountError}), falls back to the username-keyed
+ *    `feed/user/{username}/username/` endpoint, which never touches
+ *    web_profile_info.
  */
 export class DirectInstagramFetcher implements InstagramFetcher {
   private readonly pkCache = new Map<string, string>();
+  /** Handles whose pk resolution hard-failed (e.g. the laser.provider schema
+   * deletion) but whose username-keyed feed works — skip the doomed
+   * web_profile_info request on later polls so we don't keep hammering a dead
+   * endpoint. In-memory like pkCache: a restart re-probes once, which doubles
+   * as the "did IG fix it?" check. */
+  private readonly usernameFeedOnly = new Set<string>();
   private readonly headers: Record<string, string>;
   /** Invoked once per outbound IG HTTP request (see {@link observeRequests}). */
   private onRequest: () => void = () => {};
@@ -300,7 +320,30 @@ export class DirectInstagramFetcher implements InstagramFetcher {
   async fetchRecentPosts(username: string): Promise<RecentPost[]> {
     if (this.auth) {
       await this.maybeWarmup(username, this.auth);
-      const pk = await this.resolvePk(username, this.auth);
+      if (this.usernameFeedOnly.has(username)) {
+        return this.fetchAuthedFeedByUsername(username, this.auth);
+      }
+      let pk: string;
+      try {
+        pk = await this.resolvePk(username, this.auth);
+      } catch (err) {
+        if (!(err instanceof InstagramHardAccountError)) throw err;
+        // pk resolution is deterministically broken for THIS account (e.g. the
+        // 2026-07-18 laser.provider schema deletion 400ing web_profile_info on
+        // business-category profiles). The username-keyed feed endpoint never
+        // touches web_profile_info, so try it before writing the account off.
+        log.warn(
+          { username, reason: err.reason },
+          'instagram_monitor.fetch.pk_resolve_hard_failed — trying feed-by-username fallback',
+        );
+        // The failed resolve still happened on the wire, so keep the same
+        // human-like gap a browser would show before the feed XHR.
+        if (this.warmupProbability > 0) await humanDelay();
+        const posts = await this.fetchAuthedFeedByUsername(username, this.auth, err);
+        this.usernameFeedOnly.add(username);
+        log.info({ username }, 'instagram_monitor.fetch.feed_by_username_engaged');
+        return posts;
+      }
       // Real browsers don't fire the feed XHR the instant the profile resolves.
       // A short randomized gap (skipped in tests where warmup is disabled).
       if (this.warmupProbability > 0) await humanDelay();
@@ -416,13 +459,54 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     return pk;
   }
 
-  private async fetchAuthedFeed(pk: string, auth: InstagramAuth): Promise<RecentPost[]> {
+  private fetchAuthedFeed(pk: string, auth: InstagramAuth): Promise<RecentPost[]> {
+    return this.requestAuthedFeed(IG_FEED_URL(pk, randomFeedCount()), `feed/user/${pk}`, auth);
+  }
+
+  /**
+   * Username-keyed variant of the private feed endpoint — the fallback for
+   * accounts whose pk resolution is deterministically broken
+   * ({@link InstagramHardAccountError}). Same response shape, same parser.
+   *
+   * Failure semantics: auth / rate-limit / hard-marker failures propagate
+   * as-is (session and throttle signals must win, and a hard failure on BOTH
+   * paths is genuinely non-retryable). Any OTHER failure here re-throws the
+   * original `cause` when present: a transient (or "endpoint gone") fallback
+   * failure must not downgrade the account to the infinite-retry transient
+   * path — that's the exact hammering-a-dead-endpoint pattern the hard gate
+   * exists to stop.
+   */
+  private async fetchAuthedFeedByUsername(
+    username: string,
+    auth: InstagramAuth,
+    cause?: InstagramHardAccountError,
+  ): Promise<RecentPost[]> {
+    try {
+      return await this.requestAuthedFeed(
+        IG_FEED_BY_USERNAME_URL(username, randomFeedCount()),
+        `feed/user/${username}/username`,
+        auth,
+      );
+    } catch (err) {
+      if (
+        err instanceof InstagramAuthError ||
+        err instanceof InstagramRateLimitError ||
+        err instanceof InstagramHardAccountError
+      ) {
+        throw err;
+      }
+      throw cause ?? err;
+    }
+  }
+
+  private async requestAuthedFeed(
+    url: string,
+    label: string,
+    auth: InstagramAuth,
+  ): Promise<RecentPost[]> {
     const headers = { ...this.headers, ...authCookieHeaders(auth) };
-    // Randomize the page size in [10..16] (was a constant 12) so the request
-    // signature isn't byte-identical every poll.
-    const count = 10 + Math.floor(Math.random() * 7);
     this.onRequest();
-    const res = await fetch(IG_FEED_URL(pk, count), withH2({ headers }));
+    const res = await fetch(url, withH2({ headers }));
     const body = await res.text();
     if (!res.ok) {
       const authReason = detectAuthBlock(res.status, body);
@@ -441,12 +525,12 @@ export class DirectInstagramFetcher implements InstagramFetcher {
       const hardReason = detectHardAccountBlock(res.status, body);
       if (hardReason) {
         throw new InstagramHardAccountError(
-          `Instagram returned a deterministic ${res.status} on feed/user/${pk} (${hardReason}) — retrying is futile until IG changes server-side`,
+          `Instagram returned a deterministic ${res.status} on ${label} (${hardReason}) — retrying is futile until IG changes server-side`,
           hardReason,
         );
       }
       throw new Error(
-        `Instagram returned HTTP ${res.status} on feed/user (direct)${body ? `: ${body.slice(0, 200)}` : ''}`,
+        `Instagram returned HTTP ${res.status} on ${label} (direct)${body ? `: ${body.slice(0, 200)}` : ''}`,
       );
     }
     return parseUserFeedBody(body);
