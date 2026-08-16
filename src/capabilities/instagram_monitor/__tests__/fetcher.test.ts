@@ -353,6 +353,119 @@ describe('DirectInstagramFetcher (authenticated)', () => {
   });
 });
 
+describe('DirectInstagramFetcher — feed-by-username fallback (laser.provider)', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  const LASER_400 = {
+    ok: false,
+    status: 400,
+    async text() {
+      return JSON.stringify({
+        message:
+          'Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema',
+        status: 'fail',
+      });
+    },
+  };
+
+  const FEED_OK = {
+    ok: true,
+    status: 200,
+    async text() {
+      return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
+    },
+  };
+
+  test('hard failure on pk resolve falls back to feed/user/<username>/username/', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.includes('web_profile_info')) return LASER_400;
+      expect(url).toContain('/feed/user/foo/username/');
+      return FEED_OK;
+    }) as unknown as typeof fetch;
+
+    const f = new DirectInstagramFetcher(AUTH, 0);
+    const posts = await f.fetchRecentPosts('foo');
+    expect(posts).toHaveLength(1);
+    expect(posts[0].igPostId).toBe('3001');
+    expect(urls).toHaveLength(2); // doomed resolve + fallback feed
+  });
+
+  test('the fallback decision is sticky: later polls skip web_profile_info entirely', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      if (url.includes('web_profile_info')) return LASER_400;
+      return FEED_OK;
+    }) as unknown as typeof fetch;
+
+    const f = new DirectInstagramFetcher(AUTH, 0);
+    await f.fetchRecentPosts('foo');
+    await f.fetchRecentPosts('foo');
+    expect(urls).toHaveLength(3); // resolve + feed, then feed only
+    expect(urls.filter((u) => u.includes('web_profile_info'))).toHaveLength(1);
+    expect(urls.slice(1).every((u) => u.includes('/feed/user/foo/username/'))).toBe(true);
+  });
+
+  test('a hard failure on BOTH paths still surfaces InstagramHardAccountError', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      return LASER_400;
+    }) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
+    expect(err).toBeInstanceOf(InstagramHardAccountError);
+    expect(err.reason).toBe('laser.provider');
+    expect(urls).toHaveLength(2); // fallback was attempted before giving up
+  });
+
+  test('a TRANSIENT fallback failure re-throws the original hard error (no downgrade to infinite retry)', async () => {
+    globalThis.fetch = vi.fn(async (url: string) => {
+      if (url.includes('web_profile_info')) return LASER_400;
+      return { ok: false, status: 500, async text() { return 'oops'; } };
+    }) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
+    expect(err).toBeInstanceOf(InstagramHardAccountError);
+    expect(err.reason).toBe('laser.provider');
+  });
+
+  test('auth blocks on pk resolve do NOT trigger the fallback (session signal wins)', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      return {
+        ok: false,
+        status: 400,
+        async text() {
+          return JSON.stringify({ message: 'checkpoint_required', status: 'fail' });
+        },
+      };
+    }) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
+    expect(err).toBeInstanceOf(InstagramAuthError);
+    expect(urls).toHaveLength(1); // feed never requested
+  });
+
+  test('throttling on pk resolve does NOT trigger the fallback', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      return { ok: false, status: 429, async text() { return 'Please wait a few minutes'; } };
+    }) as unknown as typeof fetch;
+
+    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
+    expect(err).toBeInstanceOf(InstagramRateLimitError);
+    expect(urls).toHaveLength(1);
+  });
+});
+
 describe('detectHardAccountBlock', () => {
   test('matches only HTTP 400 carrying a deterministic-failure marker', () => {
     expect(
