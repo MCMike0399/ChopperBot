@@ -1,13 +1,9 @@
-// Live proof for the Agitprop flyer subsystem (v1.23.0):
-//   1. open a flyer job on a real ticket (flyerSelf=false) via FlyerService,
-//   2. post a tiny PNG reply to the Agitprop card,
-//   3. fulfill + mirror back to the ticket,
-//   4. verify SQLite state + Discord messages, then cancel (cleanup).
+// Live proof for the Agitprop flyer subsystem.
 //
-// Uses the LIVE db + real Discord channels. Tags posts with [VERIFY-flyer].
-// Does NOT create calendar events. Spends no LLM budget.
+// MUST be given an explicit ticket id. Refuses tickets that already have a
+// created calendar event, so a 1×1 PNG cannot land on a live community flyer.
 //
-//   npx tsx scripts/verify-event-intake-flyer.ts [ticketChannelId] [--dry-run]
+//   npx tsx scripts/verify-event-intake-flyer.ts <ticketChannelId> [--dry-run]
 import 'dotenv/config';
 import Database from 'better-sqlite3';
 import { fileURLToPath } from 'node:url';
@@ -29,10 +25,12 @@ import { createEventSyncer } from '../src/capabilities/calendar/discord-events.j
 import { formatInTimezone } from '../src/capabilities/calendar/time.js';
 
 const TAG = '[VERIFY-flyer]';
-const DEFAULT_TICKET = '1536476816636776458'; // flyerSelf=false, proposed
 const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
 const DRY_RUN = process.argv.includes('--dry-run');
-const TICKET_CHANNEL = args[0] ?? DEFAULT_TICKET;
+const TICKET_CHANNEL = args[0];
+if (!TICKET_CHANNEL) {
+  fail('usage: npx tsx scripts/verify-event-intake-flyer.ts <ticketChannelId> [--dry-run]');
+}
 
 /** Smallest valid PNG (1×1 transparent pixel). */
 const TINY_PNG = Buffer.from([
@@ -72,8 +70,18 @@ async function main(): Promise<void> {
   if (parsed.flyerSelf !== false) {
     fail(`ticket ${TICKET_CHANNEL} has flyerSelf=${String(parsed.flyerSelf)} — pick a flyerSelf=false ticket`);
   }
+  if (ticket.status === 'created' || ticket.created_event_id) {
+    fail(
+      `refusing ticket ${TICKET_CHANNEL}: it already has a live calendar event ` +
+        `(status=${ticket.status}, event=${ticket.created_event_id}). ` +
+        'Use a proposed/unused ticket so a 1×1 PNG cannot replace a real flyer.',
+    );
+  }
   if (ticket.flyer_status === 'requested') {
     fail(`ticket already has an open flyer job — cancel it first or pick another channel`);
+  }
+  if (ticket.flyer_status === 'delivered') {
+    fail(`ticket already has a delivered flyer — pick another channel`);
   }
 
   const agitpropId = store.getAgitpropChannelId() ?? DEFAULT_AGITPROP_CHANNEL_ID;

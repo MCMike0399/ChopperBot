@@ -328,7 +328,12 @@ export class EventIntakeWatcher {
     const refId = message.reference?.messageId;
     if (!refId) return false;
     const ticket = this.deps.store.getTicketByFlyerRequestMessage(refId);
-    if (!ticket || ticket.flyer_status !== 'requested') return false;
+    if (
+      !ticket ||
+      (ticket.flyer_status !== 'requested' && ticket.flyer_status !== 'delivered')
+    ) {
+      return false;
+    }
     await this.flyerService.fulfillFlyer(ticket.channel_id, message, 'agitprop');
     return true;
   }
@@ -340,7 +345,12 @@ export class EventIntakeWatcher {
       return false;
     }
     const ticket = this.deps.store.getTicket(message.channelId);
-    if (!ticket || ticket.flyer_status !== 'requested') return false;
+    if (
+      !ticket ||
+      (ticket.flyer_status !== 'requested' && ticket.flyer_status !== 'delivered')
+    ) {
+      return false;
+    }
     await this.flyerService.fulfillFlyer(message.channelId, message, 'ticket');
     return true;
   }
