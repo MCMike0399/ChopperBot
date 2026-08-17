@@ -65,17 +65,21 @@ export function renderFlyerRequestCard(input: FlyerCardInput): string {
 
 /** Short deterministic notices posted to the ticket on flyer job transitions. */
 export function renderTicketFlyerNotice(
-  kind: 'opened' | 'edited' | 'cancelled' | 'delivered',
+  kind: 'opened' | 'open_failed' | 'edited' | 'cancelled' | 'delivered' | 'delivered_in_ticket',
 ): string {
   switch (kind) {
     case 'opened':
       return '🎨 Ya le pedí el flyer a la **Comisión de Agitprop** — cuando lo entreguen, lo verás aquí mismo.';
+    case 'open_failed':
+      return '🎨 No pude abrir la solicitud de flyer en Agitprop (el canal no está configurado o no pude publicar ahí). Lxs mods pueden reintentarlo mencionándome en este ticket.';
     case 'edited':
       return '🎨 Actualicé la solicitud de flyer en Agitprop con los nuevos detalles.';
     case 'cancelled':
       return '🎨 Cancelé la solicitud de flyer en Agitprop.';
     case 'delivered':
       return '🎨 **Flyer listo** — Agitprop entregó el diseño (arriba). Si el evento ya está en el calendario, también quedó de portada en Discord.';
+    case 'delivered_in_ticket':
+      return '🎨 **Flyer listo** — el diseño se subió aquí en el ticket. Ya avisé a Agitprop. Si el evento ya está en el calendario, también quedó de portada en Discord.';
   }
 }
 

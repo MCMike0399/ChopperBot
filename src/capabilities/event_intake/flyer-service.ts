@@ -53,10 +53,14 @@ export class FlyerService {
     const channelId = this.deps.getAgitpropChannelId();
     if (!channelId) {
       log.warn({ ticketChannelId: input.ticketChannelId }, 'event_intake.flyer.no_agitprop_channel');
+      await this.notifyTicket(input.ticketChannelId, renderTicketFlyerNotice('open_failed'));
       return false;
     }
     const agitprop = await this.fetchTextChannel(channelId);
-    if (!agitprop) return false;
+    if (!agitprop) {
+      await this.notifyTicket(input.ticketChannelId, renderTicketFlyerNotice('open_failed'));
+      return false;
+    }
 
     const card = renderFlyerRequestCard({
       ticketChannelId: input.ticketChannelId,
@@ -74,7 +78,10 @@ export class FlyerService {
         log.warn({ err, channelId }, 'event_intake.flyer.request_post_failed');
         return null;
       });
-    if (!posted) return false;
+    if (!posted) {
+      await this.notifyTicket(input.ticketChannelId, renderTicketFlyerNotice('open_failed'));
+      return false;
+    }
 
     this.deps.store.markFlyerRequested(input.ticketChannelId, posted.id, input.notes ?? null);
     if (mentions.notifyIds.length > 0) {
@@ -190,11 +197,16 @@ export class FlyerService {
       await this.editFlyerCard({ ...ticket, flyer_status: 'delivered' }, 'delivered', parsed);
     }
 
-    await this.mirrorFlyerToTicket(ticketChannelId, imageMessage);
     await this.applyFlyerToEvent(ticketChannelId, imageMessage);
 
-    await this.notifyTicket(ticketChannelId, renderTicketFlyerNotice('delivered'));
-    if (source === 'ticket') {
+    if (source === 'agitprop') {
+      // The image already lives in Agitprop — copy it into the ticket.
+      await this.mirrorFlyerToTicket(ticketChannelId, imageMessage);
+      await this.notifyTicket(ticketChannelId, renderTicketFlyerNotice('delivered'));
+    } else {
+      // The image was already posted in the ticket; don't re-upload it as if
+      // Agitprop delivered it, and don't attribute the upload to Agitprop.
+      await this.notifyTicket(ticketChannelId, renderTicketFlyerNotice('delivered_in_ticket'));
       await this.notifyAgitprop(renderAgitpropFlyerNotice(ticketChannelId, 'delivered_in_ticket'));
     }
 
