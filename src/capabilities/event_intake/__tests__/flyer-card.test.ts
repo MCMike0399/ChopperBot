@@ -56,9 +56,12 @@ describe('renderFlyerRequestCard', () => {
 describe('flyer notices', () => {
   test('ticket notices cover all transitions', () => {
     expect(renderTicketFlyerNotice('opened')).toContain('Agitprop');
+    expect(renderTicketFlyerNotice('open_failed')).toContain('No pude abrir');
     expect(renderTicketFlyerNotice('edited')).toContain('Actualicé');
     expect(renderTicketFlyerNotice('cancelled')).toContain('Cancelé');
-    expect(renderTicketFlyerNotice('delivered')).toContain('Flyer listo');
+    expect(renderTicketFlyerNotice('delivered')).toContain('Agitprop entregó');
+    expect(renderTicketFlyerNotice('delivered_in_ticket')).toContain('se subió aquí');
+    expect(renderTicketFlyerNotice('delivered_in_ticket')).not.toContain('Agitprop entregó');
   });
 
   test('agitprop notices reference the ticket channel', () => {

@@ -6,8 +6,15 @@ import type { ParsedForm } from './parse.js';
 export interface FlyerToolDeps {
   store: EventIntakeStore;
   ticketChannelId: string;
-  /** Called after a successful tool mutation so the watcher can post/edit cards. */
-  onFlyerAction?: (action: 'request' | 'update' | 'cancel', notes?: string | null) => Promise<void>;
+  /**
+   * Called after a tool mutation so the watcher can post/edit cards.
+   * For `request`, return whether the Agitprop job actually opened — the tool
+   * must not report success when the card never landed.
+   */
+  onFlyerAction?: (
+    action: 'request' | 'update' | 'cancel',
+    notes?: string | null,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -103,7 +110,18 @@ export class FlyerToolSource implements ToolSource {
     }
     const notes = typeof notesRaw === 'string' ? notesRaw.trim() || null : null;
     if (notes) this.deps.store.setFlyerNotes(ticket.channel_id, notes);
-    await this.deps.onFlyerAction?.('request', notes);
+    const opened = (await this.deps.onFlyerAction?.('request', notes)) === true;
+    if (!opened) {
+      const current = this.deps.store.getTicket(ticket.channel_id);
+      return {
+        status: 'error',
+        payload: {
+          error:
+            'No pude abrir la solicitud de flyer en Agitprop. Revisa que el canal esté configurado y que pueda publicar ahí.',
+          flyer_status: current?.flyer_status ?? ticket.flyer_status,
+        },
+      };
+    }
     return {
       status: 'success',
       payload: {

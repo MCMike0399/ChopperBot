@@ -67,7 +67,7 @@ interface Sent {
   allowedMentions?: { roles?: string[]; parse?: string[] };
 }
 
-function makeAgitpropChannel(sent: Sent[], cardEdits: Sent[]) {
+function makeAgitpropChannel(sent: Sent[], cardEdits: Sent[], opts?: { failSend?: boolean }) {
   let cardSeq = 1;
   return {
     isTextBased: () => true,
@@ -87,7 +87,9 @@ function makeAgitpropChannel(sent: Sent[], cardEdits: Sent[]) {
       },
     },
     permissionsFor: () => ({ has: () => true }),
+    sendTyping: vi.fn(async () => {}),
     send: vi.fn(async (payload: Sent) => {
+      if (opts?.failSend) throw new Error('agitprop send failed');
       sent.push(payload);
       const id = `card-${cardSeq}`;
       cardSeq += 1;
@@ -96,6 +98,9 @@ function makeAgitpropChannel(sent: Sent[], cardEdits: Sent[]) {
     messages: {
       fetch: vi.fn(async (id: string) => ({
         id,
+        author: { id: BOT, bot: true },
+        content: 'tarjeta de flyer',
+        reference: null,
         edit: vi.fn(async (payload: Sent) => {
           cardEdits.push(payload);
         }),
@@ -133,8 +138,11 @@ function makeClient(opts: {
   cardEdits: Sent[];
   ticketSent: Sent[];
   ticketHistory?: unknown[];
+  failAgitpropSend?: boolean;
 }) {
-  const agitprop = makeAgitpropChannel(opts.agitpropSent, opts.cardEdits);
+  const agitprop = makeAgitpropChannel(opts.agitpropSent, opts.cardEdits, {
+    failSend: opts.failAgitpropSend,
+  });
   const ticket = makeTicketChannel(opts.ticketSent, opts.ticketHistory);
   return {
     user: { id: BOT },
@@ -240,7 +248,12 @@ function imageReplyMessage(opts: {
   } as unknown as Message;
 }
 
-async function newWatcher(client: unknown, store: EventIntakeStore, calendarStore: CalendarStore) {
+async function newWatcher(
+  client: unknown,
+  store: EventIntakeStore,
+  calendarStore: CalendarStore,
+  opts?: { agitpropChannelId?: string | null },
+) {
   return new EventIntakeWatcher({
     store,
     calendarStore,
@@ -248,10 +261,62 @@ async function newWatcher(client: unknown, store: EventIntakeStore, calendarStor
     botUserId: BOT,
     ticketBotId: TICKET_BOT,
     getModRoles: () => [MOD_ROLE],
-    getAgitpropChannelId: () => AGITPROP,
+    getAgitpropChannelId: () =>
+      opts && 'agitpropChannelId' in opts ? (opts.agitpropChannelId ?? null) : AGITPROP,
     getAgitpropRoles: () => ['Agitprop'],
     now: () => Date.parse('2026-08-05T21:00:00Z'),
   });
+}
+
+const PARSED_NO_FLYER = {
+  title: 'Charla Z',
+  dayRaw: 'sábado',
+  timeRaw: '7pm',
+  speaker: 'Ana',
+  flyerSelf: false,
+  pairs: [] as [],
+};
+
+function recordOpenJob(store: EventIntakeStore, channelId = TICKET, cardId = 'card-1') {
+  store.recordProposal({
+    channelId,
+    guildId: GUILD,
+    requesterId: REQUESTER,
+    parsedForm: PARSED_NO_FLYER,
+    resolvedStartAt: null,
+    proposalMessageId: `prop-${channelId}`,
+  });
+  store.markFlyerRequested(channelId, cardId, null);
+}
+
+function agitpropMention(opts: {
+  sent: Sent[];
+  refId?: string | null;
+  content?: string;
+}): Message {
+  return {
+    id: 'agitprop-mention',
+    channelId: AGITPROP,
+    guildId: GUILD,
+    author: { id: 'agitprop-user', bot: false },
+    content: opts.content ?? `<@${BOT}> cancela el flyer`,
+    embeds: [],
+    attachments: new Map(),
+    member: {
+      roles: {
+        cache: {
+          map: <T>(fn: (r: { id: string; name: string }) => T) =>
+            [fn({ id: AGITPROP_ROLE, name: 'Agitprop' })],
+        },
+      },
+      permissions: { has: () => false },
+    },
+    mentions: { users: { has: (id: string) => id === BOT }, repliedUser: null },
+    reference: opts.refId ? { messageId: opts.refId } : null,
+    inGuild: () => true,
+    channel: makeAgitpropChannel(opts.sent, []),
+    reply: vi.fn(async () => ({ id: 'r1' })),
+  } as unknown as Message;
 }
 
 beforeEach(() => {
@@ -557,7 +622,7 @@ test('Agitprop author does not get calendar_create_event in Agitprop channel', a
   store.markFlyerRequested(TICKET, 'card-1', null);
 
   askMock.mockImplementation(async (input) => {
-    const names = input?.tools?.tools().map((t) => t.name) ?? [];
+    const names = input?.tools?.tools.map((t: { name: string }) => t.name) ?? [];
     expect(names).not.toContain('calendar_create_event');
     expect(names).toContain('flyer_cancel');
     return 'Ok.';
@@ -594,5 +659,211 @@ test('Agitprop author does not get calendar_create_event in Agitprop channel', a
   } as unknown as Message;
 
   await watcher.handleMessage(msg as never);
+  expect(askMock).toHaveBeenCalled();
+  mem.close();
+});
+
+test('flyerSelf=false posts open_failed notice and leaves status none when Agitprop channel is missing', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  await new NamespacedMemory(mem, 'calendar').migrate('calendar', CALENDAR_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+
+  const agitpropSent: Sent[] = [];
+  const cardEdits: Sent[] = [];
+  const ticketSent: Sent[] = [];
+  const client = makeClient({ agitpropSent, cardEdits, ticketSent });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()), {
+    agitpropChannelId: null,
+  });
+
+  await watcher.handleMessage(formMessage(FORM_NO_FLYER) as never);
+  const row = store.getTicket(TICKET);
+  expect(row).toBeTruthy();
+  expect(row!.flyer_status).toBe('none');
+  expect(row!.flyer_request_message_id).toBeNull();
+  expect(agitpropSent).toHaveLength(0);
+  expect(ticketSent.some((s) => s.content.includes('No pude abrir'))).toBe(true);
+  mem.close();
+});
+
+test('flyerSelf=false posts open_failed notice when the Agitprop card send fails', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  await new NamespacedMemory(mem, 'calendar').migrate('calendar', CALENDAR_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+  store.setAgitpropChannelId(AGITPROP);
+
+  const agitpropSent: Sent[] = [];
+  const cardEdits: Sent[] = [];
+  const ticketSent: Sent[] = [];
+  const client = makeClient({ agitpropSent, cardEdits, ticketSent, failAgitpropSend: true });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()));
+
+  await watcher.handleMessage(formMessage(FORM_NO_FLYER) as never);
+  expect(store.getTicket(TICKET)!.flyer_status).toBe('none');
+  expect(agitpropSent).toHaveLength(0);
+  expect(ticketSent.some((s) => s.content.includes('No pude abrir'))).toBe(true);
+  mem.close();
+});
+
+test('flyer_request tool reports error (not success) when the Agitprop job fails to open', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  await new NamespacedMemory(mem, 'calendar').migrate('calendar', CALENDAR_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+  store.recordProposal({
+    channelId: TICKET,
+    guildId: GUILD,
+    requesterId: REQUESTER,
+    parsedForm: { ...PARSED_NO_FLYER, flyerSelf: true },
+    resolvedStartAt: null,
+    proposalMessageId: 'prop-1',
+  });
+
+  let toolResult: { status?: string; payload?: { flyer_status?: string; error?: string } } | undefined;
+  askMock.mockImplementation(async (input) => {
+    toolResult = await input?.tools?.handle('flyer_request', { notes: 'tema rojo' });
+    return 'No pude abrir Agitprop.';
+  });
+
+  const sent: Sent[] = [];
+  const reply = vi.fn(async (payload: Sent) => {
+    sent.push(payload);
+    return { id: 'posted-1', reply: vi.fn() } as unknown as Message;
+  });
+  const msg = {
+    id: 'req-tool',
+    channelId: TICKET,
+    guildId: GUILD,
+    author: { id: 'mod-1', bot: false },
+    content: `<@${BOT}> pide flyer a agitprop`,
+    embeds: [],
+    attachments: new Map(),
+    member: {
+      roles: {
+        cache: { map: <T>(fn: (r: { id: string; name: string }) => T) => [fn({ id: MOD_ROLE, name: 'mod' })] },
+      },
+      permissions: { has: () => false },
+    },
+    mentions: { users: { has: (id: string) => id === BOT }, repliedUser: null },
+    reference: null,
+    inGuild: () => true,
+    react: vi.fn(async () => null),
+    guild: {
+      id: GUILD,
+      members: { me: { id: BOT }, fetch: vi.fn() },
+      roles: {
+        cache: {
+          size: 1,
+          map: <T>(fn: (r: { id: string; name: string; mentionable: boolean }) => T) =>
+            [fn({ id: MOD_ROLE, name: 'Moderación', mentionable: true })],
+        },
+      },
+    },
+    channel: makeTicketChannel(sent, []),
+    reply,
+  } as unknown as Message;
+
+  const ticketSent: Sent[] = [];
+  const client = makeClient({ agitpropSent: [], cardEdits: [], ticketSent });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()), {
+    agitpropChannelId: null,
+  });
+
+  await watcher.handleMessage(msg as never);
+  expect(toolResult?.status).toBe('error');
+  expect(toolResult?.payload?.flyer_status).toBe('none');
+  expect(toolResult?.payload?.error).toMatch(/No pude abrir/);
+  expect(store.getTicket(TICKET)!.flyer_status).toBe('none');
+  mem.close();
+});
+
+test('ticket-side image fulfill does not re-upload the flyer or attribute it to Agitprop', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  await new NamespacedMemory(mem, 'calendar').migrate('calendar', CALENDAR_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+  store.setAgitpropChannelId(AGITPROP);
+  recordOpenJob(store);
+
+  const agitpropSent: Sent[] = [];
+  const cardEdits: Sent[] = [];
+  const ticketSent: Sent[] = [];
+  const client = makeClient({ agitpropSent, cardEdits, ticketSent });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()));
+
+  await watcher.handleMessage(
+    imageReplyMessage({
+      channelId: TICKET,
+      refId: 'ignored',
+      authorId: 'mod-1',
+      isMod: true,
+      sent: [],
+    }) as never,
+  );
+
+  const row = store.getTicket(TICKET)!;
+  expect(row.flyer_status).toBe('delivered');
+  expect(row.flyer_image_message_id).toBe('img-reply');
+  expect(ticketSent.some((s) => s.content.includes('Flyer del evento'))).toBe(false);
+  expect(ticketSent.some((s) => s.content.includes('Agitprop entregó'))).toBe(false);
+  expect(ticketSent.some((s) => s.content.includes('se subió aquí'))).toBe(true);
+  expect(agitpropSent.some((s) => s.content.includes('desde el ticket'))).toBe(true);
+  mem.close();
+});
+
+test('Agitprop reply to an unrelated message does not bind flyer tools to the sole open job', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+  recordOpenJob(store);
+
+  const agitpropSent: Sent[] = [];
+  const client = makeClient({ agitpropSent, cardEdits: [], ticketSent: [] });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()));
+
+  await watcher.handleMessage(
+    agitpropMention({ sent: agitpropSent, refId: 'unrelated-msg' }) as never,
+  );
+
+  expect(askMock).not.toHaveBeenCalled();
+  mem.close();
+});
+
+test('Agitprop @mention with no reply still binds the sole open flyer job', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+  recordOpenJob(store);
+
+  askMock.mockImplementation(async (input) => {
+    const names = input?.tools?.tools.map((t: { name: string }) => t.name) ?? [];
+    expect(names).toContain('flyer_cancel');
+    return 'Ok.';
+  });
+
+  const agitpropSent: Sent[] = [];
+  const client = makeClient({ agitpropSent, cardEdits: [], ticketSent: [] });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()));
+
+  await watcher.handleMessage(agitpropMention({ sent: agitpropSent, refId: null }) as never);
+  expect(askMock).toHaveBeenCalled();
+  mem.close();
+});
+
+test('Agitprop @mention with no reply stays silent when two flyer jobs are open', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+  recordOpenJob(store, TICKET, 'card-1');
+  recordOpenJob(store, '1534429008786227399', 'card-2');
+
+  const agitpropSent: Sent[] = [];
+  const client = makeClient({ agitpropSent, cardEdits: [], ticketSent: [] });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()));
+
+  await watcher.handleMessage(agitpropMention({ sent: agitpropSent, refId: null }) as never);
+  expect(askMock).not.toHaveBeenCalled();
   mem.close();
 });

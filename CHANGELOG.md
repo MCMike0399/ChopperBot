@@ -15,6 +15,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.23.1 — 2026-08-17
+
+🎨 **Flyers de eventos: avisos honestos cuando Agitprop no responde**
+
+Ajustes al buzón de flyers que acaba de salir:
+
+- Si no puedo abrir la solicitud en Agitprop (canal mal configurado o no pude publicar), **lo digo en el ticket** y no dejo que quede como si ya se hubiera pedido.
+- Si el diseño se sube **en el ticket**, no lo vuelvo a pegar como si viniera de Agitprop.
+- En el canal de Agitprop, una respuesta a un mensaje que no es la tarjeta de solicitud **ya no se engancha al ticket equivocado**.
+
 ## 1.23.0 — 2026-08-17
 
 🎨 **Flyers de eventos: Agitprop conectada al sistema de tickets**

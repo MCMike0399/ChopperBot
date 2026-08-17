@@ -247,13 +247,17 @@ export class EventIntakeWatcher {
     );
 
     // When the requester won't make the flyer, open the Agitprop job immediately.
+    // A false result already posted an `open_failed` ticket notice (no card, status stays none).
     if (parsed.flyerSelf === false && message.guildId) {
-      await this.flyerService.openFlyerJob({
+      const opened = await this.flyerService.openFlyerJob({
         ticketChannelId: message.channelId,
         guildId: message.guildId,
         parsed,
         requesterId,
       });
+      if (!opened) {
+        log.warn({ channelId: message.channelId }, 'event_intake.flyer.auto_open_failed');
+      }
     }
   }
 
@@ -306,10 +310,11 @@ export class EventIntakeWatcher {
   private async resolveAgitpropTicketContext(message: GatewayMessage) {
     const refId = message.reference?.messageId;
     if (refId) {
-      const byCard = this.deps.store.getTicketByFlyerRequestMessage(refId);
-      if (byCard) return byCard;
+      // A reply that doesn't match a request card must not fall through to
+      // "the sole open job" — that binds flyer tools to the wrong ticket.
+      return this.deps.store.getTicketByFlyerRequestMessage(refId) ?? null;
     }
-    const open = this.deps.store.openFlyerJobs(1);
+    const open = this.deps.store.openFlyerJobs(2);
     if (open.length === 1) return open[0];
     return null;
   }
@@ -348,19 +353,24 @@ export class EventIntakeWatcher {
         if (action === 'request') {
           const ticket = this.deps.store.getTicket(ticketChannelId);
           const parsed = ticket ? EventIntakeStore.parseForm(ticket) : null;
-          if (!ticket?.guild_id || !parsed) return;
-          await this.flyerService.openFlyerJob({
+          if (!ticket?.guild_id || !parsed) return false;
+          return this.flyerService.openFlyerJob({
             ticketChannelId,
             guildId: ticket.guild_id,
             parsed,
             requesterId: ticket.requester_id,
             notes: notes ?? ticket.flyer_notes,
           });
-        } else if (action === 'update') {
-          await this.flyerService.updateFlyerJob(ticketChannelId, notes ?? null, source);
-        } else if (action === 'cancel') {
-          await this.flyerService.cancelFlyerJob(ticketChannelId, source);
         }
+        if (action === 'update') {
+          await this.flyerService.updateFlyerJob(ticketChannelId, notes ?? null, source);
+          return true;
+        }
+        if (action === 'cancel') {
+          await this.flyerService.cancelFlyerJob(ticketChannelId, source);
+          return true;
+        }
+        return false;
       },
     });
   }
