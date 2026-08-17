@@ -17,6 +17,13 @@ export function createClient(): Client {
     // Reactions drive the workshop onboarding (react on the welcome message →
     // get a private session channel). NOT privileged — no portal toggle needed.
     GatewayIntentBits.GuildMessageReactions,
+    // Voice states: the minutas capability joins/records voice & stage
+    // channels (the join, the speaking stream, and the "channel emptied"
+    // auto-end all ride on this). NOT privileged either.
+    GatewayIntentBits.GuildVoiceStates,
+    // Scheduled events: a minutas session auto-ends when the event tied to
+    // its channel completes/is cancelled. NOT privileged.
+    GatewayIntentBits.GuildScheduledEvents,
   ];
   return new Client({
     intents,

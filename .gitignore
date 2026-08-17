@@ -24,3 +24,6 @@ docs/deployment.md
 docs/environment.md
 deploy/bin/
 deploy/launchd/
+
+# Timestamped .env backups — `pnpm run release --commit` does `git add -A`
+.env.bak*

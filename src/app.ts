@@ -15,6 +15,7 @@ import { InstagramMonitorCapability } from './capabilities/instagram_monitor/cap
 import { FileScannerCapability } from './capabilities/file_scanner/capability.js';
 import { EventIntakeCapability } from './capabilities/event_intake/capability.js';
 import { WorkshopCapability } from './capabilities/workshop/capability.js';
+import { MinutasCapability } from './capabilities/minutas/capability.js';
 import { TurnQueue } from './discord/turn-queue.js';
 // NOTE: capabilities that exist only for other/private deploys must NOT be
 // registered here — a registered capability leaks into general_chat's
@@ -64,6 +65,7 @@ export async function run(): Promise<void> {
   // strict FIFO per channel, MAX_CONCURRENT_TURNS across channels.
   const turnQueue = new TurnQueue({ maxConcurrent: config.MAX_CONCURRENT_TURNS });
   const workshopCap = new WorkshopCapability(turnQueue);
+  const minutasCap = new MinutasCapability();
   const candidates: Capability[] = [
     configCap,
     new CalendarCapability(),
@@ -71,6 +73,7 @@ export async function run(): Promise<void> {
     new FileScannerCapability(),
     eventIntakeCap,
     workshopCap,
+    minutasCap,
     new GeneralChatCapability(),
   ];
 
@@ -145,6 +148,13 @@ export async function run(): Promise<void> {
     configCap.attachWorkshopAdmin({
       adminCloseSession: (channelId) => workshopCap.adminCloseSession(channelId),
       adminEnsureWelcome: () => workshopCap.adminEnsureWelcome(),
+    });
+  }
+  if (registry.has(minutasCap.id)) {
+    configCap.attachMinutasAdmin({
+      endActiveSession: (guildId) => minutasCap.requestLeaveProcessing(guildId, 'consola de configuración'),
+      transcriberAvailable: () => minutasCap.adminStatus(null).transcriberAvailable,
+      activeSession: (guildId) => minutasCap.adminStatus(guildId).active,
     });
   }
   registerHandlers(client, {

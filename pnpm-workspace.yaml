@@ -1,6 +1,13 @@
 allowBuilds:
+  # Native Opus decoder. Required: the pure-WASM fallback (opusscript) allocates
+  # in a fixed WASM heap that is exhausted after ~55 un-freed decoders, after
+  # which every allocation fails process-wide. That silently killed minutas
+  # audio capture mid-assembly on 2026-08-16. Must build from source, not be
+  # skipped — a missing native binding falls back to the broken decoder.
+  '@discordjs/opus': true
   better-sqlite3: true
   esbuild: true
 onlyBuiltDependencies:
+  - '@discordjs/opus'
   - better-sqlite3
   - esbuild

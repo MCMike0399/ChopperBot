@@ -293,6 +293,41 @@ const ConfigSchema = z.object({
   // less; never more).
   WORKSHOP_PY_TIMEOUT_S: z.coerce.number().int().positive().default(60),
 
+  // ── Minutas (voice/stage meeting recorder → minutes) ───────────────────────
+  // Passive capability (own listeners, not channel-routed): `/chopperbot-join`
+  // makes the bot join the caller's voice/stage channel and record per-speaker
+  // audio bursts + the channel's text chat; `/chopperbot-leave` (or the channel
+  // emptying, or its scheduled event ending) stops the session, transcribes
+  // locally with whisper.cpp, and posts an LLM-written minuta to the output
+  // channel. Drafts live in MinIO under `minutas/<guild>/<date>/<session>/`.
+  // All vars optional: with no output channel the capability idles; with no
+  // whisper binary it still records and keeps the raw drafts.
+  // Channel where minutes are published. Seeds the DB setting on first boot;
+  // after that the DB wins (`config_minutas action:set_output_channel`).
+  MINUTAS_OUTPUT_CHANNEL_ID: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(/^\d{17,20}$/, 'MINUTAS_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
+  ),
+  // Local whisper.cpp binary + model (built by scripts/setup-minutas-whisper.sh).
+  MINUTAS_WHISPER_BIN: z.string().min(1).default('./data/minutas/bin/whisper-cli'),
+  MINUTAS_WHISPER_MODEL_PATH: z.string().min(1).default('./data/minutas/models/ggml-small.bin'),
+  MINUTAS_WHISPER_LANGUAGE: z.string().min(2).default('es'),
+  // whisper-cli threads. Transcription runs post-meeting on the Pi; 4 cores is
+  // a bounded spike, and a single whisper process runs at a time.
+  MINUTAS_WHISPER_THREADS: z.coerce.number().int().min(1).max(8).default(4),
+  // Backstop auto-end for a forgotten session (e.g. the mod walks away).
+  MINUTAS_MAX_SESSION_MINUTES: z.coerce.number().int().positive().default(300),
+  // Heavy transcriptions defer to this nightly window (CDMX wall-clock hours),
+  // deliberately aligned with the IG monitor's quiet hours (01–08): the Pi is
+  // idle then — no IG polling, no community traffic — so whisper can hog cores
+  // without competing with live requests. Sessions whose ESTIMATED whisper cost
+  // (8.5 s/burst + 0.82 × audio seconds, measured 2026-08-17 on real assembly
+  // audio) fits under MINUTAS_IMMEDIATE_MAX_WHISPER_MIN still transcribe right
+  // away, so short meetings keep near-immediate minutes.
+  MINUTAS_HEAVY_WINDOW_START_HOUR: z.coerce.number().int().min(0).max(23).default(1),
+  MINUTAS_HEAVY_WINDOW_END_HOUR: z.coerce.number().int().min(0).max(23).default(8),
+  MINUTAS_IMMEDIATE_MAX_WHISPER_MIN: z.coerce.number().int().min(0).default(15),
+
   // ── Object storage (MinIO on the Pi's 1TB SSD) ─────────────────────────────
   // Durable byte store behind capabilities that outgrow the local disk —
   // today: workshop session files (the Pi workspace stays a bounded cache;

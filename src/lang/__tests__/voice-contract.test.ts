@@ -21,6 +21,7 @@ import { renderWorkshopPrompt } from '../../capabilities/workshop/preamble.js';
 import { renderProposalPrompt, renderTicketConversationPrompt } from '../../capabilities/event_intake/preamble.js';
 import { renderInstagramMonitorPrompt } from '../../capabilities/instagram_monitor/preamble.js';
 import { renderAnnouncementPrompt } from '../../capabilities/calendar/announce.js';
+import { buildMinutesSystemPrompt } from '../../capabilities/minutas/minutes.js';
 import { SqliteMemoryStore, NamespacedMemory } from '../../memory/store.js';
 import { CalendarCapability } from '../../capabilities/calendar/capability.js';
 
@@ -106,6 +107,10 @@ describe('every community-facing prompt carries the voice contract', () => {
     };
     expect(renderAnnouncementPrompt(target, NOW.getTime())).toContain(SPANISH_VOICE_RULES);
     expect(renderAnnouncementPrompt(target, NOW.getTime(), 'advance')).toContain(SPANISH_VOICE_RULES);
+  });
+
+  test('minutas — the meeting-minutes writer (posted verbatim to #minutas)', () => {
+    expect(buildMinutesSystemPrompt()).toContain(SPANISH_VOICE_RULES);
   });
 });
 
