@@ -185,7 +185,11 @@ export class FlyerService {
     source: 'agitprop' | 'ticket',
   ): Promise<boolean> {
     const ticket = this.deps.store.getTicket(ticketChannelId);
-    if (!ticket || ticket.flyer_status !== 'requested') return false;
+    // `delivered` is allowed so a corrected image can replace a previous one
+    // (a 1×1 verify PNG must not permanently block the real flyer).
+    if (!ticket || (ticket.flyer_status !== 'requested' && ticket.flyer_status !== 'delivered')) {
+      return false;
+    }
 
     const images = listImageAttachments(imageMessage);
     if (images.length === 0) return false;
@@ -236,6 +240,14 @@ export class FlyerService {
 
     const eventId = ticket.created_event_id;
     this.deps.calendarStore.setFlyerPointer(eventId, imageMessage.channelId, imageMessage.id);
+    const linked = this.deps.calendarStore.get(eventId);
+    if (linked?.discord_event_id) {
+      for (const row of this.deps.calendarStore.listAll()) {
+        if (row.discord_event_id === linked.discord_event_id && row.id !== eventId) {
+          this.deps.calendarStore.setFlyerPointer(row.id, imageMessage.channelId, imageMessage.id);
+        }
+      }
+    }
 
     const url = listImageAttachments(imageMessage)[0]?.url ?? null;
     if (!url || !ticket.guild_id) return;

@@ -434,6 +434,38 @@ test('image reply in Agitprop fulfills job and mirrors to ticket', async () => {
   mem.close();
 });
 
+test('Agitprop image reply replaces an already-delivered flyer instead of ignoring it', async () => {
+  const mem = new SqliteMemoryStore({ path: ':memory:' });
+  await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);
+  await new NamespacedMemory(mem, 'calendar').migrate('calendar', CALENDAR_MIGRATIONS);
+  const store = new EventIntakeStore(mem.db());
+  store.setAgitpropChannelId(AGITPROP);
+  recordOpenJob(store);
+  store.markFlyerDelivered(TICKET, AGITPROP, 'old-tiny-png');
+
+  const agitpropSent: Sent[] = [];
+  const cardEdits: Sent[] = [];
+  const ticketSent: Sent[] = [];
+  const client = makeClient({ agitpropSent, cardEdits, ticketSent });
+  const watcher = await newWatcher(client, store, new CalendarStore(mem.db()));
+
+  await watcher.handleMessage(
+    imageReplyMessage({
+      channelId: AGITPROP,
+      refId: 'card-1',
+      authorId: 'agitprop-user',
+      isAgitprop: true,
+      sent: [],
+    }) as never,
+  );
+
+  const row = store.getTicket(TICKET)!;
+  expect(row.flyer_status).toBe('delivered');
+  expect(row.flyer_image_message_id).toBe('img-reply');
+  expect(ticketSent.some((s) => s.content.includes('Flyer del evento'))).toBe(true);
+  mem.close();
+});
+
 test('non-Agitprop image reply in Agitprop channel is ignored', async () => {
   const mem = new SqliteMemoryStore({ path: ':memory:' });
   await new NamespacedMemory(mem, 'event_intake').migrate('event_intake', EVENT_INTAKE_MIGRATIONS);

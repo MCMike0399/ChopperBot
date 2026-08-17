@@ -15,6 +15,15 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.23.2 — 2026-08-17
+
+🎨 **El flyer real sí llega al ticket (y se puede corregir)**
+
+Una prueba interna había dejado un archivo vacío en el lugar del flyer de un evento. Ya no:
+
+- Si Agitprop manda **otra imagen** después, reemplazo la anterior — el diseño de verdad no se queda bloqueado.
+- El flyer queda también de **portada del evento de Discord**, incluso cuando el mismo evento ocupa más de un día.
+
 ## 1.23.1 — 2026-08-17
 
 🎨 **Flyers de eventos: avisos honestos cuando Agitprop no responde**
