@@ -18,6 +18,7 @@ import { ConfigCalendarAdminSource } from './calendar-admin-source.js';
 import { ConfigFileScannerAdminSource } from './filescanner-admin-source.js';
 import { ConfigEventIntakeAdminSource } from './eventintake-admin-source.js';
 import { ConfigWorkshopAdminSource, type ConfigWorkshopAdminDeps } from './workshop-admin-source.js';
+import { ConfigMinutasAdminSource, type ConfigMinutasAdminDeps } from './minutas-admin-source.js';
 import { ConfigDbSource } from './db-source.js';
 import { renderConfigurationPrompt, renderUnauthorizedConfigurationPrompt } from './preamble.js';
 import { isModTurn } from '../mod-authority.js';
@@ -52,6 +53,8 @@ export class ConfigurationCapability implements Capability {
   private skippedCapabilities: readonly SkippedCapability[] = [];
   /** Live workshop hooks (close session / repost welcome), set by app.ts. */
   private workshopHooks: ConfigWorkshopAdminDeps['workshop'] = null;
+  /** Live minutas hooks (status / end active recording), set by app.ts. */
+  private minutasHooks: ConfigMinutasAdminDeps['minutas'] = null;
 
   async init(deps: CapabilityInitDeps): Promise<void> {
     await deps.memory.migrate(this.id, CONFIGURATION_MIGRATIONS);
@@ -93,6 +96,15 @@ export class ConfigurationCapability implements Capability {
    */
   attachWorkshopAdmin(hooks: NonNullable<ConfigWorkshopAdminDeps['workshop']>): void {
     this.workshopHooks = hooks;
+  }
+
+  /**
+   * Called by app.ts when the minutas capability registered, so
+   * `config_minutas` can report the live recording and stop it against the
+   * LIVE instance (not just the DB).
+   */
+  attachMinutasAdmin(hooks: NonNullable<ConfigMinutasAdminDeps['minutas']>): void {
+    this.minutasHooks = hooks;
   }
 
   async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
@@ -165,10 +177,16 @@ export class ConfigurationCapability implements Capability {
       dataDir: this.dataDir,
       workshop: this.workshopHooks,
     });
+    const minutas = new ConfigMinutasAdminSource({
+      db: this.db,
+      callerUserId: ctx.userId,
+      guildId: ctx.guildId,
+      minutas: this.minutasHooks,
+    });
     const database = new ConfigDbSource({ db: this.db, store: this.store });
     return {
       system: renderConfigurationPrompt(ctx.now),
-      tools: composeToolSources([core, instagram, calendar, filescanner, eventintake, workshop, database]),
+      tools: composeToolSources([core, instagram, calendar, filescanner, eventintake, workshop, minutas, database]),
       // High tier: the admin console carries the widest tool surface in the
       // bot (7 sources) and its calls mutate live config. Admin-only, so the
       // extra output tokens ride on negligible volume.

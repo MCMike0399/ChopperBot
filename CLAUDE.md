@@ -25,6 +25,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `event_intake` — ticket funnel → calendar events, mod authority, mod pings | [docs/capabilities/event-intake.md](docs/capabilities/event-intake.md) |
 | `file_scanner` — VirusTotal uploads scanning | [docs/capabilities/file-scanner.md](docs/capabilities/file-scanner.md) |
 | `general_chat` — community assistant, guild profiles, server-directory tools | [docs/capabilities/general-chat.md](docs/capabilities/general-chat.md) |
+| `minutas` — voice/stage recording (slash commands, mod-gated), per-speaker whisper.cpp transcription, LLM minutes, MinIO drafts | [docs/capabilities/minutas.md](docs/capabilities/minutas.md) |
 | `configuration` — admin console, `config_system action:health`, per-capability admin sources | [docs/capabilities/configuration.md](docs/capabilities/configuration.md) |
 | Pi deployment, systemd unit, alert surfaces, crash-restart detection, logs — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo) | [docs/deployment.md](docs/deployment.md) |
 | Any env var, config seeding rules, AWS account wiring — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo) | [docs/environment.md](docs/environment.md) |
@@ -76,7 +77,7 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 
 ## Architecture
 
-**One Discord channel = at most one specialized Capability**, with `general_chat` as the baseline fallback for any unbound guild channel. A Capability is a self-contained bundle of system prompt + tools + private SQLite namespace. Seven ship today:
+**One Discord channel = at most one specialized Capability**, with `general_chat` as the baseline fallback for any unbound guild channel. A Capability is a self-contained bundle of system prompt + tools + private SQLite namespace. Eight ship today:
 
 - `configuration` — admin console, hardcoded to one channel → [doc](docs/capabilities/configuration.md)
 - `calendar` — **global** server calendar: mods talk in the INPUT channel; month PDF/PNG + ICS publish to OUTPUT; daily event announcements to ANNOUNCE → [doc](docs/capabilities/calendar.md)
@@ -84,6 +85,7 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 - `file_scanner` — **passive, NOT channel-bound**: own `MessageCreate` listener scans non-image/video uploads with VirusTotal → [doc](docs/capabilities/file-scanner.md)
 - `event_intake` — **passive, NOT channel-bound**: watches the ticket category, proposes normalized events, a MOD approves → calendar create → [doc](docs/capabilities/event-intake.md)
 - `workshop` — **passive, NOT channel-bound**: react 🎓 in `#bienvenidx` → private channel with a web-LLM-style assistant (sandboxed Python, document skills, MinIO-backed files) → [doc](docs/capabilities/workshop.md)
+- `minutas` — **passive, NOT channel-bound**: `/chopperbot-join` in a voice/stage channel (calendar-approver roles only) records per-speaker audio + the channel chat; `/chopperbot-leave` (or empty channel / ended event) → local whisper.cpp transcription → AI minutes posted to `#minutas-de-asambleas`, drafts archived to MinIO → [doc](docs/capabilities/minutas.md)
 - `general_chat` — **the community assistant**: answers @-mentions in unbound channels; guild profiles (today: Revolución Z) ground it in the community → [doc](docs/capabilities/general-chat.md)
 
 Capabilities that exist only for other/private deploys are **not kept in this repo** (a registered capability leaks into general_chat's capability snapshot and the LLM advertises it to users; and this repo is public). The one private-deploy capability that used to live here was removed 2026-08-13 — its source is preserved under `pi:~/ChopperBot-private-assets/` and lives canonically in its own repo.
