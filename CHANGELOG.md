@@ -17,21 +17,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 🎙️ **Minutas automáticas de las sesiones de voz**
 
-Ya puedo sentarme a escuchar las asambleas y pláticas de voz y dejarles el acta lista. Así funciona:
+Ya puedo sentarme a escuchar las asambleas y pláticas de voz y dejarles el acta lista:
 
-- Una persona de la **moderación** (los mismos roles que aprueban eventos del calendario) entra al canal de voz o escenario y escribe **`/chopperbot-join`**. Yo me uno, aviso en el chat del canal que estoy grabando, y empiezo a tomar nota de todo: la conversación **distinguiendo quién habla**, y también los comentarios que se escriban en el chat del canal mientras tanto.
-- Al terminar, esa misma persona escribe **`/chopperbot-leave`** — o yo cierro sola si el canal se queda vacío o el evento programado termina. Transcribo lo grabado, cruzo voces y chat, y publico la **minuta en #📜│minutas-de-asambleas**: resumen, temas tratados con quién dijo qué, acuerdos, compromisos y lo relevante del chat. La transcripción completa va adjunta como archivo, y el audio y los borradores quedan archivados en nuestro propio almacenamiento.
+- Alguien de la **moderación** (los mismos roles que aprueban eventos del calendario) entra al canal de voz o escenario y escribe **`/chopperbot-join`**. Me uno, aviso en el chat que estoy grabando y tomo nota de todo: la conversación **distinguiendo quién habla** y los comentarios del chat del canal.
+- Al terminar, esa persona escribe **`/chopperbot-leave`** — o cierro sola si el canal se vacía o el evento programado termina. Publico la **minuta en #📜│minutas-de-asambleas**: resumen, temas con quién dijo qué, acuerdos, compromisos y lo relevante del chat (los «hola», «oki» y emojis sueltos no entran al acta).
+- **La minuta sale minutos después de cerrar la sesión**, porque voy transcribiendo mientras la reunión ocurre. Solo si algo interrumpe una sesión y queda mucho pendiente, ese respaldo lo proceso en la madrugada y les digo la hora aproximada.
 
-Dos cosas importantes: todo el audio se procesa **aquí mismo, en nuestra propia computadora** — no se envía a ningún servicio externo — y solo la moderación puede abrir o cerrar una grabación. Si una sesión se interrumpe a la mitad (por ejemplo, un reinicio), retomo lo grabado y termino la minuta al volver.
+Cosas importantes:
 
-Avisos para que nadie se quede esperando de más:
-
-- **La minuta sale minutos después de cerrar la sesión** — voy transcribiendo mientras la reunión ocurre, así que al terminar solo me falta el último tramo y la redacción. Si algo interrumpe una sesión y queda mucho trabajo pendiente, ese respaldo lo proceso **en la madrugada** y les digo la hora aproximada.
-- **Lo que se publica es la minuta, no la transcripción.** El registro palabra por palabra de quién dijo qué se queda guardado internamente; al canal solo va el acta con el resumen, los acuerdos y los compromisos.
-- En la sección de comentarios del chat solo entra lo que aporta: los «hola», «oki» y emojis sueltos ya no salen en el acta.
-- **Si dejo de captar el audio, lo digo en el momento** — aviso en el chat del propio canal de voz, para que puedan tomar notas a mano y no se enteren hasta el final. Lo que haya grabado hasta ese punto se publica igual.
-
-Una nota técnica para quien administre: lo grabo desde los **micrófonos** de quienes hablan. El audio que sale de una **pantalla compartida** no me llega, así que si la sesión se escucha por ahí, no queda en la minuta.
+- Todo el audio se procesa **aquí mismo, en nuestra propia computadora** — no se envía a ningún servicio externo — y solo la moderación puede abrir o cerrar una grabación.
+- **Se publica la minuta, no la transcripción**: el registro palabra por palabra queda guardado internamente.
+- Si dejo de captar el audio, lo aviso en el momento en el chat del propio canal, para que puedan tomar notas a mano; lo grabado hasta ese punto se publica igual.
+- Grabo desde los **micrófonos** de quienes hablan: el audio de una pantalla compartida no me llega, así que si la sesión se escucha por ahí, no queda en la minuta.
 
 ## 1.21.1 — 2026-08-16
 
