@@ -269,6 +269,14 @@ const ConfigSchema = z.object({
   // Discord user id of the ticket bot whose form messages we parse. Defaults to
   // Ticket Tool. Change it if the server switches ticket bots.
   EVENT_INTAKE_TICKET_BOT_ID: z.string().regex(/^\d{17,20}$/).default('557628352828014614'),
+  // Agitprop flyer inbox channel (Comisión de Agitprop). Seeds the DB setting
+  // on first boot; DB wins after (`config_eventintake action:set_agitprop_channel`).
+  EVENT_INTAKE_AGITPROP_CHANNEL_ID: z.preprocess(
+    emptyToUndefined,
+    z.string().regex(/^\d{17,20}$/, 'EVENT_INTAKE_AGITPROP_CHANNEL_ID must be a Discord snowflake').optional(),
+  ),
+  // Roles whose members may fulfill/manage flyer jobs. Names or ids; empty → "Agitprop".
+  EVENT_INTAKE_AGITPROP_ROLES: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
 
   // ── Workshop (escuela/trabajo) private LLM sessions (workshop capability) ──
   // Passive capability: a member reacts to the bot's welcome message in the

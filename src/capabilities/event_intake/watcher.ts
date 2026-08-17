@@ -31,7 +31,11 @@ import {
   shouldNotifyRoles,
   type ModMentions,
 } from '../../discord/mod-roles.js';
-import { renderProposalPrompt, renderTicketConversationPrompt } from './preamble.js';
+import { renderProposalPrompt, renderTicketConversationPrompt, renderAgitpropConversationPrompt } from './preamble.js';
+import { FlyerToolSource } from './flyer-tools.js';
+import { FlyerService } from './flyer-service.js';
+import { isFlyerOperator, resolveAgitpropMentions, resolveAgitpropMentionsInGuild } from './roles.js';
+import type { TextChannel } from 'discord.js';
 
 /** The Message shape the MessageCreate gateway event actually delivers. */
 type GatewayMessage = OmitPartialGroupDMChannel<Message>;
@@ -94,6 +98,8 @@ export interface EventIntakeWatcherDeps {
   botUserId: string;
   ticketBotId: string;
   getModRoles: () => string[];
+  getAgitpropChannelId: () => string | null;
+  getAgitpropRoles: () => string[];
   /** Present at runtime so an approved create auto-publishes the PDF/ICS. */
   publisher?: CalendarPublisher;
   /** Test seam: overrides the real syncer factory ({@link makeSyncer}). */
@@ -110,6 +116,7 @@ export interface EventIntakeWatcherDeps {
  */
 export class EventIntakeWatcher {
   private readonly now: () => number;
+  private readonly flyerService: FlyerService;
   /** Last time we actually NOTIFIED the approver roles, per ticket channel. */
   private readonly lastModPingAt = new Map<string, number>();
   /** Guilds we already warned about unpingable approver roles (log once). */
@@ -117,6 +124,28 @@ export class EventIntakeWatcher {
 
   constructor(private readonly deps: EventIntakeWatcherDeps) {
     this.now = deps.now ?? (() => Date.now());
+    this.flyerService = new FlyerService({
+      client: deps.client,
+      store: deps.store,
+      calendarStore: deps.calendarStore,
+      getAgitpropChannelId: deps.getAgitpropChannelId,
+      resolveAgitpropMentions: (ch) => this.resolveAgitpropMentionsForChannel(ch),
+      makeSyncer: (guildId) =>
+        createEventSyncer({
+          client: deps.client,
+          guildId,
+          store: deps.calendarStore,
+          now: this.now,
+          formatLocal: formatInTimezone,
+        }),
+      now: this.now,
+    });
+  }
+
+  /** Whether this message is in the configured Agitprop inbox channel. */
+  isAgitpropChannel(channelId: string): boolean {
+    const id = this.deps.getAgitpropChannelId();
+    return id !== null && id === channelId;
   }
 
   /** Entry point wired to Events.MessageCreate for watched ticket categories. */
@@ -125,6 +154,11 @@ export class EventIntakeWatcher {
       const authorId = message.author?.id ?? null;
       if (authorId === this.deps.botUserId) return; // never react to our own posts
 
+      if (this.isAgitpropChannel(message.channelId)) {
+        await this.handleAgitpropMessage(message);
+        return;
+      }
+
       const msgLike = toMessageLike(message);
 
       if (isEventForm(msgLike, this.deps.ticketBotId)) {
@@ -132,9 +166,14 @@ export class EventIntakeWatcher {
         return;
       }
 
-      // Anything else only matters if a human is talking TO the bot.
+      // Anything else only matters if a human is talking TO the bot — or
+      // delivering a flyer image in the ticket (no @ needed when a job is open).
       if (message.author?.bot) return;
+
+      if (await this.tryFulfillFlyerFromTicketImage(message)) return;
+
       if (!this.addressesBot(message)) return;
+
       await this.handleConversation(message);
     } catch (err) {
       log.error({ err, channelId: message.channelId }, 'event_intake.watcher.error');
@@ -206,6 +245,128 @@ export class EventIntakeWatcher {
       },
       'event_intake.proposal.posted',
     );
+
+    // When the requester won't make the flyer, open the Agitprop job immediately.
+    if (parsed.flyerSelf === false && message.guildId) {
+      await this.flyerService.openFlyerJob({
+        ticketChannelId: message.channelId,
+        guildId: message.guildId,
+        parsed,
+        requesterId,
+      });
+    }
+  }
+
+  // ── Agitprop channel ──────────────────────────────────────────────────────
+
+  private async handleAgitpropMessage(message: GatewayMessage): Promise<void> {
+    if (message.author?.bot) return;
+
+    // Image reply to a request card — fulfill without @ mention.
+    if (await this.tryFulfillFlyerFromAgitpropReply(message)) return;
+
+    if (!this.addressesBot(message)) return;
+    if (!(await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()))) {
+      return;
+    }
+
+    const ticket = await this.resolveAgitpropTicketContext(message);
+    if (!ticket) return;
+
+    const parsed = EventIntakeStore.parseForm(ticket);
+    if (!parsed) return;
+
+    const userText = stripBotMention(this.deps.client, message.content ?? '').trim();
+    if (!userText) return;
+
+    const isMod = await this.isModerator(message);
+    await message.channel.sendTyping().catch(() => {});
+
+    const system = renderAgitpropConversationPrompt({
+      ticketChannelId: ticket.channel_id,
+      parsed,
+      requesterId: ticket.requester_id,
+      flyerStatus: ticket.flyer_status,
+      isMod,
+    });
+    const tools = composeToolSources([this.flyerToolSource(ticket.channel_id, 'agitprop')]);
+    const history = await buildHistory(this.deps.client, message);
+    const turns: Turn[] = normalizeTurns([...history, { role: 'user', content: userText }]);
+    const reply = await ask({ system, messages: turns, tools, effort: 'high' });
+    reportSpanishStyle(reply, {
+      capability: EVENT_INTAKE_CAPABILITY_ID,
+      channelId: message.channelId,
+      toolNames: tools.tools.map((t) => t.name),
+    });
+    const parts = chunkBotReply(reply);
+    await message.reply({ content: parts[0], allowedMentions: { parse: [] } }).catch(() => {});
+  }
+
+  /** Find the ticket linked to an Agitprop conversation (reply to card or open job). */
+  private async resolveAgitpropTicketContext(message: GatewayMessage) {
+    const refId = message.reference?.messageId;
+    if (refId) {
+      const byCard = this.deps.store.getTicketByFlyerRequestMessage(refId);
+      if (byCard) return byCard;
+    }
+    const open = this.deps.store.openFlyerJobs(1);
+    if (open.length === 1) return open[0];
+    return null;
+  }
+
+  private async tryFulfillFlyerFromAgitpropReply(message: GatewayMessage): Promise<boolean> {
+    if (!message.attachments?.size) return false;
+    if (listImageAttachments(message).length === 0) return false;
+    if (!(await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()))) {
+      return false;
+    }
+    const refId = message.reference?.messageId;
+    if (!refId) return false;
+    const ticket = this.deps.store.getTicketByFlyerRequestMessage(refId);
+    if (!ticket || ticket.flyer_status !== 'requested') return false;
+    await this.flyerService.fulfillFlyer(ticket.channel_id, message, 'agitprop');
+    return true;
+  }
+
+  private async tryFulfillFlyerFromTicketImage(message: GatewayMessage): Promise<boolean> {
+    if (!message.attachments?.size) return false;
+    if (listImageAttachments(message).length === 0) return false;
+    if (!(await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()))) {
+      return false;
+    }
+    const ticket = this.deps.store.getTicket(message.channelId);
+    if (!ticket || ticket.flyer_status !== 'requested') return false;
+    await this.flyerService.fulfillFlyer(message.channelId, message, 'ticket');
+    return true;
+  }
+
+  private flyerToolSource(ticketChannelId: string, source: 'ticket' | 'agitprop'): FlyerToolSource {
+    return new FlyerToolSource({
+      store: this.deps.store,
+      ticketChannelId,
+      onFlyerAction: async (action, notes) => {
+        if (action === 'request') {
+          const ticket = this.deps.store.getTicket(ticketChannelId);
+          const parsed = ticket ? EventIntakeStore.parseForm(ticket) : null;
+          if (!ticket?.guild_id || !parsed) return;
+          await this.flyerService.openFlyerJob({
+            ticketChannelId,
+            guildId: ticket.guild_id,
+            parsed,
+            requesterId: ticket.requester_id,
+            notes: notes ?? ticket.flyer_notes,
+          });
+        } else if (action === 'update') {
+          await this.flyerService.updateFlyerJob(ticketChannelId, notes ?? null, source);
+        } else if (action === 'cancel') {
+          await this.flyerService.cancelFlyerJob(ticketChannelId, source);
+        }
+      },
+    });
+  }
+
+  private async resolveAgitpropMentionsForChannel(channel: TextChannel): Promise<ModMentions> {
+    return resolveAgitpropMentionsInGuild(channel.guild, channel, this.deps.getAgitpropRoles());
   }
 
   // ── Human conversation (mod-gated create) ─────────────────────────────────
@@ -227,8 +388,12 @@ export class EventIntakeWatcher {
       return;
     }
     const { parsed, requesterId } = ctx;
+    const ticketRow = this.deps.store.getTicket(message.channelId);
 
     const isMod = await this.isModerator(message);
+    const isFlyerOp =
+      isMod ||
+      (await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()));
     const mentions = await this.resolveMentions(message);
     // The newest image posted in the ticket is almost always the event flyer
     // (requesters attach it right after opening — the Calibán ticket pattern).
@@ -253,23 +418,27 @@ export class EventIntakeWatcher {
         parsed,
         requesterId,
         isMod,
+        isFlyerOperator: isFlyerOp,
+        flyerStatus: ticketRow?.flyer_status ?? 'none',
         modMention: mentions.notifies ? mentions.text : '',
         flyer,
       });
-      const tools = composeToolSources([
-        this.calendarSource(message, {
-          write: isMod,
-          onCreated: (id) => {
-            createdEventId = id;
-          },
-          onUpdated: (id) => {
-            updatedEventId = id;
-          },
-          imageUrls: flyer ? [flyer.url] : [],
-        }),
-      ]);
+      const toolSources: ToolSource[] = [this.calendarSource(message, {
+        write: isMod,
+        onCreated: (id) => {
+          createdEventId = id;
+        },
+        onUpdated: (id) => {
+          updatedEventId = id;
+        },
+        imageUrls: flyer ? [flyer.url] : [],
+      })];
+      if (isFlyerOp) {
+        toolSources.push(this.flyerToolSource(message.channelId, 'ticket'));
+      }
+      const tools = composeToolSources(toolSources);
       log.info(
-        { channelId: message.channelId, user: message.author?.tag, isMod },
+        { channelId: message.channelId, user: message.author?.tag, isMod, isFlyerOp },
         'event_intake.conversation',
       );
       // High tier: this is the turn where a mod's approval runs the real
@@ -464,6 +633,7 @@ export class EventIntakeWatcher {
     );
     const store = this.deps.store;
     const channelId = message.channelId;
+    const flyerService = this.flyerService;
     return {
       name: inner.name,
       systemPromptSection: () => inner.systemPromptSection(),
@@ -499,12 +669,20 @@ export class EventIntakeWatcher {
             if (ticket?.created_event_id === eventId) {
               store.markEventDeleted(channelId);
               log.info({ channelId, eventId }, 'event_intake.event_deleted');
+              if (ticket.flyer_status === 'requested') {
+                await flyerService.cancelFlyerJob(channelId, 'ticket');
+              }
             }
           }
         }
         return res;
       },
     };
+  }
+
+  /** Exposed for capability.claimed-channel checks. */
+  agitpropChannelId(): string | null {
+    return this.deps.getAgitpropChannelId();
   }
 
   /** Discord-scheduled-event access for this ticket's guild (null in a DM). */
@@ -538,8 +716,10 @@ export class EventIntakeWatcher {
   private async syncDiscordEventFor(message: GatewayMessage, eventId: number): Promise<string> {
     const syncer = this.makeSyncer(message);
     if (!syncer) return '';
-    const flyer = await this.findLatestTicketImage(message);
-    const result = await syncer.sync(eventId, { imageUrl: flyer?.url ?? null }).catch((err) => {
+    const storedUrl = await this.flyerService.resolveFlyerImageUrl(message.channelId, eventId);
+    const scanned = storedUrl ? null : await this.findLatestTicketImage(message);
+    const flyerUrl = storedUrl ?? scanned?.url ?? null;
+    const result = await syncer.sync(eventId, { imageUrl: flyerUrl }).catch((err) => {
       log.warn({ err, eventId }, 'event_intake.discord_event.sync_threw');
       return null;
     });

@@ -14,7 +14,7 @@ import { OutputChannelPublisher, type CalendarPublisher } from '../calendar/publ
 import { parseChannelIdEnv } from '../file_scanner/store.js';
 import { EVENT_INTAKE_MIGRATIONS, EventIntakeStore } from './store.js';
 import { EventIntakeWatcher } from './watcher.js';
-import { EVENT_INTAKE_CAPABILITY_ID } from './constants.js';
+import { EVENT_INTAKE_CAPABILITY_ID, DEFAULT_AGITPROP_CHANNEL_ID } from './constants.js';
 
 export { EVENT_INTAKE_CAPABILITY_ID };
 
@@ -53,6 +53,10 @@ export class EventIntakeCapability implements Capability {
     this.projectRoot = projectRoot;
     this.store.seedWatchedCategories(parseChannelIdEnv(config.EVENT_INTAKE_TICKET_CATEGORY_IDS));
     this.store.seedModRoles(parseChannelIdEnv(config.EVENT_INTAKE_MOD_ROLES));
+    this.store.seedAgitpropChannelId(
+      config.EVENT_INTAKE_AGITPROP_CHANNEL_ID ?? DEFAULT_AGITPROP_CHANNEL_ID,
+    );
+    this.store.seedAgitpropRoles(parseChannelIdEnv(config.EVENT_INTAKE_AGITPROP_ROLES));
     log.info(
       { capability: this.id, watched: this.store.getWatchedCategories().length },
       'EventIntakeCapability initialized',
@@ -73,6 +77,8 @@ export class EventIntakeCapability implements Capability {
       botUserId,
       ticketBotId: config.EVENT_INTAKE_TICKET_BOT_ID,
       getModRoles: () => this.store?.getModRoles() ?? [],
+      getAgitpropChannelId: () => this.store?.getAgitpropChannelId() ?? null,
+      getAgitpropRoles: () => this.store?.getAgitpropRoles() ?? [],
       publisher,
     });
 
@@ -116,6 +122,8 @@ export class EventIntakeCapability implements Capability {
    */
   isClaimedChannel(message: Message): boolean {
     if (!this.store) return false;
+    const agitpropId = this.store.getAgitpropChannelId();
+    if (agitpropId && message.channelId === agitpropId) return true;
     const now = Date.now();
     if (!this.watchedCache || now - this.watchedCache.at > WATCHED_CACHE_TTL_MS) {
       this.watchedCache = { ids: new Set(this.store.getWatchedCategories()), at: now };

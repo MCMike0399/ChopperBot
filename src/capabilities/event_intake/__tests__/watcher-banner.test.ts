@@ -168,6 +168,8 @@ async function newWatcher(client: unknown) {
     botUserId: BOT,
     ticketBotId: TICKET_BOT,
     getModRoles: () => store.getModRoles(),
+    getAgitpropChannelId: () => null,
+    getAgitpropRoles: () => [],
     now: () => Date.parse('2026-08-05T21:00:00Z'),
   });
   return { watcher, store, mem };

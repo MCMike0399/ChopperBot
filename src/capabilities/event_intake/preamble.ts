@@ -60,7 +60,7 @@ ${renderFormBlock(parsed, requesterId)}
    - Resume para lxs mods: **título**, **fecha y hora resueltas**, **ponente**, la nota del **flyer**, y el **resultado del chequeo de choques**.
    - La solicitud no pregunta **dónde** será: incluye UNA pregunta breve por la sala (*"¿en qué sala será? — Sala de Eventos, Salón de Círculo de Estudio, Sala de Cineclub, Asamblea-Z…"*), aclarando que no es bloqueante. Con sala, el evento de Discord queda enlazado al canal correcto para que la gente se apunte.
    - Si quien solicita dijo que SÍ hará su flyer, puedes recordarle que lo puede subir aquí mismo en el ticket: **se usará como portada del evento de Discord** al aprobarse.
-   - Si dijo que **NO** hará el flyer, dilo claro: el diseño lo toma la **Comisión de Agitprop**, y pídele a lxs mods que se lo pasen.
+   - Si dijo que **NO** hará el flyer, dilo claro: el diseño lo toma la **Comisión de Agitprop** — **yo ya les pedí el flyer** (no digas "pásenselo a diseño" ni "pídele a lxs mods que se lo pasen").
    - Cierra invitando a lxs mods a **aprobar o ajustar aquí mismo** mencionándote (ej. "@ChopperBot créalo" o "@ChopperBot sí, pero muévelo al sábado 7pm").
 
 ${SPANISH_VOICE_RULES}
@@ -82,12 +82,17 @@ export function renderTicketConversationPrompt(opts: {
   parsed: ParsedForm | null;
   requesterId: string | null;
   isMod: boolean;
+  /** Staff or Agitprop — may drive the flyer job (not calendar approval). */
+  isFlyerOperator?: boolean;
+  /** Current flyer job status for this ticket. */
+  flyerStatus?: string;
   /** Exact text that pings the approver roles (''/omitted → none resolvable). */
   modMention?: string;
   /** The newest image attached in the ticket (the flyer), when there is one. */
   flyer?: { url: string; authorId: string | null } | null;
 }): string {
   const { now, parsed, requesterId, isMod } = opts;
+  const isFlyerOp = opts.isFlyerOperator ?? false;
   const modMention = opts.modMention?.trim() ?? '';
   const formBlock = parsed
     ? renderFormBlock(parsed, requesterId)
@@ -102,7 +107,13 @@ export function renderTicketConversationPrompt(opts: {
 - **La sala:** si el formulario no dice dónde será, pregunta UNA vez por la sala (*"¿en qué sala será? — Sala de Eventos, Salón de Círculo de Estudio, Sala de Cineclub, Asamblea-Z…"*), **sin bloquear**: si nadie responde o ya está todo lo demás, créalo igual (al generar el evento de Discord intento adivinar la sala por el título). Si te dicen la sala, pásala como \`location\` al crear.
 - Usa la fecha/hora ya resueltas de la propuesta, salvo que el mod indique un cambio ("muévelo al sábado 7pm", "mejor a las 6"). El mod manda sobre día/hora y sobre aceptar o no.
 - Antes de crear, revisa duplicados con \`calendar_search_events\` (como en el calendario normal). No crees series recurrentes salvo que lo pidan.
-- Al confirmar, di el día y hora local finales (usa \`start_at_local\` del resultado) y que ya quedó en el calendario. Si el solicitante dijo que NO hará el flyer, recuerda brevemente que el diseño lo toma la **Comisión de Agitprop**.
+- Al confirmar, di el día y hora local finales (usa \`start_at_local\` del resultado) y que ya quedó en el calendario. Si el solicitante dijo que NO hará el flyer, recuerda brevemente que el diseño lo toma la **Comisión de Agitprop** (yo ya les pedí el flyer si aún no está listo).
+
+# Flyer (Comisión de Agitprop)
+- Si hace falta diseño, usa \`flyer_request\` — yo abro la solicitud en Agitprop (también si el formulario decía que el solicitante lo haría).
+- \`flyer_update\` cambia las notas de la solicitud abierta; \`flyer_cancel\` la cancela. Yo aviso a Agitprop y al ticket.
+- Si suben la imagen aquí en el ticket y hay solicitud abierta, yo la marco entregada y la pongo de portada si el evento ya existe.
+- Estado actual del flyer en este ticket: **${opts.flyerStatus ?? 'none'}**.
 
 # Cancelar o eliminar — SÍ se hace desde aquí
 - **Puedes cancelar y eliminar eventos con \`calendar_delete_event\`, aquí mismo.** Nunca mandes a nadie al canal de gestión del calendario por esto: quien aprueba desde el ticket también cancela desde el ticket.
@@ -120,6 +131,14 @@ export function renderTicketConversationPrompt(opts: {
 - Si piden cancelar o mover algo, tómalo como una petición válida: dilo aquí mismo con claridad y avisa que un mod lo resuelve en este ticket — **no lxs mandes a otro canal**.
 - Ayuda a afinar los detalles (corregir día/hora/título/ponente), responde dudas y actualiza el entendimiento de la solicitud. Si es el solicitante corrigiendo algo, agradécelo y di que un mod lo revisará y aprobará.`;
 
+  const flyerOpSection =
+    !isMod && isFlyerOp
+      ? `# Quién te habla: staff/Agitprop (flyer solamente)
+- **No puedes aprobar ni crear el evento en el calendario** — eso solo lxs moderadorxs.
+- Puedes gestionar la solicitud de flyer con \`flyer_request\`, \`flyer_update\` y \`flyer_cancel\`.
+- Estado actual del flyer: **${opts.flyerStatus ?? 'none'}**.`
+      : '';
+
   // The flyer the requester attached becomes the Discord event's cover at
   // approval time (deterministic in the watcher) — the model just needs to
   // know it can mention that, and which URL to pass if asked to set it.
@@ -136,7 +155,8 @@ Hay una imagen adjunta en este ticket (la subió ${flyer.authorId ? `<@${flyer.a
   // model would emit a chip that notifies nobody (or invent a role id).
   const mentionSection = modMention
     ? `# Cómo llamar a lxs mods
-- Cuando de verdad haga falta que lxs moderadorxs hagan algo (aprobar el evento, decidir día/hora, confirmar una cancelación, pasar el flyer a la **Comisión de Agitprop**), escribe **exactamente** ${modMention} una sola vez, al final del mensaje, junto con lo que necesitas de ellxs.
+- Cuando de verdad haga falta que lxs moderadorxs hagan algo (aprobar el evento, decidir día/hora, confirmar una cancelación), escribe **exactamente** ${modMention} una sola vez, al final del mensaje, junto con lo que necesitas de ellxs.
+- **Para el flyer usa las herramientas \`flyer_*\`** — no pidas a lxs mods que se lo pasen a Agitprop a mano; yo ya tengo un canal con ellxs.
 - Si no hace falta que intervengan, **no lxs menciones**. No repitas la mención solo porque aparece más arriba en la conversación.
 - **Cuando acabas de crear el evento, no lxs menciones tú**: el aviso de "aprobado y agendado" se agrega solo al final de tu confirmación.
 - No inventes menciones de rol: usa solo ${modMention}, tal cual.`
@@ -151,6 +171,8 @@ ${formBlock}
 
 ${roleSection}
 
+${flyerOpSection}
+
 ${flyerSection}
 
 ${mentionSection}
@@ -162,4 +184,39 @@ ${SPANISH_VOICE_RULES}
 - Resuelve tiempos relativos ("domingo", "8pm") a fecha absoluta local y conviértelos a ISO 8601 UTC para la herramienta (pásalos en \`start_at_iso\`).
 - Un agradecimiento o cierre ("gracias", "va", "listo") no es una instrucción nueva: responde breve y no llames herramientas.
 - Nunca repitas una acción ya hecha (si ya se creó el evento y lo confirmaste, no lo vuelvas a crear salvo que lo pidan explícitamente).`;
+}
+
+/**
+ * Prompt for conversation in the Agitprop channel — flyer jobs only.
+ */
+export function renderAgitpropConversationPrompt(opts: {
+  ticketChannelId: string;
+  parsed: ParsedForm | null;
+  requesterId: string | null;
+  flyerStatus: string;
+  isMod: boolean;
+}): string {
+  const formBlock = opts.parsed
+    ? renderFormBlock(opts.parsed, opts.requesterId)
+    : '# Solicitud\n(No pude leer el formulario del ticket.)';
+
+  return `Eres ChopperBot en el canal de la **Comisión de Agitprop** (diseño y propaganda) de Revolución Z. Aquí gestionas solicitudes de **flyers** para eventos — cada tarjeta de solicitud corresponde a un ticket.
+
+# Ticket vinculado
+- Canal del ticket: <#${opts.ticketChannelId}>
+- Estado del flyer: **${opts.flyerStatus}**
+
+${formBlock}
+
+# Tu rol
+- **Entregar el flyer:** la persona responde **a la tarjeta de solicitud** con la imagen — yo lo detecto solo (no hace falta que lo digas).
+- **Cancelar o cambiar detalles:** usa \`flyer_cancel\` o \`flyer_update\` (notas visuales, texto obligatorio, etc.). Yo aviso al ticket.
+- **Abrir una solicitud** si no hay tarjeta: \`flyer_request\`.
+${opts.isMod ? '- También eres moderadorx: puedes aprobar el evento desde el ticket, no desde aquí.' : '- **No apruebes ni crees eventos en el calendario** — eso es en el ticket con lxs mods.'}
+
+${SPANISH_VOICE_RULES}
+
+# Reglas
+- Cálido y breve. No inventes datos del evento.
+- Responde SOLO con texto útil (sin prefacios).`;
 }

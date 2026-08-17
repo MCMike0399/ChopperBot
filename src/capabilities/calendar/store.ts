@@ -32,6 +32,10 @@ export interface CalendarEvent {
    * (admins usually create these by hand, with a differently-worded title).
    */
   discord_event_id: string | null;
+  /** Discord channel where the event flyer image message lives (durable pointer). */
+  flyer_channel_id: string | null;
+  /** Discord message id of the flyer image (CDN URLs expire; re-fetch at sync time). */
+  flyer_image_message_id: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -250,6 +254,14 @@ export const CALENDAR_MIGRATIONS: Migration[] = [
 
       ALTER TABLE calendar_settings ADD COLUMN announce_channel_id TEXT;
       ALTER TABLE calendar_settings ADD COLUMN announce_mentions_json TEXT;
+    `,
+  },
+  {
+    // v8 — durable flyer pointer on calendar events (Discord message ids, not CDN URLs).
+    version: 8,
+    up: `
+      ALTER TABLE calendar_events ADD COLUMN flyer_channel_id TEXT;
+      ALTER TABLE calendar_events ADD COLUMN flyer_image_message_id TEXT;
     `,
   },
 ];
@@ -657,6 +669,15 @@ export class CalendarStore {
       .run(discordEventId, Date.now(), id);
   }
 
+  /** Durable pointer to the flyer image message (CDN URLs expire). */
+  setFlyerPointer(id: number, channelId: string | null, messageId: string | null): void {
+    this.db
+      .prepare(
+        `UPDATE calendar_events SET flyer_channel_id = ?, flyer_image_message_id = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(channelId, messageId, Date.now(), id);
+  }
+
   // ── Announcement ledger (idempotency for the daily job) ────────────────────
 
   /** Whether this exact thing was already announced (survives restarts). */
@@ -769,6 +790,8 @@ function toOccurrence(master: CalendarEvent, occ: ExpandedOccurrence): CalendarO
     recurrence_freq: master.recurrence_freq,
     recurrence_until: master.recurrence_until,
     discord_event_id: master.discord_event_id,
+    flyer_channel_id: master.flyer_channel_id,
+    flyer_image_message_id: master.flyer_image_message_id,
     created_at: master.created_at,
     updated_at: master.updated_at,
     start_at: occ.start_at,

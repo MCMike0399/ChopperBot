@@ -13,6 +13,19 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+---
+
+## 1.23.0 — 2026-08-17
+
+🎨 **Flyers de eventos: Agitprop conectada al sistema de tickets**
+
+Cuando alguien abre un ticket de evento y dice que **no** hará su propio flyer, ya no hace falta que un mod se lo pase a mano a la Comisión de Agitprop:
+
+- **Yo abro la solicitud sola** en el canal de Agitprop en cuanto llega el formulario — con una tarjeta clara (título, fecha, ponente, ticket) y aviso a la comisión.
+- **Para entregar el diseño:** responden **a esa tarjeta** con la imagen — no hace falta mencionarme.
+- El flyer **aparece en el ticket** y, si el evento ya está aprobado en el calendario, queda también de **portada del evento de Discord**.
+- Mods y Agitprop pueden **cancelar o actualizar** la solicitud desde el ticket o desde Agitprop; el otro lado siempre se entera.
+
 ## 1.22.0 — 2026-08-17
 
 🎙️ **Minutas automáticas de las sesiones de voz**

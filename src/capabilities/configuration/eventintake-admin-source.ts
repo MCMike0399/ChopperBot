@@ -5,6 +5,7 @@ import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
 import { EventIntakeStore } from '../event_intake/store.js';
 import { DEFAULT_MOD_ROLES, resolveModMentions } from '../../discord/mod-roles.js';
+import { DEFAULT_AGITPROP_ROLES } from '../event_intake/constants.js';
 import { parseChannelIdEnv } from '../file_scanner/store.js';
 
 export interface ConfigEventIntakeAdminDeps {
@@ -45,13 +46,23 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
           '• "list_categories" — the category/channel ids currently watched.\n' +
           '• "set_categories" {channels} — REPLACE the watched set. `channels` may be: comma/space-separated CATEGORY (or channel) ids or a JSON array; "este servidor" to watch every channel the bot sees in THIS server; "todos"/"all"; explicit `guild:<serverId>` tokens; or empty to stop. Takes effect within ~10s (no restart).\n' +
           '• "set_mod_roles" {roles} — REPLACE who can approve. `roles` is a comma-separated list or JSON array of role NAMES (e.g. "Moderador, Administrador, Administradora") or role ids. Empty resets to the defaults.\n' +
+          '• "set_agitprop_channel" {channel} — REPLACE the Agitprop flyer inbox channel id (snowflake), or empty to clear.\n' +
+          '• "set_agitprop_roles" {roles} — REPLACE who may fulfill/manage flyer jobs (names or ids). Empty → "Agitprop".\n' +
           '• "recent_tickets" — the latest tickets seen (status + resolved event).',
         inputSchema: {
           type: 'object',
           properties: {
             action: {
               type: 'string',
-              enum: ['status', 'list_categories', 'set_categories', 'set_mod_roles', 'recent_tickets'],
+              enum: [
+                'status',
+                'list_categories',
+                'set_categories',
+                'set_mod_roles',
+                'set_agitprop_channel',
+                'set_agitprop_roles',
+                'recent_tickets',
+              ],
             },
             channels: {
               type: 'string',
@@ -59,7 +70,11 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
             },
             roles: {
               type: 'string',
-              description: 'For set_mod_roles: comma-separated role names/ids or a JSON array. Empty resets to defaults.',
+              description: 'For set_mod_roles / set_agitprop_roles: comma-separated role names/ids or a JSON array.',
+            },
+            channel: {
+              type: 'string',
+              description: 'For set_agitprop_channel: a channel snowflake, or empty to clear.',
             },
           },
           required: ['action'],
@@ -72,6 +87,20 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
   private pingability(): ReturnType<typeof pingabilityOf> {
     try {
       return pingabilityOf(this.deps.client, this.deps.guildId, this.store.getModRoles());
+    } catch {
+      return null;
+    }
+  }
+
+  private agitpropPingability(): ReturnType<typeof pingabilityOf> {
+    try {
+      return pingabilityOf(
+        this.deps.client,
+        this.deps.guildId,
+        this.store.getAgitpropRoles().length > 0
+          ? this.store.getAgitpropRoles()
+          : [...DEFAULT_AGITPROP_ROLES],
+      );
     } catch {
       return null;
     }
@@ -94,6 +123,10 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
             createdEventId: t.created_event_id,
           }));
           const ping = this.pingability();
+          const agitpropPing = this.agitpropPingability();
+          const openFlyers = this.store.openFlyerJobs(5);
+          const agitpropChannel = this.store.getAgitpropChannelId();
+          const agitpropRoles = this.store.getAgitpropRoles();
           const lines = [
             '📋 **Event intake (tickets)**',
             categories.length === 0
@@ -112,12 +145,32 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                   `• ⚠️ Sin notificación: ${ping.silent.join(', ')} — marca el rol como *mencionable* (Ajustes del rol → “Permitir que cualquiera mencione este rol”) o dale al bot el permiso “Mencionar @everyone, @here y todos los roles”.`,
                 ]
               : []),
+            `• Canal Agitprop (flyers): ${agitpropChannel ? `<#${agitpropChannel}> (\`${agitpropChannel}\`)` : '(sin configurar — `set_agitprop_channel`)'}`,
+            `• Roles Agitprop: ${(agitpropRoles.length > 0 ? agitpropRoles : [...DEFAULT_AGITPROP_ROLES]).join(', ')}`,
+            agitpropPing
+              ? `• Aviso a Agitprop: ${
+                  agitpropPing.pingable.length > 0
+                    ? `sí, se notifica a ${agitpropPing.pingable.join(', ')}`
+                    : 'NO se notifica a nadie (ningún rol Agitprop es mencionable)'
+                }`
+              : '• Aviso a Agitprop: (no pude resolver los roles de este servidor)',
+            `• Flyers abiertos: ${openFlyers.length}`,
             `• Bot de tickets: \`${config.EVENT_INTAKE_TICKET_BOT_ID}\``,
             `• Tickets recientes: ${recent.length}`,
           ];
           return {
             status: 'success',
-            payload: { message: lines.join('\n'), categories, roles, mod_ping: ping, recent },
+            payload: {
+              message: lines.join('\n'),
+              categories,
+              roles,
+              mod_ping: ping,
+              agitprop_channel_id: agitpropChannel,
+              agitprop_roles: agitpropRoles.length > 0 ? agitpropRoles : [...DEFAULT_AGITPROP_ROLES],
+              agitprop_ping: agitpropPing,
+              open_flyer_jobs: openFlyers.length,
+              recent,
+            },
           };
         }
         case 'list_categories':
@@ -170,12 +223,51 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
             },
           };
         }
+        case 'set_agitprop_channel': {
+          const raw = (typeof obj.channel === 'string' ? obj.channel : '').trim();
+          if (!raw) {
+            this.store.setAgitpropChannelId(null);
+            return {
+              status: 'success',
+              payload: { note: 'Canal Agitprop desactivado (ya no se envían solicitudes de flyer).' },
+            };
+          }
+          if (!/^\d{17,20}$/.test(raw)) {
+            return { status: 'error', payload: { error: 'El canal debe ser un id de Discord (snowflake).' } };
+          }
+          this.store.setAgitpropChannelId(raw);
+          log.info({ tool: toolName, channel: raw, by: this.deps.callerUserId }, 'event_intake.set_agitprop_channel');
+          return {
+            status: 'success',
+            payload: { agitprop_channel_id: raw, note: `Canal Agitprop: <#${raw}>. Toma efecto de inmediato.` },
+          };
+        }
+        case 'set_agitprop_roles': {
+          const roles = parseRoleList(typeof obj.roles === 'string' ? obj.roles : '');
+          this.store.setAgitpropRoles(roles);
+          log.info({ tool: toolName, roles, by: this.deps.callerUserId }, 'event_intake.set_agitprop_roles');
+          const effective = roles.length > 0 ? roles : [...DEFAULT_AGITPROP_ROLES];
+          const ping = this.agitpropPingability();
+          const warn =
+            ping && ping.pingable.length === 0
+              ? ' ⚠️ Ojo: no puedo NOTIFICAR a Agitprop (ningún rol es mencionable).'
+              : '';
+          return {
+            status: 'success',
+            payload: {
+              agitprop_roles: roles,
+              agitprop_ping: ping,
+              note: `Roles Agitprop: ${effective.join(', ')}${roles.length === 0 ? ' (predeterminados)' : ''}.${warn}`,
+            },
+          };
+        }
         case 'recent_tickets': {
           const recent = this.store.recentTickets(10).map((t) => ({
             channel_id: t.channel_id,
             requester_id: t.requester_id,
             status: t.status,
             created_event_id: t.created_event_id,
+            flyer_status: t.flyer_status,
             updated_at_iso: new Date(t.updated_at).toISOString(),
           }));
           return { status: 'success', payload: { recent } };
