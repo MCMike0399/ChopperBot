@@ -36,6 +36,44 @@ describe('EventIntakeStore settings', () => {
     expect(store.getModRoles()).toEqual(['Moderador', '123']);
     mem.close();
   });
+
+  test('agitprop settings seed + flyer status machine', async () => {
+    const { store, mem } = await newStore();
+    store.seedAgitpropChannelId('agitprop-chan');
+    store.seedAgitpropRoles(['Agitprop']);
+    expect(store.getAgitpropChannelId()).toBe('agitprop-chan');
+    expect(store.getAgitpropRoles()).toEqual(['Agitprop']);
+
+    store.recordProposal({
+      channelId: 'chan1',
+      guildId: 'g1',
+      requesterId: 'u1',
+      parsedForm: FORM,
+      resolvedStartAt: null,
+      proposalMessageId: 'm1',
+    });
+    expect(store.getTicket('chan1')!.flyer_status).toBe('none');
+
+    store.markFlyerRequested('chan1', 'req-msg-1', 'tema rojo');
+    const requested = store.getTicket('chan1')!;
+    expect(requested.flyer_status).toBe('requested');
+    expect(requested.flyer_request_message_id).toBe('req-msg-1');
+    expect(requested.flyer_notes).toBe('tema rojo');
+    expect(store.getTicketByFlyerRequestMessage('req-msg-1')?.channel_id).toBe('chan1');
+    expect(store.openFlyerJobs()).toHaveLength(1);
+
+    store.markFlyerDelivered('chan1', 'img-chan', 'img-msg');
+    const delivered = store.getTicket('chan1')!;
+    expect(delivered.flyer_status).toBe('delivered');
+    expect(delivered.flyer_image_channel_id).toBe('img-chan');
+    expect(delivered.flyer_image_message_id).toBe('img-msg');
+    expect(store.openFlyerJobs()).toHaveLength(0);
+
+    store.markFlyerRequested('chan1', 'req-msg-2', null);
+    store.markFlyerCancelled('chan1');
+    expect(store.getTicket('chan1')!.flyer_status).toBe('cancelled');
+    mem.close();
+  });
 });
 
 describe('EventIntakeStore tickets', () => {

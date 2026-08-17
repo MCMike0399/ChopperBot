@@ -125,6 +125,8 @@ async function newWatcher(overrides: { now?: () => number } = {}) {
     botUserId: BOT,
     ticketBotId: TICKET_BOT,
     getModRoles: () => store.getModRoles(),
+    getAgitpropChannelId: () => null,
+    getAgitpropRoles: () => [],
     now: overrides.now ?? (() => Date.parse('2026-08-04T18:00:00Z')),
   });
   return { watcher, store, mem };

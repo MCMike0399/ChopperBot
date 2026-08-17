@@ -9,6 +9,9 @@ import type { ParsedForm } from './parse.js';
  */
 export type TicketStatus = 'proposed' | 'created' | 'dismissed' | 'cancelled';
 
+/** Flyer job lifecycle for tickets where Agitprop makes the design. */
+export type FlyerStatus = 'none' | 'requested' | 'delivered' | 'cancelled';
+
 /** One row per ticket channel — dedup anchor + approval-flow state. */
 export interface TicketRow {
   channel_id: string;
@@ -19,6 +22,11 @@ export interface TicketRow {
   status: TicketStatus;
   proposal_message_id: string | null;
   created_event_id: number | null;
+  flyer_status: FlyerStatus;
+  flyer_request_message_id: string | null;
+  flyer_image_channel_id: string | null;
+  flyer_image_message_id: string | null;
+  flyer_notes: string | null;
   created_at: number;
   updated_at: number;
 }
@@ -54,6 +62,21 @@ export const EVENT_INTAKE_MIGRATIONS: Migration[] = [
       );
       CREATE INDEX IF NOT EXISTS event_intake_tickets_updated
         ON event_intake_tickets (updated_at DESC);
+    `,
+  },
+  {
+    // v2 — Agitprop flyer inbox: channel + roles in settings; per-ticket flyer job
+    // state and durable Discord message pointers (CDN URLs expire).
+    version: 2,
+    up: `
+      ALTER TABLE event_intake_settings ADD COLUMN agitprop_channel_id TEXT;
+      ALTER TABLE event_intake_settings ADD COLUMN agitprop_roles_json TEXT NOT NULL DEFAULT '[]';
+
+      ALTER TABLE event_intake_tickets ADD COLUMN flyer_status TEXT NOT NULL DEFAULT 'none';
+      ALTER TABLE event_intake_tickets ADD COLUMN flyer_request_message_id TEXT;
+      ALTER TABLE event_intake_tickets ADD COLUMN flyer_image_channel_id TEXT;
+      ALTER TABLE event_intake_tickets ADD COLUMN flyer_image_message_id TEXT;
+      ALTER TABLE event_intake_tickets ADD COLUMN flyer_notes TEXT;
     `,
   },
 ];
@@ -109,6 +132,47 @@ export class EventIntakeStore {
     if (roles.length === 0) return;
     if (this.getModRoles().length > 0) return;
     this.setModRoles(roles);
+  }
+
+  // ── Agitprop inbox (channel + roles) ─────────────────────────────────────
+
+  getAgitpropChannelId(): string | null {
+    const row = this.db
+      .prepare('SELECT agitprop_channel_id FROM event_intake_settings WHERE id = 1')
+      .get() as { agitprop_channel_id: string | null } | undefined;
+    return row?.agitprop_channel_id ?? null;
+  }
+
+  setAgitpropChannelId(channelId: string | null): void {
+    this.db
+      .prepare('UPDATE event_intake_settings SET agitprop_channel_id = ?, updated_at = ? WHERE id = 1')
+      .run(channelId, Date.now());
+  }
+
+  /** One-time seed from env: only writes if nothing configured yet. */
+  seedAgitpropChannelId(channelId: string): void {
+    if (!channelId) return;
+    if (this.getAgitpropChannelId()) return;
+    this.setAgitpropChannelId(channelId);
+  }
+
+  getAgitpropRoles(): string[] {
+    const row = this.db
+      .prepare('SELECT agitprop_roles_json FROM event_intake_settings WHERE id = 1')
+      .get() as { agitprop_roles_json: string } | undefined;
+    return parseIdArray(row?.agitprop_roles_json);
+  }
+
+  setAgitpropRoles(roles: string[]): void {
+    this.db
+      .prepare('UPDATE event_intake_settings SET agitprop_roles_json = ?, updated_at = ? WHERE id = 1')
+      .run(JSON.stringify(dedupeIds(roles)), Date.now());
+  }
+
+  seedAgitpropRoles(roles: string[]): void {
+    if (roles.length === 0) return;
+    if (this.getAgitpropRoles().length > 0) return;
+    this.setAgitpropRoles(roles);
   }
 
   // ── Ticket rows ─────────────────────────────────────────────────────────
@@ -183,6 +247,75 @@ export class EventIntakeStore {
          WHERE channel_id = ?`,
       )
       .run(Date.now(), channelId);
+  }
+
+  /** Open or refresh a flyer job on a ticket (Agitprop request card posted). */
+  markFlyerRequested(channelId: string, requestMessageId: string, notes?: string | null): void {
+    this.db
+      .prepare(
+        `UPDATE event_intake_tickets
+           SET flyer_status = 'requested',
+               flyer_request_message_id = ?,
+               flyer_notes = COALESCE(?, flyer_notes),
+               updated_at = ?
+         WHERE channel_id = ?`,
+      )
+      .run(requestMessageId, notes ?? null, Date.now(), channelId);
+  }
+
+  /** The delivered flyer lives at this Discord message (durable pointer). */
+  markFlyerDelivered(
+    channelId: string,
+    imageChannelId: string,
+    imageMessageId: string,
+  ): void {
+    this.db
+      .prepare(
+        `UPDATE event_intake_tickets
+           SET flyer_status = 'delivered',
+               flyer_image_channel_id = ?,
+               flyer_image_message_id = ?,
+               updated_at = ?
+         WHERE channel_id = ?`,
+      )
+      .run(imageChannelId, imageMessageId, Date.now(), channelId);
+  }
+
+  markFlyerCancelled(channelId: string): void {
+    this.db
+      .prepare(
+        `UPDATE event_intake_tickets
+           SET flyer_status = 'cancelled', updated_at = ?
+         WHERE channel_id = ?`,
+      )
+      .run(Date.now(), channelId);
+  }
+
+  /** Update flyer brief notes (does not change status). */
+  setFlyerNotes(channelId: string, notes: string | null): void {
+    this.db
+      .prepare(
+        `UPDATE event_intake_tickets SET flyer_notes = ?, updated_at = ? WHERE channel_id = ?`,
+      )
+      .run(notes, Date.now(), channelId);
+  }
+
+  /** Tickets with an open flyer job (requested, not yet delivered/cancelled). */
+  openFlyerJobs(limit = 20): TicketRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM event_intake_tickets
+         WHERE flyer_status = 'requested'
+         ORDER BY updated_at DESC LIMIT ?`,
+      )
+      .all(limit) as TicketRow[];
+  }
+
+  /** Find a ticket by its Agitprop request-card message id. */
+  getTicketByFlyerRequestMessage(messageId: string): TicketRow | undefined {
+    return this.db
+      .prepare('SELECT * FROM event_intake_tickets WHERE flyer_request_message_id = ?')
+      .get(messageId) as TicketRow | undefined;
   }
 
   recentTickets(limit: number): TicketRow[] {

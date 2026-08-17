@@ -108,6 +108,8 @@ async function newWatcher() {
     botUserId: BOT,
     ticketBotId: TICKET_BOT,
     getModRoles: () => [MOD_ROLE],
+    getAgitpropChannelId: () => null,
+    getAgitpropRoles: () => [],
     makeEventSyncer: () => fakeSyncer,
     now: () => Date.parse('2026-08-14T18:00:00Z'),
   });
