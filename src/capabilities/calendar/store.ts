@@ -1,5 +1,6 @@
 import type Database from 'better-sqlite3';
 import type { Migration } from '../../memory/store.js';
+import type { BroadcastChannel } from './broadcast.js';
 import {
   expandOccurrences,
   type ExpandedOccurrence,
@@ -262,6 +263,69 @@ export const CALENDAR_MIGRATIONS: Migration[] = [
     up: `
       ALTER TABLE calendar_events ADD COLUMN flyer_channel_id TEXT;
       ALTER TABLE calendar_events ADD COLUMN flyer_image_message_id TEXT;
+    `,
+  },
+  {
+    // v9 — on-demand announcements (a mod asking the bot to announce an event
+    // now, in channels they name). The row IS the confirmation contract: the
+    // draft stores the FINAL text, the resolved target channels and the mention
+    // policy, so what a mod approved in the calendar channel is byte-identical
+    // to what lands in the community's channels a turn later — and so a token
+    // can only ever be spent once (`posted_at`).
+    version: 9,
+    up: `
+      CREATE TABLE IF NOT EXISTS calendar_announcement_drafts (
+        token                   TEXT    PRIMARY KEY,
+        event_id                INTEGER NOT NULL,
+        occurrence_start_at     INTEGER NOT NULL,
+        channel_ids_json        TEXT    NOT NULL,
+        content                 TEXT    NOT NULL,
+        role_ids_json           TEXT    NOT NULL,
+        everyone                INTEGER NOT NULL DEFAULT 0,
+        image_url               TEXT,
+        discord_event_id        TEXT,
+        requested_by            TEXT    NOT NULL,
+        source_channel_id       TEXT    NOT NULL,
+        created_at              INTEGER NOT NULL,
+        posted_at               INTEGER,
+        posted_message_ids_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS calendar_announcement_drafts_created
+        ON calendar_announcement_drafts (created_at DESC);
+    `,
+  },
+  {
+    // v10 — targets became objects, not bare channel ids.
+    //
+    // A forum channel is posted to differently (a new post, which needs a
+    // title), and re-deriving that at confirmation time could disagree with the
+    // preview the mod approved — so the resolved shape is stored with the draft.
+    //
+    // Replaces the table rather than migrating it: a draft is 30-minute
+    // confirmation state (`DRAFT_TTL_MS`), so nothing here outlives the request
+    // that made it, and an unconfirmed draft is meant to be re-drafted anyway.
+    version: 10,
+    up: `
+      DROP TABLE IF EXISTS calendar_announcement_drafts;
+      CREATE TABLE calendar_announcement_drafts (
+        token                   TEXT    PRIMARY KEY,
+        event_id                INTEGER NOT NULL,
+        occurrence_start_at     INTEGER NOT NULL,
+        targets_json            TEXT    NOT NULL,
+        content                 TEXT    NOT NULL,
+        thread_title            TEXT,
+        role_ids_json           TEXT    NOT NULL,
+        everyone                INTEGER NOT NULL DEFAULT 0,
+        image_url               TEXT,
+        discord_event_id        TEXT,
+        requested_by            TEXT    NOT NULL,
+        source_channel_id       TEXT    NOT NULL,
+        created_at              INTEGER NOT NULL,
+        posted_at               INTEGER,
+        posted_message_ids_json TEXT
+      );
+      CREATE INDEX IF NOT EXISTS calendar_announcement_drafts_created
+        ON calendar_announcement_drafts (created_at DESC);
     `,
   },
 ];
@@ -723,6 +787,207 @@ export class CalendarStore {
       .prepare(`SELECT * FROM calendar_announcements ORDER BY announced_at DESC LIMIT ?`)
       .all(limit) as AnnouncementRow[];
   }
+
+  // ── On-demand announcement drafts (the confirm-then-post contract) ──────────
+
+  /**
+   * Park a drafted announcement under a one-shot token.
+   *
+   * The text, the target channels and the mention policy are ALL stored, not
+   * re-derived at post time: a mod approves a concrete message in the calendar
+   * channel, and the thing that lands in the community's channels has to be
+   * that exact message. Re-generating it on confirmation would re-roll the
+   * model and make the preview a lie.
+   */
+  saveAnnouncementDraft(input: {
+    token: string;
+    eventId: number;
+    occurrenceStartAt: number;
+    targets: readonly BroadcastChannel[];
+    content: string;
+    /** Title for a forum post; null when no target is a forum. */
+    threadTitle: string | null;
+    roleIds: readonly string[];
+    everyone: boolean;
+    imageUrl: string | null;
+    discordEventId: string | null;
+    requestedBy: string;
+    sourceChannelId: string;
+    /**
+     * When the draft was made. Passed in rather than read from the clock here
+     * because the TTL that decides whether it may still be confirmed is measured
+     * against the *turn's* injected time — two clocks for one comparison is how
+     * a freshly parked draft ends up looking expired.
+     */
+    createdAt: number;
+  }): void {
+    this.db
+      .prepare(
+        `INSERT INTO calendar_announcement_drafts
+           (token, event_id, occurrence_start_at, targets_json, content, thread_title,
+            role_ids_json, everyone, image_url, discord_event_id, requested_by,
+            source_channel_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(token) DO UPDATE SET
+           event_id            = excluded.event_id,
+           occurrence_start_at = excluded.occurrence_start_at,
+           targets_json        = excluded.targets_json,
+           content             = excluded.content,
+           thread_title        = excluded.thread_title,
+           role_ids_json       = excluded.role_ids_json,
+           everyone            = excluded.everyone,
+           image_url           = excluded.image_url,
+           discord_event_id    = excluded.discord_event_id,
+           created_at          = excluded.created_at`,
+      )
+      .run(
+        input.token,
+        input.eventId,
+        input.occurrenceStartAt,
+        JSON.stringify([...input.targets]),
+        input.content,
+        input.threadTitle,
+        JSON.stringify([...input.roleIds]),
+        input.everyone ? 1 : 0,
+        input.imageUrl,
+        input.discordEventId,
+        input.requestedBy,
+        input.sourceChannelId,
+        input.createdAt,
+      );
+  }
+
+  getAnnouncementDraft(token: string): AnnouncementDraft | null {
+    const row = this.db
+      .prepare(`SELECT * FROM calendar_announcement_drafts WHERE token = ?`)
+      .get(token) as AnnouncementDraftRow | undefined;
+    return row ? toDraft(row) : null;
+  }
+
+  /** Newest unposted draft for this source channel — the "sí, publícalo" fallback. */
+  latestPendingDraft(sourceChannelId: string): AnnouncementDraft | null {
+    const row = this.db
+      .prepare(
+        `SELECT * FROM calendar_announcement_drafts
+         WHERE source_channel_id = ? AND posted_at IS NULL
+         ORDER BY created_at DESC LIMIT 1`,
+      )
+      .get(sourceChannelId) as AnnouncementDraftRow | undefined;
+    return row ? toDraft(row) : null;
+  }
+
+  /**
+   * Burn the token. Returns false when it was already spent — that's the
+   * single-use guarantee, enforced by SQLite rather than by the model
+   * remembering it already posted (`UPDATE … WHERE posted_at IS NULL` is
+   * atomic, so two racing confirmations can't both win).
+   */
+  markDraftPosted(token: string, messageIds: readonly string[]): boolean {
+    const info = this.db
+      .prepare(
+        `UPDATE calendar_announcement_drafts
+         SET posted_at = ?, posted_message_ids_json = ?
+         WHERE token = ? AND posted_at IS NULL`,
+      )
+      .run(Date.now(), JSON.stringify([...messageIds]), token);
+    return info.changes > 0;
+  }
+}
+
+/** A drafted on-demand announcement, as stored. */
+export interface AnnouncementDraft {
+  token: string;
+  eventId: number;
+  occurrenceStartAt: number;
+  targets: BroadcastChannel[];
+  content: string;
+  threadTitle: string | null;
+  roleIds: string[];
+  everyone: boolean;
+  imageUrl: string | null;
+  discordEventId: string | null;
+  requestedBy: string;
+  sourceChannelId: string;
+  createdAt: number;
+  postedAt: number | null;
+  postedMessageIds: string[];
+}
+
+interface AnnouncementDraftRow {
+  token: string;
+  event_id: number;
+  occurrence_start_at: number;
+  targets_json: string;
+  content: string;
+  thread_title: string | null;
+  role_ids_json: string;
+  everyone: number;
+  image_url: string | null;
+  discord_event_id: string | null;
+  requested_by: string;
+  source_channel_id: string;
+  created_at: number;
+  posted_at: number | null;
+  posted_message_ids_json: string | null;
+}
+
+function parseStringArray(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr.filter((s): s is string => typeof s === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Targets round-trip through JSON, so a row written by an older build (or a
+ * hand-edited one) can't crash a confirmation: anything unrecognizable is
+ * dropped, and a missing `kind` degrades to a plain text channel, which is how
+ * every target behaved before forums were supported.
+ */
+function parseTargets(raw: string | null): BroadcastChannel[] {
+  if (!raw) return [];
+  try {
+    const arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr.flatMap((t): BroadcastChannel[] => {
+      if (typeof t === 'string') return [{ id: t, name: t, kind: 'text' }];
+      if (!t || typeof t !== 'object') return [];
+      const { id, name, kind } = t as Record<string, unknown>;
+      if (typeof id !== 'string' || id === '') return [];
+      return [
+        {
+          id,
+          name: typeof name === 'string' ? name : id,
+          kind: kind === 'forum' ? 'forum' : 'text',
+        },
+      ];
+    });
+  } catch {
+    return [];
+  }
+}
+
+function toDraft(r: AnnouncementDraftRow): AnnouncementDraft {
+  return {
+    token: r.token,
+    eventId: r.event_id,
+    occurrenceStartAt: r.occurrence_start_at,
+    targets: parseTargets(r.targets_json),
+    content: r.content,
+    threadTitle: r.thread_title,
+    roleIds: parseStringArray(r.role_ids_json),
+    everyone: r.everyone !== 0,
+    imageUrl: r.image_url,
+    discordEventId: r.discord_event_id,
+    requestedBy: r.requested_by,
+    sourceChannelId: r.source_channel_id,
+    createdAt: r.created_at,
+    postedAt: r.posted_at,
+    postedMessageIds: parseStringArray(r.posted_message_ids_json),
+  };
 }
 
 /** A row of the announcement ledger. */

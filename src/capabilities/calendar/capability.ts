@@ -25,7 +25,10 @@ import { monthKey, monthKeyOfUtc } from './grid.js';
 import { sendAdminAlert } from '../../discord/admin-alert.js';
 import { isModTurn, modRoleTokens } from '../mod-authority.js';
 import { CalendarAnnouncer } from './announcer.js';
-import { createEventSyncer, type DiscordEventSyncer } from './discord-events.js';
+import { createEventSyncer, fetchScheduledEvent, type DiscordEventSyncer } from './discord-events.js';
+import { createBroadcaster, type CalendarBroadcaster } from './broadcast-channels.js';
+import { MAX_BROADCAST_CHANNELS } from './broadcast.js';
+import { ask } from '../../llm/client.js';
 import { parseChannelIdEnv } from '../file_scanner/store.js';
 import { EventIntakeStore } from '../event_intake/store.js';
 import { resolveAnnounceSettings } from './announce-settings.js';
@@ -168,6 +171,7 @@ export class CalendarCapability implements Capability {
     // Discord-scheduled-event access needs a guild, so it's only wired up for a
     // guild turn; in a DM the tool reports that it can't rather than throwing.
     let syncer: DiscordEventSyncer | undefined;
+    let broadcaster: CalendarBroadcaster | undefined;
     if (ctx.guildId && this.getDiscordClient) {
       try {
         syncer = createEventSyncer({
@@ -176,14 +180,36 @@ export class CalendarCapability implements Capability {
           store,
           formatLocal: formatInTimezone,
         });
+        broadcaster = createBroadcaster({ client: this.getDiscordClient(), guildId: ctx.guildId });
       } catch {
         syncer = undefined;
+        broadcaster = undefined;
       }
     }
 
+    const guildId = ctx.guildId;
+    const client = this.getDiscordClient;
     const source = new CalendarToolSource(store, ctx.userId, ctx.now.getTime(), publisher, {
       syncer: isMod ? syncer : undefined,
       allowedImageUrls: imageAttachments.map((a) => a.url),
+      // On-demand announcements: mod-only, and only where there's a guild to
+      // resolve channels in. The writer is the same `ask()` the daily announcer
+      // uses — the community's voice is the whole reason a model writes these.
+      ...(isMod && broadcaster
+        ? {
+            broadcaster,
+            writeAnnouncement: (system: string) =>
+              ask({
+                system,
+                messages: [{ role: 'user', content: 'Escribe el anuncio.' }],
+                tools: composeToolSources([]),
+              }),
+            allowedMentionTokens: resolveAnnounceSettings(store).mentions,
+            sourceChannelId: ctx.channelId,
+            getDiscordEvent: async (discordEventId: string) =>
+              guildId && client ? fetchScheduledEvent(client(), guildId, discordEventId) : null,
+          }
+        : {}),
       // Read-only bundle for a non-mod: the write tools are filtered out of the
       // payload AND refused in `handle()` (defense in depth) — see
       // CalendarToolSourceOptions.
@@ -508,6 +534,25 @@ Si acaba de crear un evento y subió la imagen en el mismo mensaje, ofrécelo t�
 - Cuando registras un evento, el bot **renderiza automáticamente** el PDF del mes correspondiente y lo publica, junto con un archivo ICS, en el canal de salida ${outputRef}. No tienes que hacer nada extra para publicar — sucede solo al crear/editar/borrar.
 - Además, **al iniciar cada mes el calendario del mes nuevo se publica solo** en ${outputRef}. El canal de salida es un tablero vivo: muestra el mes en curso (y los meses futuros que ya tengan eventos de fecha única), no los meses que ya pasaron. Si alguien pregunta por el calendario de un mes viejo, dile que el tablero solo conserva el mes actual y ofrécele el ICS.
 - **Cada mañana (${config.CALENDAR_ANNOUNCE_HOUR}:00 hora CDMX) anuncio solo los eventos del día** en el canal de anuncios${announceRef}, con el enlace al **evento de Discord** para que la gente se apunte. No tienes que hacer nada para eso: sale automático.
+- Y si te lo piden, **puedes publicar un anuncio a mano** en los canales que te digan — ver "Publicar un anuncio cuando te lo piden".
+
+# Publicar un anuncio cuando te lo piden (IMPORTANTE)
+Cuando unx moderadorx te pide **anunciar/publicar** un evento ("anúncialo en eventos, general y foro poesía", "ayúdame a publicar un anuncio que diga…", "publica el aviso del círculo de poesía"), eso **sí lo puedes hacer**, en los canales que nombren, sin esperar al anuncio automático.
+**El anuncio automático de las ${config.CALENDAR_ANNOUNCE_HOUR}:00 NO es una respuesta a esa petición.** Puedes mencionarlo de paso ("además el del día sale solo a las ${config.CALENDAR_ANNOUNCE_HOUR}:00"), pero **nunca** lo uses como razón para no publicar lo que te pidieron: sale solo en el canal de anuncios y solo el día del evento, y quien te pide publicarlo en otros canales está pidiendo otra cosa.
+Son **dos pasos**, siempre:
+1. \`calendar_draft_announcement\` — redacta el texto y resuelve los canales. **No publica nada.** Pásale:
+   - \`event_id\`: el evento del calendario (búscalo primero si hace falta; si es una serie y hablan de una sesión, pasa \`occurrence_date_iso\`).
+   - \`channels\`: los canales **tal como los nombraron** ("eventos", "general", "foro poesia"), máximo ${MAX_BROADCAST_CHANNELS}.
+   - \`instruction\`: **lo que pidieron que diga, con sus palabras** ("que diga bandaaaa, para que desempolven sus libretas"). Esto es lo más importante del paso: es la razón por la que te lo piden a ti y no dejan que salga el automático.
+2. Muestra el texto del \`draft\` **tal cual** (en cita o bloque), di **en qué canales** va a salir, y pide confirmación en una línea: *"¿lo publico así?"*. Cuando digan que sí ("sí", "va", "publícalo", "así está perfecto"), llama \`calendar_send_announcement\` con el \`token\` — y entonces sí se publica.
+Reglas de este flujo:
+- **Nunca publiques sin confirmación**, y **nunca digas que ya lo publicaste** si solo llamaste al paso 1: un anuncio no se puede "despublicar" (borrarlo no borra la notificación).
+- Si el resultado trae \`problems\`, **pregunta** por esos canales (usa \`what_to_say\`) en vez de adivinar o de dejarlos fuera en silencio; los que sí se resolvieron siguen en pie.
+- Si quieren **cambios** al texto, vuelve a llamar \`calendar_draft_announcement\` (con el nuevo \`instruction\`) — no edites el borrador a mano ni mandes el viejo.
+- **Menciones: por defecto nadie.** Solo pasa \`mentions\` si pidieron explícitamente etiquetar a alguien; si te piden mencionar a un rol que no está permitido, dilo (\`mentions_refused\`).
+- Al confirmar que salió, nombra los canales donde de verdad se publicó (mira \`channels\` del resultado) y si alguno falló, dilo.
+- Si alguno de los canales es un **foro**, ahí el anuncio sale como un **post nuevo** (el resultado lo dice en \`posts_as\`/\`post_title\`): menciónalo así al confirmar, para que sepan que lo busquen como post y no como mensaje.
+- Si el evento **no tiene evento de Discord**, el anuncio sale sin enlace para apuntarse: ofrece crearlo con \`calendar_sync_discord_event\` **antes** de publicar.
 
 # El evento de Discord (importante)
 Un evento del calendario y un **evento de Discord** (los "Eventos" del servidor, donde la gente le da "Me interesa") son dos cosas distintas:
