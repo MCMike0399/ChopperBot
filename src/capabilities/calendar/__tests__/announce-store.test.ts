@@ -126,3 +126,115 @@ describe('announce settings', () => {
     expect(store.getAnnounceMentions()).toEqual([]);
   });
 });
+
+/**
+ * v9 — the on-demand announcement drafts. The row IS the confirm-then-post
+ * contract, so what's pinned here is that it stores the message faithfully and
+ * that a token can only be spent once (the guarantee that stops a repeated
+ * "sí, publícalo" from pinging the community twice).
+ */
+describe('announcement drafts', () => {
+  const CREATED = Date.parse('2026-08-18T20:00:00Z');
+
+  function park(overrides: Partial<Parameters<CalendarStore['saveAnnouncementDraft']>[0]> = {}) {
+    const input = {
+      token: 'tok12345',
+      eventId: 38,
+      occurrenceStartAt: Date.parse('2026-08-20T02:00:00Z'),
+      targets: [
+        { id: 'C1', name: '📅│eventos', kind: 'text' as const },
+        { id: 'C2', name: '🖋│foro-poesía', kind: 'forum' as const },
+      ],
+      content: '@everyone-free text\n\nhttps://discord.com/events/1/2',
+      threadTitle: 'Club de poesía — mié 19, 8:00 PM',
+      roleIds: ['1436225305898389604'],
+      everyone: false,
+      imageUrl: 'https://cdn.discordapp.com/flyer.png',
+      discordEventId: 'DE1',
+      requestedBy: 'mod-user',
+      sourceChannelId: '1483675563871961248',
+      createdAt: CREATED,
+      ...overrides,
+    };
+    store.saveAnnouncementDraft(input);
+    return input;
+  }
+
+  test('round-trips every field the post depends on', () => {
+    const input = park();
+    const draft = store.getAnnouncementDraft(input.token)!;
+    expect(draft).toMatchObject({
+      token: input.token,
+      eventId: 38,
+      // Each target keeps its kind: the send has to know a forum takes a post,
+      // and re-deriving that at confirmation time could disagree with the
+      // preview the mod approved.
+      targets: [
+        { id: 'C1', name: '📅│eventos', kind: 'text' },
+        { id: 'C2', name: '🖋│foro-poesía', kind: 'forum' },
+      ],
+      content: input.content,
+      threadTitle: input.threadTitle,
+      roleIds: ['1436225305898389604'],
+      everyone: false,
+      imageUrl: input.imageUrl,
+      discordEventId: 'DE1',
+      createdAt: CREATED,
+      postedAt: null,
+      postedMessageIds: [],
+    });
+  });
+
+  test('a target row missing its kind degrades to a plain channel', () => {
+    // Defensive: a row written by an older build (or hand-edited) must not make
+    // a confirmation throw — before forums, every target was a text channel.
+    park({ token: 'legacy01' });
+    store['db']
+      .prepare(`UPDATE calendar_announcement_drafts SET targets_json = ? WHERE token = ?`)
+      .run(JSON.stringify([{ id: 'C1' }, 'C9', { nope: true }]), 'legacy01');
+    expect(store.getAnnouncementDraft('legacy01')!.targets).toEqual([
+      { id: 'C1', name: 'C1', kind: 'text' },
+      { id: 'C9', name: 'C9', kind: 'text' },
+    ]);
+  });
+
+  test('an unknown token is null, not a throw', () => {
+    expect(store.getAnnouncementDraft('nope')).toBeNull();
+  });
+
+  test('the everyone flag survives the integer column', () => {
+    park({ token: 'ev000001', everyone: true });
+    expect(store.getAnnouncementDraft('ev000001')!.everyone).toBe(true);
+  });
+
+  test('marking posted burns the token — the single-use guarantee', () => {
+    const { token } = park();
+    expect(store.markDraftPosted(token, ['M1', 'M2'])).toBe(true);
+    // A second attempt loses: this is what makes a repeated confirmation safe.
+    expect(store.markDraftPosted(token, ['M3'])).toBe(false);
+    const draft = store.getAnnouncementDraft(token)!;
+    expect(draft.postedAt).not.toBeNull();
+    expect(draft.postedMessageIds).toEqual(['M1', 'M2']);
+  });
+
+  test('latestPendingDraft is scoped to its channel and skips posted ones', () => {
+    park({ token: 'old00001', createdAt: CREATED - 60_000 });
+    park({ token: 'new00001', createdAt: CREATED });
+    park({ token: 'other001', sourceChannelId: 'OTHER' });
+
+    expect(store.latestPendingDraft('1483675563871961248')!.token).toBe('new00001');
+    expect(store.latestPendingDraft('OTHER')!.token).toBe('other001');
+    expect(store.latestPendingDraft('nobody')).toBeNull();
+
+    store.markDraftPosted('new00001', ['M']);
+    expect(store.latestPendingDraft('1483675563871961248')!.token).toBe('old00001');
+  });
+
+  test('re-parking the same token replaces the text but keeps it unposted', () => {
+    const { token } = park();
+    park({ token, content: 'nuevo texto', createdAt: CREATED + 1000 });
+    const draft = store.getAnnouncementDraft(token)!;
+    expect(draft.content).toBe('nuevo texto');
+    expect(draft.postedAt).toBeNull();
+  });
+});

@@ -15,6 +15,19 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.24.0 — 2026-08-18
+
+📣 **"Anúncialo en eventos, general y foro poesía" — ahora sí lo publico**
+
+Antes, si me pedían publicar el anuncio de un evento, solo podía contarles que el aviso del día sale solo a las 10:00 AM en el canal de anuncios. Ya no: si son mods, **me pueden pedir que lo anuncie en los canales que ustedes elijan**, cuando quieran.
+
+- Me dicen el evento y los canales **con sus propias palabras** ("anúncialo en eventos, general y foro poesía"). También sirve para eventos de días siguientes, no solo el de hoy.
+- Pueden decirme **cómo quieren que suene** ("que diga bandaaaa, para que desempolven sus libretas") y lo escribo así.
+- **Primero les muestro el texto** y en qué canales va a salir. No publico nada hasta que me digan que sí — y si quieren cambios, lo vuelvo a escribir.
+- Funciona también en los **foros**: ahí el anuncio sale como un post nuevo.
+- El anuncio lleva el **enlace para apuntarse** y el flyer del evento, igual que el aviso del día.
+- **No etiqueto a nadie** salvo que me lo pidan, y aunque me lo pidan dos veces, **el anuncio sale una sola vez**.
+
 ## 1.23.2 — 2026-08-17
 
 🎨 **El flyer real sí llega al ticket (y se puede corregir)**

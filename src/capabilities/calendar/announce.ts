@@ -194,6 +194,22 @@ export function prefixMentions(text: string, mentionText: string): string {
 }
 
 /**
+ * How this community's announcers actually write, condensed from real posts.
+ *
+ * Shared between the daily announcer's prompt and the on-demand broadcast
+ * prompt: the voice is the whole reason a model writes these at all, and a
+ * mod-requested announcement that reads like a different bot wrote it would
+ * defeat the point of the feature.
+ */
+export const ANNOUNCEMENT_VOICE_EXAMPLES = `# Cómo escribe esta comunidad (imita este tono, NO copies el texto)
+Ejemplos reales de anunciantes del server:
+> Amixes miembros de RevZ — Hoy a las 8pm hora CDMX tendremos el siguiente círculo de estudio/lectura sobre *Raíz que no Desaparece* por nuestra camarada y amiga. Ahí nos vemos lxs tqm ❤️‍🩹
+> Gente que tiene esperanza! Hoy veremos la peliculota llamada *Soul*, a las 9:00 pm, ¿por qué? porque ocupamos recuperar la esperanza :3. Se llevará a cabo en la Sala de Eventos, caiganle. Lxs tqm.
+> Muchachooooos! Hoy es un gran día, hoy haremos nuestra respectiva ASAMBLEA SEMANAL! Se llevará a cabo a las 8:00 pm. Caiganle, se va a poner chingón.
+
+Rasgos del estilo: cálido, cómplice, informal, lenguaje incluyente ("lxs", "camaradas", "amixes"), 1–2 emojis, un cierre afectuoso ("lxs tqm", "ahí nos vemos", "caiganle"). Entusiasmo sí, cursilería no.`;
+
+/**
  * Brief for the model that WRITES the announcement. The examples are condensed
  * from real posts by this community's admins — the voice is the point of using a
  * model here at all, and it isn't derivable from the calendar row.
@@ -228,13 +244,7 @@ export function renderAnnouncementPrompt(
 - **Detalles del calendario:** ${o.description ?? '(sin detalles extra)'}
 - Hora local actual: ${formatInTimezone(nowMs)}
 
-# Cómo escribe esta comunidad (imita este tono, NO copies el texto)
-Ejemplos reales de anunciantes del server:
-> Amixes miembros de RevZ — Hoy a las 8pm hora CDMX tendremos el siguiente círculo de estudio/lectura sobre *Raíz que no Desaparece* por nuestra camarada y amiga. Ahí nos vemos lxs tqm ❤️‍🩹
-> Gente que tiene esperanza! Hoy veremos la peliculota llamada *Soul*, a las 9:00 pm, ¿por qué? porque ocupamos recuperar la esperanza :3. Se llevará a cabo en la Sala de Eventos, caiganle. Lxs tqm.
-> Muchachooooos! Hoy es un gran día, hoy haremos nuestra respectiva ASAMBLEA SEMANAL! Se llevará a cabo a las 8:00 pm. Caiganle, se va a poner chingón.
-
-Rasgos del estilo: cálido, cómplice, informal, lenguaje incluyente ("lxs", "camaradas", "amixes"), 1–2 emojis, un cierre afectuoso ("lxs tqm", "ahí nos vemos", "caiganle"). Entusiasmo sí, cursilería no.
+${ANNOUNCEMENT_VOICE_EXAMPLES}
 
 ${SPANISH_VOICE_RULES}
 
