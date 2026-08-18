@@ -96,6 +96,43 @@ describe('resolveBroadcastMentions', () => {
     expect(mentions.roleIds).toEqual([ROLE]);
     expect(rejected).toEqual(['moderación']);
   });
+
+  const USUARIX = { id: ROLE, name: 'Usuarix' };
+
+  test('the live "usa el rol usuarix" case — a name matching an allowed role is accepted', () => {
+    // The 2026-08-18 miss: the model passed nothing (or would have passed the
+    // name) and then invented "ese rol no está permitido". Usuarix is THE
+    // configured announce mention; Administrator is not the question.
+    for (const asked of ['usuarix', 'Usuarix', 'rol usuarix', '@usuarix', `<@&${ROLE}>`]) {
+      const { mentions, rejected } = resolveBroadcastMentions([asked], [ROLE], [USUARIX]);
+      expect({ asked, mentions, rejected }).toEqual({
+        asked,
+        mentions: { roleIds: [ROLE], everyone: false },
+        rejected: [],
+      });
+    }
+  });
+
+  test('a name with no knownRoles is still refused — we do not invent a snowflake', () => {
+    expect(resolveBroadcastMentions(['usuarix'], [ROLE]).rejected).toEqual(['usuarix']);
+  });
+
+  test('a name matching a role that is NOT on the allowlist is still refused', () => {
+    const { mentions, rejected } = resolveBroadcastMentions(
+      ['usuarix'],
+      [OTHER_ROLE],
+      [USUARIX],
+    );
+    expect(mentions.roleIds).toEqual([]);
+    expect(rejected).toEqual([`<@&${ROLE}>`]);
+  });
+
+  test('emoji decoration on the role name does not matter', () => {
+    const { mentions } = resolveBroadcastMentions(['usuarix'], [ROLE], [
+      { id: ROLE, name: '💠Usuarix' },
+    ]);
+    expect(mentions.roleIds).toEqual([ROLE]);
+  });
 });
 
 describe('stripModelMentions', () => {

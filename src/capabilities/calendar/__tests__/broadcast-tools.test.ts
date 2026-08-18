@@ -102,6 +102,7 @@ function makeSource(
     ...(broadcaster ? { broadcaster } : {}),
     writeAnnouncement: writeMock,
     allowedMentionTokens: [ANNOUNCE_ROLE],
+    allowedMentionRoles: [{ id: ANNOUNCE_ROLE, name: 'Usuarix' }],
     sourceChannelId: SOURCE_CHANNEL,
     getDiscordEvent: async () => opts.discordEvent ?? null,
   });
@@ -235,6 +236,19 @@ describe('calendar_draft_announcement', () => {
       mentions: [ANNOUNCE_ROLE],
     });
     expect(String(p.draft).startsWith(`<@&${ANNOUNCE_ROLE}>`)).toBe(true);
+  });
+
+  test('the live "usa el rol usuarix" ask — a name, not a snowflake', async () => {
+    const ev = createSeries();
+    const { status, payload: p } = await draft(makeSource(), {
+      event_id: ev.id,
+      channels: ['general'],
+      mentions: ['usuarix'],
+    });
+    expect(status).toBe('success');
+    expect(p.mentions_refused).toBeUndefined();
+    expect(String(p.draft).startsWith(`<@&${ANNOUNCE_ROLE}>`)).toBe(true);
+    expect(p.mentions).toEqual([{ id: ANNOUNCE_ROLE, mention: `<@&${ANNOUNCE_ROLE}>`, name: 'Usuarix' }]);
   });
 
   test('the Discord event link and flyer ride along when the event is linked', async () => {

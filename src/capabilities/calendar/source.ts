@@ -31,6 +31,7 @@ import {
   resolveBroadcastMentions,
   type BroadcastMentions,
   type ChannelResolution,
+  type NamedBroadcastRole,
 } from './broadcast.js';
 import type { CalendarBroadcaster } from './broadcast-channels.js';
 
@@ -107,6 +108,12 @@ export interface CalendarToolSourceOptions {
    * community already agreed may be pinged about events.
    */
   allowedMentionTokens?: readonly string[];
+  /**
+   * Those same allowed roles, with names, so `"usuarix"` resolves to the
+   * snowflake instead of coming back as `mentions_refused`. Absent → names
+   * refuse (we will not invent an id).
+   */
+  allowedMentionRoles?: readonly NamedBroadcastRole[];
   /** Reads the linked Discord scheduled event (for the RSVP link + flyer). */
   getDiscordEvent?: (discordEventId: string) => Promise<DiscordScheduledEvent | null>;
   /** Channel the mod is talking in — scopes the "sí, publícalo" draft lookup. */
@@ -372,7 +379,7 @@ export class CalendarToolSource implements ToolSource {
               type: 'array',
               items: { type: 'string' },
               description:
-                'ONLY if the mod explicitly asked to ping someone: role ids / `<@&id>` / "everyone". Anything outside the community\'s configured announce mentions is refused and reported.',
+                'ONLY if the mod explicitly asked to ping someone. Role names ("usuarix"), ids, `<@&id>` or "everyone" all work. Anything outside the community\'s configured announce mentions is refused and reported — a name on that list is never refused.',
             },
           },
           required: ['event_id', 'channels'],
@@ -935,6 +942,7 @@ export class CalendarToolSource implements ToolSource {
     const { mentions, rejected } = resolveBroadcastMentions(
       asStringArray(obj.mentions, 'mentions'),
       this.options.allowedMentionTokens ?? [],
+      this.options.allowedMentionRoles ?? [],
     );
 
     // The Discord event: its URL is the RSVP card, its cover is the flyer. Only
@@ -1042,6 +1050,12 @@ export class CalendarToolSource implements ToolSource {
         })),
         ...(problems.length > 0 ? { problems: problems.map(describeProblem) } : {}),
         ...(rejected.length > 0 ? { mentions_refused: rejected } : {}),
+        mentions: mentions.roleIds.map((id) => ({
+          id,
+          mention: `<@&${id}>`,
+          name: this.options.allowedMentionRoles?.find((r) => r.id === id)?.name ?? id,
+        })),
+        pings_everyone: mentions.everyone,
         has_event_link: target.discordEventUrl !== null,
         attaches_flyer: discordEvent?.imageUrl != null,
         next_step:

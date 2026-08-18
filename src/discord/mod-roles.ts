@@ -42,7 +42,13 @@ const SNOWFLAKE_RE = /^\d{17,20}$/;
  * `set_mod_roles roles:"Moderaci\u00f3n, Administrador"` would otherwise match NOTHING
  * and silently leave nobody able to approve a ticket.
  */
-function norm(s: string): string {
+/**
+ * Fold a role name / token for comparison. Exported because on-demand
+ * announcements have to match the same way ("usuarix" → Usuarix) — a second
+ * fold that dropped emojis differently would refuse a ping the daily announcer
+ * has been sending every morning.
+ */
+export function normalizeRoleName(s: string): string {
   return s
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
@@ -75,9 +81,9 @@ export function matchModRoles<T extends NamedRole>(
     const trimmed = t.trim();
     if (!trimmed) continue;
     if (SNOWFLAKE_RE.test(trimmed)) ids.add(trimmed);
-    else names.add(norm(trimmed));
+    else names.add(normalizeRoleName(trimmed));
   }
-  return roles.filter((r) => ids.has(r.id) || names.has(norm(r.name)));
+  return roles.filter((r) => ids.has(r.id) || names.has(normalizeRoleName(r.name)));
 }
 
 /** Whether any of the member's roles matches an approver token. */
