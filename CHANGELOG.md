@@ -15,6 +15,15 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.24.1 — 2026-08-18
+
+📣 **"Usa el rol usuarix" ahora sí etiqueta**
+
+Si me piden mencionar a **usuarix** al publicar un anuncio, lo hago. Antes contestaba que ese rol no estaba permitido — y sí lo está: es el mismo que uso todas las mañanas en el aviso del día.
+
+- Me lo pueden pedir **por su nombre** ("usa el rol usuarix"), no hace falta el número.
+- Sigo sin etiquetar a nadie si no me lo piden. Y no etiqueto a un rol que no sea de esa lista.
+
 ## 1.24.0 — 2026-08-18
 
 📣 **"Anúncialo en eventos, general y foro poesía" — ahora sí lo publico**

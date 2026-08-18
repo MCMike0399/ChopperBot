@@ -27,7 +27,7 @@ import { isModTurn, modRoleTokens } from '../mod-authority.js';
 import { CalendarAnnouncer } from './announcer.js';
 import { createEventSyncer, fetchScheduledEvent, type DiscordEventSyncer } from './discord-events.js';
 import { createBroadcaster, type CalendarBroadcaster } from './broadcast-channels.js';
-import { MAX_BROADCAST_CHANNELS } from './broadcast.js';
+import { MAX_BROADCAST_CHANNELS, type NamedBroadcastRole } from './broadcast.js';
 import { ask } from '../../llm/client.js';
 import { parseChannelIdEnv } from '../file_scanner/store.js';
 import { EventIntakeStore } from '../event_intake/store.js';
@@ -148,6 +148,11 @@ export class CalendarCapability implements Capability {
     // Images the mod attached to THIS message — offered to the model as banner
     // candidates, and the exact allowlist the sync tool validates against.
     const imageAttachments = isMod ? ctx.attachments ?? [] : [];
+    const announceMentions = resolveAnnounceSettings(store).mentions;
+    const mentionRoles =
+      isMod && ctx.guildId && this.getDiscordClient
+        ? await namedAnnounceRoles(this.getDiscordClient(), ctx.guildId, announceMentions)
+        : [];
     const system = renderSystemPrompt(
       ctx.now,
       upcoming,
@@ -155,6 +160,8 @@ export class CalendarCapability implements Capability {
       this.resolveAnnounceChannel(),
       imageAttachments,
       isMod,
+      mentionRoles,
+      announceMentions.some((t) => /^(?:@)?(?:everyone|here)$/i.test(t.trim())),
     );
 
     // Build a publisher only when the Discord client is available (i.e. at
@@ -204,7 +211,8 @@ export class CalendarCapability implements Capability {
                 messages: [{ role: 'user', content: 'Escribe el anuncio.' }],
                 tools: composeToolSources([]),
               }),
-            allowedMentionTokens: resolveAnnounceSettings(store).mentions,
+            allowedMentionTokens: announceMentions,
+            allowedMentionRoles: mentionRoles,
             sourceChannelId: ctx.channelId,
             getDiscordEvent: async (discordEventId: string) =>
               guildId && client ? fetchScheduledEvent(client(), guildId, discordEventId) : null,
@@ -443,6 +451,48 @@ export class CalendarCapability implements Capability {
 }
 
 /**
+ * The names of the roles `set_announce_mentions` already allows, looked up in
+ * this guild. Administrator does not expand the list — that's the whole point
+ * of the setting — but without the names, `"usuarix"` can't resolve to the
+ * snowflake that's been pinging the morning announcement all along.
+ */
+async function namedAnnounceRoles(
+  client: Client,
+  guildId: string,
+  tokens: readonly string[],
+): Promise<NamedBroadcastRole[]> {
+  const ids = tokens.filter((t) => /^\d{17,20}$/.test(t));
+  if (ids.length === 0) return [];
+  try {
+    const guild = await client.guilds.fetch(guildId);
+    const roles = guild.roles.cache.size > 0 ? guild.roles.cache : await guild.roles.fetch();
+    return ids.map((id) => ({ id, name: roles.get(id)?.name ?? id }));
+  } catch {
+    return ids.map((id) => ({ id, name: id }));
+  }
+}
+
+/**
+ * The sentence that stops the model inventing "ese rol no está permitido" for
+ * a role that IS on the list (live, 2026-08-18: Usuarix).
+ */
+function renderMentionAllowlist(roles: readonly NamedBroadcastRole[], everyoneAllowed: boolean): string {
+  if (roles.length === 0 && !everyoneAllowed) {
+    return '- No hay roles configurados para mencionar en anuncios. Si piden un ping, dilo y publica sin mención.';
+  }
+  const listed = [
+    ...roles.map((r) => `**${r.name}** (\`${r.id}\`)`),
+    ...(everyoneAllowed ? ['**@everyone**'] : []),
+  ].join(', ');
+  return (
+    `- Roles que **SÍ puedes mencionar** (los mismos del anuncio automático de las ${config.CALENDAR_ANNOUNCE_HOUR}:00): ${listed}. ` +
+    `Pásalos en \`mentions\` **como los nombraron** ("usuarix") o como el id. ` +
+    `**Nunca inventes que un rol de esta lista está prohibido** — si te piden Usuarix, pásalo; el sistema lo pone en el texto. ` +
+    `Cualquier *otro* rol (u \`@everyone\`, si no está arriba) sale en \`mentions_refused\`, y SOLO entonces lo dices.`
+  );
+}
+
+/**
  * The channel where mods already talk to the calendar — the one bound to this
  * capability in the routing table. That's where a "you still need to create the
  * Discord event" nudge belongs: mod-facing, but not the admin console. Null when
@@ -463,6 +513,8 @@ function renderSystemPrompt(
   announceChannelId: string | null,
   imageAttachments: ImageAttachmentRef[] = [],
   isMod = true,
+  mentionRoles: readonly NamedBroadcastRole[] = [],
+  everyoneAllowed = false,
 ): string {
   // Non-mods get the read-only bundle (enforced in code, see buildTurn); this
   // is only how the bot EXPLAINS it — a short prompt of its own, so it doesn't
@@ -549,7 +601,8 @@ Reglas de este flujo:
 - **Nunca publiques sin confirmación**, y **nunca digas que ya lo publicaste** si solo llamaste al paso 1: un anuncio no se puede "despublicar" (borrarlo no borra la notificación).
 - Si el resultado trae \`problems\`, **pregunta** por esos canales (usa \`what_to_say\`) en vez de adivinar o de dejarlos fuera en silencio; los que sí se resolvieron siguen en pie.
 - Si quieren **cambios** al texto, vuelve a llamar \`calendar_draft_announcement\` (con el nuevo \`instruction\`) — no edites el borrador a mano ni mandes el viejo.
-- **Menciones: por defecto nadie.** Solo pasa \`mentions\` si pidieron explícitamente etiquetar a alguien; si te piden mencionar a un rol que no está permitido, dilo (\`mentions_refused\`).
+- **Menciones: por defecto nadie.** Solo pasa \`mentions\` si pidieron explícitamente etiquetar a alguien.
+${renderMentionAllowlist(mentionRoles, everyoneAllowed)}
 - Al confirmar que salió, nombra los canales donde de verdad se publicó (mira \`channels\` del resultado) y si alguno falló, dilo.
 - Si alguno de los canales es un **foro**, ahí el anuncio sale como un **post nuevo** (el resultado lo dice en \`posts_as\`/\`post_title\`): menciónalo así al confirmar, para que sepan que lo busquen como post y no como mensaje.
 - Si el evento **no tiene evento de Discord**, el anuncio sale sin enlace para apuntarse: ofrece crearlo con \`calendar_sync_discord_event\` **antes** de publicar.

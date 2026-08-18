@@ -38,6 +38,7 @@
  * double-post.
  */
 import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
+import { normalizeRoleName } from '../../discord/mod-roles.js';
 import { formatInTimezone, formatLocalClock, DEFAULT_TIMEZONE } from './time.js';
 import { ANNOUNCEMENT_VOICE_EXAMPLES, type AnnounceTarget } from './announce.js';
 
@@ -133,6 +134,12 @@ export interface BroadcastMentions {
   everyone: boolean;
 }
 
+/** A guild role the resolver can match a name against. */
+export interface NamedBroadcastRole {
+  id: string;
+  name: string;
+}
+
 export const NO_MENTIONS: BroadcastMentions = { roleIds: [], everyone: false };
 
 /**
@@ -141,10 +148,23 @@ export const NO_MENTIONS: BroadcastMentions = { roleIds: [], everyone: false };
  * already agreed may be pinged for events, plus possibly `everyone`); anything
  * outside it is dropped rather than honoured, so "menciona a todos" from the
  * model can't escalate into an `@everyone` that was never configured.
+ *
+ * Names are first-class, not junk: a mod says "usa el rol usuarix", the model
+ * passes `"usuarix"`, and that has to land on the snowflake already in
+ * `set_announce_mentions` — the live 2026-08-18 miss was the model inventing
+ * "ese rol no está permitido" because (a) the prompt never listed which roles
+ * ARE allowed and (b) this function treated any non-snowflake as refused. The
+ * bot being Administrator is irrelevant here: Discord would let it ping anyone;
+ * the gate is the community's configured list, and Usuarix is already on it.
+ *
+ * `knownRoles` is how a name becomes an id. Without it a name still refuses
+ * (we must not invent a snowflake); with it, a name matching an *allowed* role
+ * is accepted and a name matching only a disallowed role is still refused.
  */
 export function resolveBroadcastMentions(
   requested: readonly string[],
   allowed: readonly string[],
+  knownRoles: readonly NamedBroadcastRole[] = [],
 ): { mentions: BroadcastMentions; rejected: string[] } {
   const allowedRoles = new Set<string>();
   let everyoneAllowed = false;
@@ -153,6 +173,15 @@ export function resolveBroadcastMentions(
     if (!token) continue;
     if (isEveryoneToken(token)) everyoneAllowed = true;
     else if (/^\d{17,20}$/.test(token)) allowedRoles.add(token);
+  }
+
+  const byName = new Map<string, string[]>();
+  for (const r of knownRoles) {
+    const key = normalizeRoleName(r.name);
+    if (!key) continue;
+    const ids = byName.get(key) ?? [];
+    ids.push(r.id);
+    byName.set(key, ids);
   }
 
   const roleIds: string[] = [];
@@ -166,8 +195,8 @@ export function resolveBroadcastMentions(
       else rejected.push('@everyone');
       continue;
     }
-    const id = token.replace(/^<@&(\d{17,20})>$/, '$1');
-    if (!/^\d{17,20}$/.test(id)) {
+    const id = resolveMentionToken(token, byName);
+    if (!id) {
       rejected.push(token);
       continue;
     }
@@ -178,6 +207,23 @@ export function resolveBroadcastMentions(
     if (!roleIds.includes(id)) roleIds.push(id);
   }
   return { mentions: { roleIds, everyone }, rejected };
+}
+
+/**
+ * Turn one of the model's mention words into a role id: a snowflake / `<@&id>`
+ * wins outright; otherwise a unique normalized name among `knownRoles`.
+ * "rol usuarix" and "@usuarix" are the same ask as "usuarix".
+ */
+function resolveMentionToken(raw: string, byName: Map<string, string[]>): string | null {
+  const snowflake = raw.replace(/^<@&(\d{17,20})>$/, '$1');
+  if (/^\d{17,20}$/.test(snowflake)) return snowflake;
+
+  const stripped = raw.replace(/^@/, '').replace(/^rol(?:es)?\s+/i, '').trim();
+  const key = normalizeRoleName(stripped);
+  if (!key) return null;
+  const ids = byName.get(key);
+  if (ids && ids.length === 1) return ids[0]!;
+  return null;
 }
 
 function isEveryoneToken(token: string): boolean {
