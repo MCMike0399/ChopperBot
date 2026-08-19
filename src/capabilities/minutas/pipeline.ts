@@ -293,6 +293,7 @@ function renderTranscriptHeader(meta: MinutesMeta): string {
     `Participantes: ${meta.participants.join(', ') || '—'}`,
     '',
     '_Transcripción automática (whisper.cpp local); puede tener errores._',
+    '_Las líneas 💬 son comentarios del chat del canal: contexto de la sesión, no parte del acta publicada._',
   ].join('\n');
 }
 

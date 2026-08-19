@@ -13,7 +13,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
----
+## 1.25.0 — 2026-08-19
+
+📜 **Minutas: el acta sale al cerrar, y el chat ya no se copia**
+
+Después de la asamblea del 18 de agosto:
+
+- **Al terminar (`/chopperbot-leave`) publico la minuta en unos minutos.** Ya no la dejo para la madrugada: voy transcribiendo mientras hablan, así que al cerrar solo redacto el acta.
+- **El chat del canal no se pega en la minuta.** Lo uso para entender la conversación (un enlace, un nombre), pero no aparece como lista de comentarios. Las bromas tampoco entran como acuerdos.
 
 ## 1.24.1 — 2026-08-18
 

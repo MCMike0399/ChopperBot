@@ -20,9 +20,8 @@ export interface MinutasSessionRow {
   /** active → processing → done | failed. */
   status: 'active' | 'processing' | 'done' | 'failed';
   /**
-   * When set and in the future, the finalize (whisper + minutes) waits until
-   * this ms-epoch — heavy transcriptions defer to the nightly quiet window
-   * (scheduler.ts). Persisted so a restart re-arms the timer at boot.
+   * Unused since 2026-08-19 (`/chopperbot-leave` always finalizes immediately).
+   * Kept so existing databases don't need a drop-column migration.
    */
   transcribe_after: number | null;
   end_reason: string | null;
@@ -72,8 +71,8 @@ export const MINUTAS_MIGRATIONS: Migration[] = [
   },
   {
     version: 2,
-    // Heavy transcriptions defer to the nightly quiet window; the scheduled
-    // time lives on the row so a restart re-arms it (scheduler.ts).
+    // Nightly deferral used this column; leave always finalizes now (2026-08-19).
+    // The column stays so existing databases don't need a drop.
     up: `ALTER TABLE minutas_sessions ADD COLUMN transcribe_after INTEGER;`,
   },
 ];

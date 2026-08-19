@@ -33,8 +33,8 @@ export const PCM_BYTES_PER_SECOND = 16000 * 2;
  * Whisper cost model, MEASURED 2026-08-17 on real assembly audio (Pi 5,
  * ggml-small): wall ≈ 8.5 s per invocation + 0.82 × seconds of audio. Fitted
  * from 2 s→9.9 s, 10 s→12.8 s, 30 s→30.5 s, 197.6 s→168 s; validated against
- * the 2026-08-16 assembly (predicted 76 min, observed ~74). Drives the
- * transcribe-now-or-tonight decision in scheduler.ts.
+ * the 2026-08-16 assembly (predicted 76 min, observed ~74). Used by
+ * measureSessionDir logs of leftover whisper at finalize time.
  */
 export const WHISPER_FIXED_SEC_PER_BURST = 8.5;
 export const WHISPER_SEC_PER_AUDIO_SEC = 0.82;

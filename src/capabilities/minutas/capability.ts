@@ -16,13 +16,7 @@ import type {
 } from '../capability.js';
 import { MINUTAS_CAPABILITY_ID } from './constants.js';
 import { MINUTAS_MIGRATIONS, MinutasStore, type MinutasSessionRow } from './store.js';
-import {
-  decideTranscribeAt,
-  estimateWhisperSeconds,
-  formatCdmxTime,
-  measureSessionDir,
-  type TranscribeDecision,
-} from './scheduler.js';
+import { measureSessionDir } from './scheduler.js';
 import { LiveTranscriber } from './live.js';
 import {
   MinutasSessions,
@@ -62,8 +56,6 @@ export class MinutasCapability implements Capability {
   private sessionsDir = '';
   private client: Client | null = null;
   private detachListeners: Array<() => void> = [];
-  /** Armed deferred-finalize timers, keyed by session id. */
-  private deferTimers = new Map<string, NodeJS.Timeout>();
   private live: LiveTranscriber | null = null;
 
   async init({ memory, projectRoot }: CapabilityInitDeps): Promise<void> {
@@ -172,9 +164,8 @@ export class MinutasCapability implements Capability {
     }
 
     // Crash sweep: a row still 'active'/'processing' at boot means the last
-    // process died mid-session/mid-finalize — OR was cleanly waiting for its
-    // deferred nightly slot. Future `transcribe_after` re-arms; everything else
-    // goes back through the schedule-or-finalize decision.
+    // process died mid-session/mid-finalize. Live transcription already did
+    // most of the whisper work, so leftover finalize is the last tail + LLM.
     const unfinished = this.store.listUnfinishedSessions();
     for (const stale of unfinished) {
       log.warn({ sessionId: stale.id, status: stale.status }, 'minutas.sweep_interrupted_session');
@@ -184,14 +175,11 @@ export class MinutasCapability implements Capability {
         end_reason: stale.end_reason ?? 'reinicio del bot',
       });
       const row = this.store.getSession(stale.id)!;
-      const closed = { row, dir: join(this.sessionsDir, row.id), reason: row.end_reason ?? 'reinicio del bot' };
-      if (row.transcribe_after && row.transcribe_after > Date.now()) {
-        this.armDeferTimer(closed, row.transcribe_after);
-      } else {
-        // No in-channel announcement on sweep: the crash-restart admin alert
-        // already covers "something happened"; a scheduled sweep just runs.
-        this.scheduleOrFinalize(closed);
-      }
+      this.beginFinalize({
+        row,
+        dir: join(this.sessionsDir, row.id),
+        reason: row.end_reason ?? 'reinicio del bot',
+      });
     }
   }
 
@@ -202,10 +190,8 @@ export class MinutasCapability implements Capability {
   async dispose(): Promise<void> {
     for (const detach of this.detachListeners) detach();
     this.detachListeners = [];
-    // Deferred timers just drop: `transcribe_after` is on the row, so the next
-    // boot's sweep re-arms them. Rows stay 'active'/'processing' on purpose.
-    for (const t of this.deferTimers.values()) clearTimeout(t);
-    this.deferTimers.clear();
+    // Rows stay 'active'/'processing' on purpose so the next boot's sweep
+    // finishes whatever this process didn't.
     this.sessions?.disposeAll();
   }
 
@@ -235,91 +221,37 @@ export class MinutasCapability implements Capability {
     if (!closed) {
       throw new UserVisibleError('No hay ninguna grabación activa en este servidor.');
     }
-    const decision = this.scheduleOrFinalize(closed);
+    this.beginFinalize(closed);
     const outputId = this.store.getOutputChannelId();
     const dest = outputId ? `<#${outputId}>` : 'el canal de minutas';
-    if (decision.mode === 'scheduled') {
-      return (
-        `✅ Cerré la grabación de **${closed.row.channel_name}**. ` +
-        `Estuvo larga (~${Math.round(decision.estimateSec / 60)} min de transcripción), así que la proceso ` +
-        `en la madrugada, cuando el servidor está libre: la minuta sale en ${dest} a partir de las ` +
-        `${formatCdmxTime(decision.atMs)}.`
-      );
-    }
     return (
       `✅ Cerré la grabación de **${closed.row.channel_name}**. ` +
-      `Transcribo el audio, redacto la minuta y la publico en ${dest} — ` +
-      'tardo desde unos minutos según lo larga que estuvo la sesión.'
+      `Redacto la minuta y la publico en ${dest} en unos minutos.`
     );
   }
 
-  // ── Transcribe now or tonight ────────────────────────────────────────────
-
   /**
-   * The scheduling decision for a closed session: cheap (or already inside the
-   * nightly window) → finalize immediately; expensive during the day → persist
-   * `transcribe_after` and arm a timer for the window start. The estimate uses
-   * the measured cost model, so "cheap" means "minutes of whisper", not
-   * "minutes of meeting".
+   * Stop live batching and finalize now. Live transcription already ran during
+   * the meeting, so leftover whisper is the last un-flushed tail — not an hour
+   * of backlog that used to wait until 01:00.
    */
-  private scheduleOrFinalize(closed: ClosedSession): TranscribeDecision {
-    // Stop live batching for this session — leftovers belong to finalize now.
+  private beginFinalize(closed: ClosedSession): void {
     this.live?.forget(closed.dir);
-    const { bursts, audioSeconds } = measureSessionDir(closed.dir);
-    const estimateSec = estimateWhisperSeconds(bursts, audioSeconds);
-    const decision = decideTranscribeAt(Date.now(), estimateSec, {
-      startHour: config.MINUTAS_HEAVY_WINDOW_START_HOUR,
-      endHour: config.MINUTAS_HEAVY_WINDOW_END_HOUR,
-      immediateMaxWhisperMin: config.MINUTAS_IMMEDIATE_MAX_WHISPER_MIN,
-    });
-    if (decision.mode === 'now') {
-      void this.finalizeAndReport(closed);
-      return decision;
-    }
-    this.store?.updateSession(closed.row.id, { transcribe_after: decision.atMs });
+    const leftover = measureSessionDir(closed.dir);
     log.info(
       {
         sessionId: closed.row.id,
-        bursts,
-        audioSeconds: Math.round(audioSeconds),
-        estimateMin: Math.round(estimateSec / 60),
-        at: new Date(decision.atMs).toISOString(),
+        leftoverBursts: leftover.bursts,
+        leftoverAudioSec: Math.round(leftover.audioSeconds),
       },
-      'minutas.transcription_deferred',
+      'minutas.finalize_started',
     );
-    this.armDeferTimer(closed, decision.atMs);
-    return decision;
+    void this.finalizeAndReport(closed);
   }
 
-  /** Arm (or re-arm) the deferred finalize for a session. */
-  private armDeferTimer(closed: ClosedSession, atMs: number): void {
-    const existing = this.deferTimers.get(closed.row.id);
-    if (existing) clearTimeout(existing);
-    const delay = Math.max(0, atMs - Date.now());
-    const timer = setTimeout(() => {
-      this.deferTimers.delete(closed.row.id);
-      const fresh = this.store?.getSession(closed.row.id);
-      if (fresh && (fresh.status === 'done' || fresh.status === 'failed')) return;
-      void this.finalizeAndReport({ ...closed, row: fresh ?? closed.row });
-    }, delay);
-    timer.unref();
-    this.deferTimers.set(closed.row.id, timer);
-  }
-
-  /** Auto-end paths (channel emptied, event over, disconnect, max duration):
-   * nobody got a command ack, so a deferral announces itself in the channel. */
-  private async handleClosed(closed: ClosedSession): Promise<void> {
-    const decision = this.scheduleOrFinalize(closed);
-    if (decision.mode !== 'scheduled' || !this.client) return;
-    const channel = await this.client.channels.fetch(closed.row.channel_id).catch(() => null);
-    if (channel?.isSendable()) {
-      await channel
-        .send(
-          `Cerré la grabación (${closed.reason}). La sesión estuvo larga, así que la transcribo en la madrugada: ` +
-            `la minuta sale a partir de las ${formatCdmxTime(decision.atMs)}.`,
-        )
-        .catch((err) => log.warn({ err, sessionId: closed.row.id }, 'minutas.defer_notice_failed'));
-    }
+  /** Auto-end paths (channel emptied, event over, disconnect, max duration). */
+  private handleClosed(closed: ClosedSession): void {
+    this.beginFinalize(closed);
   }
 
   // ── Capture health ───────────────────────────────────────────────────────
