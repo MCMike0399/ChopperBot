@@ -203,7 +203,36 @@ export function detectHardAccountBlock(status: number, body: string): string | n
   return null;
 }
 
-function authCookieHeaders(auth: InstagramAuth): Record<string, string> {
+/** Optional durable cache for pk / username-feed decisions. Production wires
+ * this to SQLite so a restart doesn't re-probe; tests leave it unset and get
+ * the in-memory default (same process-local stickiness as before). */
+export interface InstagramFetchHints {
+  getPk(username: string): string | undefined;
+  rememberPk(username: string, pk: string): void;
+  prefersUsernameFeed(username: string, nowMs?: number): boolean;
+  rememberUsernameFeed(username: string, nowMs?: number): void;
+}
+
+/** Process-local hints (the pre-v9 behavior). Exported for tests. */
+export function memoryFetchHints(): InstagramFetchHints {
+  const pk = new Map<string, string>();
+  const usernameOnly = new Map<string, number>();
+  return {
+    getPk: (u) => pk.get(u),
+    rememberPk: (u, id) => {
+      pk.set(u, id);
+      usernameOnly.delete(u);
+    },
+    prefersUsernameFeed: (u) => usernameOnly.has(u),
+    rememberUsernameFeed: (u, nowMs = Date.now()) => {
+      usernameOnly.set(u, nowMs);
+    },
+  };
+}
+
+const AUTH_COOKIE_NAMES = new Set(['sessionid', 'csrftoken', 'ds_user_id', 'mid', 'ig_did']);
+
+function authCookiePairs(auth: InstagramAuth): string[] {
   const parts = [
     `sessionid=${auth.sessionid}`,
     `csrftoken=${auth.csrftoken}`,
@@ -211,7 +240,50 @@ function authCookieHeaders(auth: InstagramAuth): Record<string, string> {
   ];
   if (auth.mid) parts.push(`mid=${auth.mid}`);
   if (auth.igDid) parts.push(`ig_did=${auth.igDid}`);
-  return { Cookie: parts.join('; '), 'x-csrftoken': auth.csrftoken };
+  return parts;
+}
+
+/** Chrome Client Hints derived from a desktop Chrome UA. Real Chrome 120+
+ * always sends these on HTTPS to instagram.com; a UA that claims Chrome but
+ * omits them is a well-known non-browser tell. No hints when the UA isn't
+ * Chrome (tests, odd custom strings). */
+export function clientHintsFromUserAgent(userAgent: string): Record<string, string> {
+  const m = userAgent.match(/Chrome\/(\d+)/);
+  if (!m) return {};
+  const v = m[1];
+  const platform = userAgent.includes('Macintosh')
+    ? '"macOS"'
+    : userAgent.includes('Windows')
+      ? '"Windows"'
+      : '"Linux"';
+  return {
+    'sec-ch-ua': `"Chromium";v="${v}", "Google Chrome";v="${v}", "Not-A.Brand";v="24"`,
+    'sec-ch-ua-mobile': '?0',
+    'sec-ch-ua-platform': platform,
+  };
+}
+
+function parseSetCookieNames(res: {
+  headers?: { getSetCookie?: () => string[]; get?: (k: string) => string | null };
+}): Array<[string, string]> {
+  const raw: string[] = [];
+  if (typeof res.headers?.getSetCookie === 'function') {
+    raw.push(...res.headers.getSetCookie());
+  } else {
+    const single = res.headers?.get?.('set-cookie');
+    if (single) raw.push(single);
+  }
+  const out: Array<[string, string]> = [];
+  for (const c of raw) {
+    const nv = c.split(';', 1)[0];
+    const eq = nv.indexOf('=');
+    if (eq <= 0) continue;
+    const name = nv.slice(0, eq).trim();
+    const value = nv.slice(eq + 1).trim();
+    if (!name || AUTH_COOKIE_NAMES.has(name)) continue;
+    out.push([name, value]);
+  }
+  return out;
 }
 
 const IG_URL = (u: string) =>
@@ -238,6 +310,12 @@ export const DEFAULT_IG_USER_AGENT =
 
 const ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
 
+/** Shared HTTP/2 dispatcher — CDN media fetches must use the same one as the
+ * API so we don't present two protocol fingerprints (Node HTTP/1.1 vs H2). */
+export function withIgDispatcher(init: RequestInit): RequestInit {
+  return withH2(init);
+}
+
 // Node's undici fetch auto-sends `sec-fetch-site: cross-site` for requests
 // to i.instagram.com. Instagram rejects that with HTTP 400 "SecFetch Policy
 // violation" — even though curl works fine, because curl doesn't send any
@@ -255,12 +333,19 @@ function buildHeaders(userAgent: string): Record<string, string> {
     'sec-fetch-site': 'same-site',
     'sec-fetch-mode': 'cors',
     'sec-fetch-dest': 'empty',
+    'x-requested-with': 'XMLHttpRequest',
+    ...clientHintsFromUserAgent(userAgent),
   };
 }
 
-/** Sleep a random human-like interval in [minMs, maxMs). */
+/** Sleep a human-like interval. Uniform [min,max) is itself a bot signature
+ * (real gaps are short-heavy with a long tail), so this skews toward min and
+ * occasionally inserts a 2–7 s pause. */
 function humanDelay(minMs = 400, maxMs = 1500): Promise<void> {
-  const ms = minMs + Math.floor(Math.random() * (maxMs - minMs));
+  const ms =
+    Math.random() < 0.08
+      ? 2000 + Math.floor(Math.random() * 5000)
+      : minMs + Math.floor((maxMs - minMs) * Math.random() ** 2);
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -277,35 +362,40 @@ function humanDelay(minMs = 400, maxMs = 1500): Promise<void> {
  *    fails with a deterministic per-account error ({@link
  *    InstagramHardAccountError}), falls back to the username-keyed
  *    `feed/user/{username}/username/` endpoint, which never touches
- *    web_profile_info.
+ *    web_profile_info. The pk and the username-feed decision are stored in
+ *    {@link InstagramFetchHints} (SQLite in production) so a restart doesn't
+ *    re-probe.
  */
 export class DirectInstagramFetcher implements InstagramFetcher {
-  private readonly pkCache = new Map<string, string>();
-  /** Handles whose pk resolution hard-failed (e.g. the laser.provider schema
-   * deletion) but whose username-keyed feed works — skip the doomed
-   * web_profile_info request on later polls so we don't keep hammering a dead
-   * endpoint. In-memory like pkCache: a restart re-probes once, which doubles
-   * as the "did IG fix it?" check. */
-  private readonly usernameFeedOnly = new Set<string>();
+  private readonly hints: InstagramFetchHints;
   private readonly headers: Record<string, string>;
+  /** Extra cookies absorbed from Set-Cookie (rur, ig_nrcb, wd, …). Auth
+   * identity cookies stay pinned to the constructor values. */
+  private readonly extraCookies = new Map<string, string>();
+  /** From `x-ig-set-www-claim` on any IG response; sent as `x-ig-www-claim`. */
+  private wwwClaim: string | null = null;
   /** Invoked once per outbound IG HTTP request (see {@link observeRequests}). */
   private onRequest: () => void = () => {};
 
   /**
    * @param auth Logged-in session cookies, or null for anonymous mode.
    * @param warmupProbability Chance per authed fetch of doing an HTML warmup
-   *   first (see {@link maybeWarmup}). Defaults to 0.5 in production; tests
-   *   should pass 0 to make request counts deterministic. Also gates the
-   *   human-like inter-request delay so tests stay fast/deterministic.
+   *   first (see {@link maybeWarmup}). Defaults to 0.5 in this constructor;
+   *   production passes 0.8. Tests should pass 0 to make request counts
+   *   deterministic. Also gates the human-like inter-request delay so tests
+   *   stay fast/deterministic.
    * @param userAgent UA sent on every request; should match the browser the
    *   session cookies were extracted from. Defaults to {@link DEFAULT_IG_USER_AGENT}.
+   * @param hints Durable pk / username-feed cache. Unset → in-memory (tests).
    */
   constructor(
     private readonly auth: InstagramAuth | null = null,
     private readonly warmupProbability = 0.5,
     private readonly userAgent: string = DEFAULT_IG_USER_AGENT,
+    hints?: InstagramFetchHints,
   ) {
     this.headers = buildHeaders(userAgent);
+    this.hints = hints ?? memoryFetchHints();
   }
 
   observeRequests(cb: () => void): void {
@@ -317,10 +407,50 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     return this.auth !== null;
   }
 
+  /** Headers for CDN media fetches: same UA, client hints, cookies and Referer
+   * as the API session, so scontent.cdninstagram.com isn't a second, dumber
+   * client. */
+  cdnHeaders(): Record<string, string> {
+    const headers: Record<string, string> = {
+      'User-Agent': this.userAgent,
+      Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      'Accept-Language': ACCEPT_LANGUAGE,
+      Referer: 'https://www.instagram.com/',
+      ...clientHintsFromUserAgent(this.userAgent),
+    };
+    if (this.auth) Object.assign(headers, this.cookieHeaders(this.auth));
+    return headers;
+  }
+
+  private cookieHeaders(auth: InstagramAuth): Record<string, string> {
+    const parts = [...authCookiePairs(auth)];
+    for (const [name, value] of this.extraCookies) {
+      parts.push(`${name}=${value}`);
+    }
+    return { Cookie: parts.join('; '), 'x-csrftoken': auth.csrftoken };
+  }
+
+  private authedHeaders(auth: InstagramAuth): Record<string, string> {
+    const headers = { ...this.headers, ...this.cookieHeaders(auth) };
+    if (this.wwwClaim) headers['x-ig-www-claim'] = this.wwwClaim;
+    return headers;
+  }
+
+  private absorbSession(res: {
+    headers?: { get?: (k: string) => string | null; getSetCookie?: () => string[] };
+  }): void {
+    const claim =
+      res.headers?.get?.('x-ig-set-www-claim') ?? res.headers?.get?.('X-IG-Set-WWW-Claim');
+    if (claim && claim.length > 0) this.wwwClaim = claim;
+    for (const [name, value] of parseSetCookieNames(res)) {
+      this.extraCookies.set(name, value);
+    }
+  }
+
   async fetchRecentPosts(username: string): Promise<RecentPost[]> {
     if (this.auth) {
       await this.maybeWarmup(username, this.auth);
-      if (this.usernameFeedOnly.has(username)) {
+      if (this.hints.prefersUsernameFeed(username)) {
         return this.fetchAuthedFeedByUsername(username, this.auth);
       }
       let pk: string;
@@ -340,7 +470,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
         // human-like gap a browser would show before the feed XHR.
         if (this.warmupProbability > 0) await humanDelay();
         const posts = await this.fetchAuthedFeedByUsername(username, this.auth, err);
-        this.usernameFeedOnly.add(username);
+        this.hints.rememberUsernameFeed(username);
         log.info({ username }, 'instagram_monitor.fetch.feed_by_username_engaged');
         return posts;
       }
@@ -351,6 +481,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     }
     this.onRequest();
     const res = await fetch(IG_URL(username), withH2({ headers: this.headers }));
+    this.absorbSession(res);
     if (!res.ok) {
       const body = await res.text().catch(() => '');
       if (detectRateLimit(res.status, body)) {
@@ -381,12 +512,14 @@ export class DirectInstagramFetcher implements InstagramFetcher {
       Accept:
         'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
       'Accept-Language': ACCEPT_LANGUAGE,
-      'sec-fetch-site': 'none',
+      Referer: 'https://www.instagram.com/',
+      'sec-fetch-site': 'same-origin',
       'sec-fetch-mode': 'navigate',
       'sec-fetch-dest': 'document',
       'sec-fetch-user': '?1',
       'upgrade-insecure-requests': '1',
-      ...authCookieHeaders(auth),
+      ...clientHintsFromUserAgent(this.userAgent),
+      ...this.cookieHeaders(auth),
     };
     try {
       this.onRequest();
@@ -394,13 +527,14 @@ export class DirectInstagramFetcher implements InstagramFetcher {
         `https://www.instagram.com/${encodeURIComponent(username)}/`,
         withH2({ headers }),
       );
+      this.absorbSession(res);
       // Drain to release the connection back to the keep-alive pool.
       await res.text().catch(() => '');
     } catch {
       // Warmup is best-effort — the real fetch will surface any real error.
     }
     await new Promise((resolve) =>
-      setTimeout(resolve, 1000 + Math.floor(Math.random() * 2000)),
+      setTimeout(resolve, 800 + Math.floor(2200 * Math.random() ** 2)),
     );
   }
 
@@ -408,11 +542,12 @@ export class DirectInstagramFetcher implements InstagramFetcher {
    * Uses the authed web_profile_info, which returns the profile (incl. id)
    * even though it omits timeline media. */
   private async resolvePk(username: string, auth: InstagramAuth): Promise<string> {
-    const cached = this.pkCache.get(username);
+    const cached = this.hints.getPk(username);
     if (cached) return cached;
-    const headers = { ...this.headers, ...authCookieHeaders(auth) };
+    const headers = this.authedHeaders(auth);
     this.onRequest();
     const res = await fetch(IG_URL(username), withH2({ headers }));
+    this.absorbSession(res);
     const body = await res.text();
     if (!res.ok) {
       const authReason = detectAuthBlock(res.status, body);
@@ -455,7 +590,7 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     if (typeof pk !== 'string' || pk.length === 0) {
       throw new Error(`Could not resolve pk for @${username}`);
     }
-    this.pkCache.set(username, pk);
+    this.hints.rememberPk(username, pk);
     return pk;
   }
 
@@ -504,9 +639,10 @@ export class DirectInstagramFetcher implements InstagramFetcher {
     label: string,
     auth: InstagramAuth,
   ): Promise<RecentPost[]> {
-    const headers = { ...this.headers, ...authCookieHeaders(auth) };
+    const headers = this.authedHeaders(auth);
     this.onRequest();
     const res = await fetch(url, withH2({ headers }));
+    this.absorbSession(res);
     const body = await res.text();
     if (!res.ok) {
       const authReason = detectAuthBlock(res.status, body);

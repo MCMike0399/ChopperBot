@@ -20,17 +20,19 @@ import {
   DirectInstagramFetcher,
   type InstagramAuth,
   type InstagramFetcher,
+  type InstagramFetchHints,
 } from './fetcher.js';
 import { isModTurn } from '../mod-authority.js';
 import { InstagramMonitorScheduler } from './scheduler.js';
 import { InstagramMonitorToolSource } from './source.js';
-import { setIgCdnUserAgent } from './publisher.js';
+import { setIgCdnUserAgent, configureIgCdn } from './publisher.js';
 import { renderInstagramMonitorPrompt } from './preamble.js';
 import { formatDurationEs, formatStatusDigest } from './format.js';
 
 /** Probability of skipping a whole scheduler tick (anti-metronome). Raised
  * 0.08 → 0.15 on 2026-08-13 after IG flagged the polling account for suspected
- * automation — wider gaps in the per-minute tick cadence. */
+ * automation — wider gaps in the per-minute tick cadence. Combined with
+ * jittered tick delays (0.8–3.0×) so the loop isn't a 60s clock. */
 const TICK_SKIP_PROBABILITY = 0.15;
 
 export const INSTAGRAM_MONITOR_CAPABILITY_ID = 'instagram_monitor';
@@ -65,7 +67,13 @@ export class InstagramMonitorCapability implements Capability {
     // presents a single consistent fingerprint. IG_USER_AGENT should match the
     // browser the cookies came from; unset falls back to the built-in default.
     if (config.IG_USER_AGENT) setIgCdnUserAgent(config.IG_USER_AGENT);
-    this.fetcher = new DirectInstagramFetcher(auth, 0.5, config.IG_USER_AGENT);
+    const hints = storeFetchHints(this.store);
+    // 0.8 warmup: a logged-in browser almost always loads the HTML profile
+    // before the feed XHR. 0.5 left a coin-flip of API-only polls, which is
+    // the scraper signature IG already flagged us for.
+    const fetcher = new DirectInstagramFetcher(auth, 0.8, config.IG_USER_AGENT, hints);
+    this.fetcher = fetcher;
+    configureIgCdn({ headers: () => fetcher.cdnHeaders() });
     log.warn(
       { capability: this.id, authed: auth !== null, custom_ua: !!config.IG_USER_AGENT },
       auth
@@ -287,4 +295,17 @@ export async function postStatusDigest(
  * local wrapper just pins this capability's journal tag. */
 async function sendAdminAlert(client: Client, lines: string[]): Promise<void> {
   await sendAdminAlertShared(client, lines, 'instagram_monitor.auth_alert');
+}
+
+/** SQLite-backed pk / username-feed cache. Survives deploys so we don't
+ * re-hit web_profile_info (or the laser.provider 400) on every restart. */
+function storeFetchHints(store: InstagramMonitorStore): InstagramFetchHints {
+  return {
+    getPk: (username) => store.getAccount(username)?.ig_pk ?? undefined,
+    rememberPk: (username, pk) => store.rememberAccountPk(username, pk),
+    prefersUsernameFeed: (username, nowMs = Date.now()) =>
+      store.prefersUsernameFeed(username, nowMs),
+    rememberUsernameFeed: (username, nowMs = Date.now()) =>
+      store.rememberUsernameFeed(username, nowMs),
+  };
 }

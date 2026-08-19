@@ -1,28 +1,40 @@
 import { AttachmentBuilder, type Client, type Message, type TextChannel } from 'discord.js';
 import { log } from '../../log.js';
 import type { Classification } from './classifier.js';
-import { DEFAULT_IG_USER_AGENT, type RecentPost } from './fetcher.js';
+import { DEFAULT_IG_USER_AGENT, withIgDispatcher, type RecentPost } from './fetcher.js';
 import { formatEventWhen, formatPostedAt } from './format.js';
 
 const DISCORD_FILE_LIMIT_BYTES = 8 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15_000;
 const MAX_CAROUSEL_ATTACHMENTS = 4;
 
-// CDN image/video fetches share the same UA as the API fetcher so a session
-// doesn't present two different User-Agents to Instagram infra. Overridden once
-// at capability init from `IG_USER_AGENT` via {@link setIgCdnUserAgent}.
+// CDN image/video fetches share the same UA / cookies / HTTP/2 dispatcher as
+// the API fetcher so a session doesn't present two different clients to
+// Instagram infra. Wired once at capability init via {@link configureIgCdn}.
 let igCdnUserAgent = DEFAULT_IG_USER_AGENT;
+let igCdnHeaderFn: () => Record<string, string> = () => ({
+  'User-Agent': igCdnUserAgent,
+  Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+});
+let igCdnUseDispatcher = false;
 
 /** Override the UA used for IG CDN media fetches (call once at init). */
 export function setIgCdnUserAgent(userAgent: string): void {
   igCdnUserAgent = userAgent;
+  igCdnHeaderFn = () => ({
+    'User-Agent': igCdnUserAgent,
+    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+  });
+}
+
+/** Wire CDN fetches to the live session (cookies, client hints, HTTP/2). */
+export function configureIgCdn(opts: { headers: () => Record<string, string> }): void {
+  igCdnHeaderFn = opts.headers;
+  igCdnUseDispatcher = true;
 }
 
 function igCdnHeaders(): Record<string, string> {
-  return {
-    'User-Agent': igCdnUserAgent,
-    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-  };
+  return igCdnHeaderFn();
 }
 
 const TYPE_EMOJI: Record<Classification['type'], string> = {
@@ -156,7 +168,12 @@ async function fetchBytes(url: string): Promise<Uint8Array | null> {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { headers: igCdnHeaders(), signal: ctrl.signal });
+    const res = await fetch(
+      url,
+      igCdnUseDispatcher
+        ? withIgDispatcher({ headers: igCdnHeaders(), signal: ctrl.signal })
+        : { headers: igCdnHeaders(), signal: ctrl.signal },
+    );
     if (!res.ok) {
       log.warn({ url, status: res.status }, 'IG CDN fetch non-ok');
       return null;
