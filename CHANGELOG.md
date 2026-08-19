@@ -13,6 +13,20 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.25.1 — 2026-08-19
+
+🐢 **Instagram otra vez nos marcó actividad automatizada — bajamos más el perfil**
+
+Volvió el aviso de "actividad automatizada sospechosa" en la cuenta con la que reviso Instagram. El cambio de ritmo del 13 de agosto sí bajó el volumen (cero bloqueos, cero 429), pero Instagram sigue viendo *cómo* consulto, no solo *cuánto*:
+
+- Ya no golpeo una y otra vez la puerta que Instagram cerró en 5 cuentas cada vez que reinicio el bot (eso era lo más robótico que quedaba).
+- Dejo de consultar las cuentas al segundo exacto de cada minuto.
+- Las consultas se parecen más a un navegador de verdad (cabeceras, cookies de la sesión, las imágenes por el mismo canal).
+
+Sigo publicando las convocatorias igual; solo tardo un poco más en enterarme. Si el aviso se repite, hay que pausar el monitor un par de días y no abrir esa cuenta de Instagram en el celular/compu al mismo tiempo que corre el bot.
+
+---
+
 ## 1.25.0 — 2026-08-19
 
 📜 **Minutas: el acta sale al cerrar, y el chat ya no se copia**

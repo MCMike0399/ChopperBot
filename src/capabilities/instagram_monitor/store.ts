@@ -61,6 +61,23 @@ export interface MonitoredAccount {
   posts_per_day: number | null;
   /** When the cadence columns above were last recomputed (ms). NULL = never. */
   cadence_updated_at: number | null;
+  /**
+   * Numeric IG pk for this handle, persisted so a restart doesn't re-hit
+   * `web_profile_info` for every account (that burst is a fingerprint AND
+   * wasted budget). NULL until the first successful resolve.
+   */
+  ig_pk: string | null;
+  /**
+   * 1 when pk resolution is deterministically broken for this handle and the
+   * username-keyed feed works. Survives restarts so we don't keep hammering
+   * the doomed `web_profile_info` endpoint (the 2026-08-16 in-memory sticky
+   * set was wiped on every deploy — 25 identical 400s in the following 3 days).
+   * Re-probed after {@link USERNAME_FEED_REPROBE_MS}, or when an operator
+   * force-polls / unpauses.
+   */
+  prefer_username_feed: number;
+  /** When `prefer_username_feed` was last set (ms). NULL = never / cleared. */
+  prefer_username_feed_at: number | null;
 }
 
 export interface SeenPost {
@@ -292,6 +309,27 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
         ADD COLUMN consecutive_hard_failures INTEGER NOT NULL DEFAULT 0;
     `,
   },
+  {
+    // v9 — persist the per-account fetch strategy so a restart doesn't
+    // re-probe. Two columns:
+    //   ig_pk — numeric pk from web_profile_info, so healthy accounts skip
+    //     the resolve call after a deploy (the previous in-memory pkCache
+    //     made every restart a burst of N extra profile lookups).
+    //   prefer_username_feed — the 2026-08-16 laser.provider fallback used to
+    //     live in a process-local Set; 15 deploys in 3 days re-armed the
+    //     doomed web_profile_info 400 on the 5 broken accounts every time.
+    //     Persisting it is the actual fix for "hammering a dead endpoint".
+    // prefer_username_feed_at lets us re-probe every USERNAME_FEED_REPROBE_MS
+    // so a silently-fixed IG bug is noticed without an operator gesture.
+    version: 9,
+    up: `
+      ALTER TABLE instagram_monitor_accounts ADD COLUMN ig_pk TEXT;
+      ALTER TABLE instagram_monitor_accounts
+        ADD COLUMN prefer_username_feed INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE instagram_monitor_accounts
+        ADD COLUMN prefer_username_feed_at INTEGER;
+    `,
+  },
 ];
 
 /** Window over which the circuit breaker counts soft-block events (6h). */
@@ -318,6 +356,14 @@ export const AUTH_PAUSE_THRESHOLD = 5;
  * deliberately NOT by `clearFailureBackoff()` (see migration v8).
  */
 export const HARD_PAUSE_THRESHOLD = 5;
+
+/**
+ * How long a `prefer_username_feed` decision stays sticky before we re-probe
+ * `web_profile_info` once (in case IG restored the deleted schema). 14 days:
+ * long enough that a deploy-a-day cadence never re-arms the 400, short enough
+ * that a server-side fix is noticed without waiting for an operator.
+ */
+export const USERNAME_FEED_REPROBE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
  * Failure backoff ceiling: next allowed poll is min(base * 2^failures, max(MAX_BACKOFF, base)).
@@ -706,11 +752,15 @@ export class InstagramMonitorStore {
       .run(paused ? 1 : 0, username);
     if (!paused) {
       // Unpausing is the operator's "try this account again" gesture — clear
-      // the deterministic-failure gate so dueAccounts returns it immediately.
+      // the deterministic-failure gate so dueAccounts returns it immediately,
+      // and drop the username-feed sticky so the next poll re-probes pk
+      // (the "did IG fix laser.provider?" check).
       this.db
         .prepare(
           `UPDATE instagram_monitor_accounts
-           SET consecutive_hard_failures = 0
+           SET consecutive_hard_failures = 0,
+               prefer_username_feed = 0,
+               prefer_username_feed_at = NULL
            WHERE username = ?`,
         )
         .run(username);
@@ -871,11 +921,52 @@ export class InstagramMonitorStore {
       .prepare(
         `UPDATE instagram_monitor_accounts
          SET last_post_id = NULL, last_post_at = NULL, last_polled_at = NULL,
-             consecutive_hard_failures = 0
+             consecutive_hard_failures = 0,
+             prefer_username_feed = 0,
+             prefer_username_feed_at = NULL
          WHERE username = ?`,
       )
       .run(username);
     return this.getAccount(username);
+  }
+
+  /** Persist a resolved numeric pk so later processes skip web_profile_info. */
+  rememberAccountPk(username: string, pk: string): void {
+    this.db
+      .prepare(
+        `UPDATE instagram_monitor_accounts
+         SET ig_pk = ?, prefer_username_feed = 0, prefer_username_feed_at = NULL
+         WHERE username = ?`,
+      )
+      .run(pk, username);
+  }
+
+  /** Stick the username-keyed feed path so we stop hitting a doomed pk-resolve. */
+  rememberUsernameFeed(username: string, nowMs: number): void {
+    this.db
+      .prepare(
+        `UPDATE instagram_monitor_accounts
+         SET prefer_username_feed = 1, prefer_username_feed_at = ?
+         WHERE username = ?`,
+      )
+      .run(nowMs, username);
+  }
+
+  /**
+   * True when this handle should skip web_profile_info and go straight to
+   * `feed/user/{username}/username/`. False if never set, operator-cleared, or
+   * older than {@link USERNAME_FEED_REPROBE_MS}.
+   */
+  prefersUsernameFeed(username: string, nowMs: number): boolean {
+    const a = this.getAccount(username);
+    if (!a || a.prefer_username_feed !== 1) return false;
+    if (
+      a.prefer_username_feed_at !== null &&
+      nowMs - a.prefer_username_feed_at > USERNAME_FEED_REPROBE_MS
+    ) {
+      return false;
+    }
+    return true;
   }
 
   hasSeen(channelId: string, igPostId: string): boolean {

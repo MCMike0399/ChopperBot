@@ -46,6 +46,9 @@ function account(p: Partial<MonitoredAccount> = {}): MonitoredAccount {
     poll_interval_ms: null,
     posts_per_day: null,
     cadence_updated_at: null,
+    ig_pk: null,
+    prefer_username_feed: 0,
+    prefer_username_feed_at: null,
     ...p,
   };
 }

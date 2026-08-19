@@ -25,6 +25,12 @@ import { fetchCover as defaultFetchCover, publishPost as defaultPublishPost, typ
 // can still keep ~60 accounts on cadence at this interval.
 export const DEFAULT_POLL_INTERVAL_MS = 60 * 60 * 1000;
 export const DEFAULT_TICK_MS = 60 * 1000;
+/** Production tick delay is `tickMs` × Uniform[{@link TICK_SPREAD_MIN},
+ * {@link TICK_SPREAD_MAX}] so polls don't land on the same wall-clock second
+ * of every minute (the 2026-08-18 journal showed a :16/:27 metronome — a
+ * classic bot tell). Tests drive `tickOnce()` directly and never see this. */
+const TICK_SPREAD_MIN = 0.8;
+const TICK_SPREAD_MAX = 3.0;
 // One account per tick (≤1 outbound IG request per minute) so we never fire a
 // synchronized burst that looks like a bot.
 const ACCOUNTS_PER_TICK = 1;
@@ -210,8 +216,9 @@ export interface SchedulerDeps {
   dailyRequestBudget?: number;
   /**
    * Probability in [0,1) of skipping an entire tick at random, so polling
-   * isn't a perfect metronome. `0`/unset disables it — tests leave it off to
-   * stay deterministic; production sets a small value (~0.08).
+ * isn't a perfect metronome. `0`/unset disables it — tests leave it off to
+ * stay deterministic; production sets ~0.15. Combined with jittered tick
+ * delays (0.8–3.0× tickMs) so the loop isn't a 60s clock.
    */
   tickSkipProbability?: number;
   /** Override the min-pause-before-resume-alert debounce (ms). Tests set 0. Defaults to MIN_PAUSE_FOR_RESUME_MS. */
@@ -280,6 +287,7 @@ export class InstagramMonitorScheduler {
   private intervalHandle: NodeJS.Timeout | null = null;
   private tickInFlight = false;
   private disposed = false;
+  private started = false;
   private readonly classify: ClassifyFn;
   private readonly publish: PublishFn;
   private readonly fetchCover: FetchCoverFn;
@@ -342,7 +350,8 @@ export class InstagramMonitorScheduler {
   }
 
   start(): void {
-    if (this.intervalHandle) return;
+    if (this.started || this.disposed) return;
+    this.started = true;
     // Zero out backoff counters so any leftover post-outage state (e.g. accounts
     // that hit AUTH_PAUSE_THRESHOLD before this restart, or sat at 8-hour
     // exponential backoff) gets a clean slate. Operator-set `paused=1` is left
@@ -372,12 +381,30 @@ export class InstagramMonitorScheduler {
         ? 'instagram_monitor.scheduler.start.global_stopped'
         : 'instagram_monitor.scheduler.start',
     );
-    setImmediate(() => void this.tickOnce().catch(() => {}));
-    this.intervalHandle = setInterval(() => {
-      void this.tickOnce().catch((err) => {
-        log.error({ err }, 'instagram_monitor.tick_failed');
-      });
-    }, this.tickMs);
+    setImmediate(() => {
+      void this.tickOnce()
+        .catch((err) => {
+          log.error({ err }, 'instagram_monitor.tick_failed');
+        })
+        .finally(() => this.scheduleNextTick());
+    });
+  }
+
+  /** Recursively schedule the next tick with a spread delay so the loop isn't
+   * a 60 s metronome. Delay is measured from the *end* of the previous tick
+   * (including fetch time), which also breaks the "action on second :27"
+   * clustering a setInterval phase produces. */
+  private scheduleNextTick(): void {
+    if (this.disposed) return;
+    const factor = TICK_SPREAD_MIN + Math.random() * (TICK_SPREAD_MAX - TICK_SPREAD_MIN);
+    const delay = Math.max(1, Math.round(this.tickMs * factor));
+    this.intervalHandle = setTimeout(() => {
+      void this.tickOnce()
+        .catch((err) => {
+          log.error({ err }, 'instagram_monitor.tick_failed');
+        })
+        .finally(() => this.scheduleNextTick());
+    }, delay);
   }
 
   /** Record one outbound IG request and prune the rolling 24h window. */
@@ -618,8 +645,9 @@ export class InstagramMonitorScheduler {
 
   async dispose(): Promise<void> {
     this.disposed = true;
+    this.started = false;
     if (this.intervalHandle) {
-      clearInterval(this.intervalHandle);
+      clearTimeout(this.intervalHandle);
       this.intervalHandle = null;
     }
   }

@@ -10,6 +10,8 @@ import {
   detectHardAccountBlock,
   detectRateLimit,
   DEFAULT_IG_USER_AGENT,
+  clientHintsFromUserAgent,
+  memoryFetchHints,
   type InstagramAuth,
 } from '../fetcher.js';
 
@@ -463,6 +465,131 @@ describe('DirectInstagramFetcher — feed-by-username fallback (laser.provider)'
     const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
     expect(err).toBeInstanceOf(InstagramRateLimitError);
     expect(urls).toHaveLength(1);
+  });
+});
+
+describe('DirectInstagramFetcher — fingerprint headers + durable hints', () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test('Chrome UA sends Client Hints and x-requested-with on API calls', async () => {
+    const seen: Record<string, string>[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+      seen.push(init.headers as Record<string, string>);
+      if (url.includes('web_profile_info')) {
+        return {
+          ok: true,
+          status: 200,
+          async text() {
+            return JSON.stringify({ data: { user: { id: '5005' } } });
+          },
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
+        },
+      };
+    }) as unknown as typeof fetch;
+
+    const ua =
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
+    await new DirectInstagramFetcher(AUTH, 0, ua).fetchRecentPosts('foo');
+    expect(seen.length).toBe(2);
+    for (const h of seen) {
+      expect(h['sec-ch-ua']).toContain('Chrome";v="148"');
+      expect(h['sec-ch-ua-platform']).toBe('"macOS"');
+      expect(h['sec-ch-ua-mobile']).toBe('?0');
+      expect(h['x-requested-with']).toBe('XMLHttpRequest');
+    }
+  });
+
+  test('forwards x-ig-www-claim captured from x-ig-set-www-claim', async () => {
+    const seen: Record<string, string>[] = [];
+    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+      seen.push(init.headers as Record<string, string>);
+      if (url.includes('web_profile_info')) {
+        return {
+          ok: true,
+          status: 200,
+          headers: {
+            get: (k: string) =>
+              k.toLowerCase() === 'x-ig-set-www-claim' ? 'hmac.TESTCLAIM' : null,
+          },
+          async text() {
+            return JSON.stringify({ data: { user: { id: '5005' } } });
+          },
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
+        },
+      };
+    }) as unknown as typeof fetch;
+
+    await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo');
+    expect(seen[0]['x-ig-www-claim']).toBeUndefined();
+    expect(seen[1]['x-ig-www-claim']).toBe('hmac.TESTCLAIM');
+  });
+
+  test('hints.prefersUsernameFeed skips web_profile_info on a fresh fetcher', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
+        },
+      };
+    }) as unknown as typeof fetch;
+
+    const hints = memoryFetchHints();
+    hints.rememberUsernameFeed('foo');
+    const f = new DirectInstagramFetcher(AUTH, 0, DEFAULT_IG_USER_AGENT, hints);
+    await f.fetchRecentPosts('foo');
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain('/feed/user/foo/username/');
+  });
+
+  test('hints.getPk skips web_profile_info on a fresh fetcher', async () => {
+    const urls: string[] = [];
+    globalThis.fetch = vi.fn(async (url: string) => {
+      urls.push(url);
+      return {
+        ok: true,
+        status: 200,
+        async text() {
+          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
+        },
+      };
+    }) as unknown as typeof fetch;
+
+    const hints = memoryFetchHints();
+    hints.rememberPk('foo', '5005');
+    const f = new DirectInstagramFetcher(AUTH, 0, DEFAULT_IG_USER_AGENT, hints);
+    await f.fetchRecentPosts('foo');
+    expect(urls).toHaveLength(1);
+    expect(urls[0]).toContain('/feed/user/5005/');
+  });
+});
+
+describe('clientHintsFromUserAgent', () => {
+  test('emits Chrome hints for a desktop Chrome UA and nothing otherwise', () => {
+    const chrome = clientHintsFromUserAgent(DEFAULT_IG_USER_AGENT);
+    expect(chrome['sec-ch-ua']).toContain('v="124"');
+    expect(chrome['sec-ch-ua-platform']).toBe('"macOS"');
+    expect(clientHintsFromUserAgent('Mozilla/5.0 (My Personal Browser) Custom/1.0')).toEqual(
+      {},
+    );
   });
 });
 

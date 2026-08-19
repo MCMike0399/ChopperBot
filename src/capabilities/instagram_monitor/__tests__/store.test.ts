@@ -14,6 +14,7 @@ import {
   CADENCE_INTERVAL_FACTOR,
   HARD_PAUSE_THRESHOLD,
   POLL_JITTER_FRACTION,
+  USERNAME_FEED_REPROBE_MS,
   type MonitoredAccount,
 } from '../store.js';
 
@@ -286,6 +287,9 @@ function acct(p: Partial<MonitoredAccount>): MonitoredAccount {
     poll_interval_ms: null,
     posts_per_day: null,
     cadence_updated_at: null,
+    ig_pk: null,
+    prefer_username_feed: 0,
+    prefer_username_feed_at: null,
     ...p,
   };
 }
@@ -433,6 +437,30 @@ describe('hard deterministic-failure auto-pause (migration v8)', () => {
     }
     store.resetLastPost('foo'); // operator force-poll
     expect(store.getAccount('foo')?.consecutive_hard_failures).toBe(0);
+    mem.close();
+  });
+});
+
+describe('persistent fetch hints (v9)', () => {
+  test('remembered pk and username-feed survive a logical restart', async () => {
+    const { store, mem } = await newStore();
+    store.upsertAccount({ username: 'foo', added_by: 'U' });
+    store.rememberAccountPk('foo', '12345');
+    expect(store.getAccount('foo')?.ig_pk).toBe('12345');
+    expect(store.prefersUsernameFeed('foo', 1_000)).toBe(false);
+
+    store.rememberUsernameFeed('foo', 1_000);
+    expect(store.prefersUsernameFeed('foo', 1_000)).toBe(true);
+    expect(store.prefersUsernameFeed('foo', 1_000 + USERNAME_FEED_REPROBE_MS - 1)).toBe(true);
+    expect(store.prefersUsernameFeed('foo', 1_000 + USERNAME_FEED_REPROBE_MS + 1)).toBe(false);
+
+    store.setPaused('foo', false);
+    expect(store.prefersUsernameFeed('foo', 2_000)).toBe(false);
+
+    store.rememberUsernameFeed('foo', 3_000);
+    store.resetLastPost('foo');
+    expect(store.prefersUsernameFeed('foo', 4_000)).toBe(false);
+    expect(store.getAccount('foo')?.ig_pk).toBe('12345'); // pk is stable
     mem.close();
   });
 });
