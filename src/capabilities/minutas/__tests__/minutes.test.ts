@@ -2,8 +2,10 @@ import { describe, test, expect } from 'vitest';
 import {
   BLOCK_MAX_CHARS,
   buildMinutesSystemPrompt,
+  buildMinutesUserPrompt,
   renderMinutesPost,
   splitTranscriptIntoBlocks,
+  stripMinutesChatSection,
   type MinutesMeta,
 } from '../minutes.js';
 import { SPANISH_VOICE_RULES } from '../../../lang/voice.js';
@@ -53,15 +55,51 @@ describe('buildMinutesSystemPrompt', () => {
     expect(p).toMatch(/Nunca inventes/i);
   });
 
-  test('demands filtering greeting/filler chat lines out of the acta', () => {
-    // Regression: the 2026-08-16 minute faithfully recorded "hola", "oki" and
-    // "olo" as chat commentary. The prompt must order per-line filtering, not
-    // just section omission when ALL chat is greetings.
+  test('treats chat as unpublished context and forbids a chat section', () => {
+    // 2026-08-18: the acta listed chat jokes («tomamos palacio nacional») as
+    // record. Chat stays in the draft as 💬 context; it must not be a section.
     const p = buildMinutesSystemPrompt();
-    expect(p).toMatch(/DESCARTA/);
-    expect(p).toContain('«hola»');
-    expect(p).toContain('«oki»');
-    expect(p).toMatch(/omite la sección entera/);
+    expect(p).toMatch(/El chat NO se publica/);
+    expect(p).toMatch(/Bromas, memes, hipérboles/);
+    expect(p).not.toContain('## Comentarios del chat');
+  });
+
+  test('user prompt keeps chat in the draft as unpublished context', () => {
+    const u = buildMinutesUserPrompt('[00:02] 💬 Carla (chat): jeje', META);
+    expect(u).toContain('💬 Carla (chat): jeje');
+    expect(u).toMatch(/no las copies al acta/);
+  });
+});
+
+describe('stripMinutesChatSection', () => {
+  test('drops a trailing Comentarios del chat section', () => {
+    const body = [
+      '## Resumen',
+      'Nos organizamos.',
+      '## Acuerdos y decisiones',
+      'Seguir la asamblea.',
+      '## Comentarios del chat',
+      '- El 2do aniversario tomamos palacio nacional.',
+    ].join('\n');
+    const stripped = stripMinutesChatSection(body);
+    expect(stripped).toContain('## Resumen');
+    expect(stripped).toContain('## Acuerdos y decisiones');
+    expect(stripped).not.toMatch(/Comentarios del chat/i);
+    expect(stripped).not.toMatch(/palacio nacional/i);
+  });
+
+  test('drops a chat section sitting between other headings', () => {
+    const body = [
+      '## Resumen',
+      'Ok.',
+      '## Comentarios del chat',
+      'jaja',
+      '## Compromisos',
+      'Sin compromisos.',
+    ].join('\n');
+    expect(stripMinutesChatSection(body)).toBe(
+      '## Resumen\nOk.\n## Compromisos\nSin compromisos.',
+    );
   });
 });
 
