@@ -1,8 +1,17 @@
-import { AttachmentBuilder, type Client, type Message, type TextChannel } from 'discord.js';
-import { log } from '../../log.js';
-import type { Classification } from './classifier.js';
-import { DEFAULT_IG_USER_AGENT, withIgDispatcher, type RecentPost } from './fetcher.js';
-import { formatEventWhen, formatPostedAt } from './format.js';
+import {
+   AttachmentBuilder,
+   type Client,
+   type Message,
+   type TextChannel,
+} from "discord.js";
+import { log } from "../../log.js";
+import type { Classification } from "./classifier.js";
+import {
+   DEFAULT_IG_USER_AGENT,
+   withIgDispatcher,
+   type RecentPost,
+} from "./fetcher.js";
+import { formatEventWhen, formatPostedAt } from "./format.js";
 
 const DISCORD_FILE_LIMIT_BYTES = 8 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 15_000;
@@ -13,44 +22,46 @@ const MAX_CAROUSEL_ATTACHMENTS = 4;
 // Instagram infra. Wired once at capability init via {@link configureIgCdn}.
 let igCdnUserAgent = DEFAULT_IG_USER_AGENT;
 let igCdnHeaderFn: () => Record<string, string> = () => ({
-  'User-Agent': igCdnUserAgent,
-  Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+   "User-Agent": igCdnUserAgent,
+   Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
 });
 let igCdnUseDispatcher = false;
 
 /** Override the UA used for IG CDN media fetches (call once at init). */
 export function setIgCdnUserAgent(userAgent: string): void {
-  igCdnUserAgent = userAgent;
-  igCdnHeaderFn = () => ({
-    'User-Agent': igCdnUserAgent,
-    Accept: 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-  });
+   igCdnUserAgent = userAgent;
+   igCdnHeaderFn = () => ({
+      "User-Agent": igCdnUserAgent,
+      Accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+   });
 }
 
 /** Wire CDN fetches to the live session (cookies, client hints, HTTP/2). */
-export function configureIgCdn(opts: { headers: () => Record<string, string> }): void {
-  igCdnHeaderFn = opts.headers;
-  igCdnUseDispatcher = true;
+export function configureIgCdn(opts: {
+   headers: () => Record<string, string>;
+}): void {
+   igCdnHeaderFn = opts.headers;
+   igCdnUseDispatcher = true;
 }
 
 function igCdnHeaders(): Record<string, string> {
-  return igCdnHeaderFn();
+   return igCdnHeaderFn();
 }
 
-const TYPE_EMOJI: Record<Classification['type'], string> = {
-  evento: '📅',
-  convocatoria: '📢',
-  alerta: '🚨',
-  acuerpamiento: '🤝',
-  actualización: '🔔',
-  noticia: '📰',
-  otro: '📌',
+const TYPE_EMOJI: Record<Classification["type"], string> = {
+   evento: "📅",
+   convocatoria: "📢",
+   alerta: "🚨",
+   acuerpamiento: "🤝",
+   actualización: "🔔",
+   noticia: "📰",
+   otro: "📌",
 };
 
 export interface PublishResult {
-  messageId: string | null;
-  ok: boolean;
-  reason?: string;
+   messageId: string | null;
+   ok: boolean;
+   reason?: string;
 }
 
 /**
@@ -59,138 +70,169 @@ export interface PublishResult {
  * the embeds survive Instagram's ~24h CDN URL expiry.
  */
 export async function publishPost(
-  client: Client,
-  channelId: string,
-  account: string,
-  post: RecentPost,
-  classification: Classification,
-  /** Pre-fetched cover image bytes (the same buffer used by the classifier). */
-  coverBytes: Uint8Array | null,
+   client: Client,
+   channelId: string,
+   account: string,
+   post: RecentPost,
+   classification: Classification,
+   /** Pre-fetched cover image bytes (the same buffer used by the classifier). */
+   coverBytes: Uint8Array | null,
 ): Promise<PublishResult> {
-  const channel = client.channels.cache.get(channelId);
-  if (!channel || !channel.isTextBased() || !('send' in channel)) {
-    return { messageId: null, ok: false, reason: 'channel_not_sendable' };
-  }
-  const text = renderText(account, post, classification);
+   const channel = client.channels.cache.get(channelId);
+   if (!channel || !channel.isTextBased() || !("send" in channel)) {
+      return { messageId: null, ok: false, reason: "channel_not_sendable" };
+   }
+   const text = renderText(account, post, classification);
 
-  const files: AttachmentBuilder[] = [];
-  if (coverBytes && coverBytes.byteLength <= DISCORD_FILE_LIMIT_BYTES) {
-    files.push(new AttachmentBuilder(Buffer.from(coverBytes), { name: `${post.shortcode}.jpg` }));
-  }
+   const files: AttachmentBuilder[] = [];
+   if (coverBytes && coverBytes.byteLength <= DISCORD_FILE_LIMIT_BYTES) {
+      files.push(
+         new AttachmentBuilder(Buffer.from(coverBytes), {
+            name: `${post.shortcode}.jpg`,
+         }),
+      );
+   }
 
-  // For carousels, append up to 3 more images so the user can scan the set
-  // without opening Instagram. Skip on oversized fetches.
-  if (post.mediaType === 'carousel' && post.carouselUrls && post.carouselUrls.length > 1) {
-    for (let i = 1; i < post.carouselUrls.length && files.length < MAX_CAROUSEL_ATTACHMENTS; i++) {
+   // For carousels, append up to 3 more images so the user can scan the set
+   // without opening Instagram. Skip on oversized fetches.
+   if (
+      post.mediaType === "carousel" &&
+      post.carouselUrls &&
+      post.carouselUrls.length > 1
+   ) {
+      for (
+         let i = 1;
+         i < post.carouselUrls.length &&
+         files.length < MAX_CAROUSEL_ATTACHMENTS;
+         i++
+      ) {
+         try {
+            const bytes = await fetchBytes(post.carouselUrls[i]);
+            if (bytes && bytes.byteLength <= DISCORD_FILE_LIMIT_BYTES) {
+               files.push(
+                  new AttachmentBuilder(Buffer.from(bytes), {
+                     name: `${post.shortcode}-${i + 1}.jpg`,
+                  }),
+               );
+            }
+         } catch (err) {
+            log.warn(
+               { err, idx: i, shortcode: post.shortcode },
+               "carousel image fetch failed",
+            );
+         }
+      }
+   }
+
+   let video: AttachmentBuilder | null = null;
+   if (post.mediaType === "video" && post.videoUrl) {
       try {
-        const bytes = await fetchBytes(post.carouselUrls[i]);
-        if (bytes && bytes.byteLength <= DISCORD_FILE_LIMIT_BYTES) {
-          files.push(
-            new AttachmentBuilder(Buffer.from(bytes), {
-              name: `${post.shortcode}-${i + 1}.jpg`,
-            }),
-          );
-        }
+         const bytes = await fetchBytes(post.videoUrl);
+         if (bytes && bytes.byteLength <= DISCORD_FILE_LIMIT_BYTES) {
+            video = new AttachmentBuilder(Buffer.from(bytes), {
+               name: `${post.shortcode}.mp4`,
+            });
+         } else {
+            log.info(
+               { shortcode: post.shortcode, size: bytes?.byteLength ?? 0 },
+               "video too large for Discord re-upload; linking instead",
+            );
+         }
       } catch (err) {
-        log.warn({ err, idx: i, shortcode: post.shortcode }, 'carousel image fetch failed');
+         log.warn(
+            { err, shortcode: post.shortcode },
+            "video fetch failed; linking instead",
+         );
       }
-    }
-  }
+   }
+   if (video) files.push(video);
 
-  let video: AttachmentBuilder | null = null;
-  if (post.mediaType === 'video' && post.videoUrl) {
-    try {
-      const bytes = await fetchBytes(post.videoUrl);
-      if (bytes && bytes.byteLength <= DISCORD_FILE_LIMIT_BYTES) {
-        video = new AttachmentBuilder(Buffer.from(bytes), { name: `${post.shortcode}.mp4` });
-      } else {
-        log.info(
-          { shortcode: post.shortcode, size: bytes?.byteLength ?? 0 },
-          'video too large for Discord re-upload; linking instead',
-        );
-      }
-    } catch (err) {
-      log.warn({ err, shortcode: post.shortcode }, 'video fetch failed; linking instead');
-    }
-  }
-  if (video) files.push(video);
-
-  try {
-    const msg: Message = await (channel as TextChannel).send({
-      content: text,
-      files,
-      // Nothing in an IG card may ever ping. The text is model output written
-      // from a caption on someone ELSE's Instagram account — i.e. attacker-
-      // controlled input that this bot re-publishes, unread, to every bound
-      // community channel. `parse: []` (stricter than the client default) means
-      // a caption engineered into "@everyone …" renders as text and notifies
-      // nobody.
-      allowedMentions: { parse: [] },
-    });
-    log.info(
-      {
-        channelId,
-        account,
-        shortcode: post.shortcode,
-        type: classification.type,
-        files: files.length,
-      },
-      'instagram_monitor.push',
-    );
-    return { messageId: msg.id, ok: true };
-  } catch (err) {
-    log.error({ err, account, shortcode: post.shortcode }, 'instagram_monitor.push_failed');
-    return {
-      messageId: null,
-      ok: false,
-      reason: err instanceof Error ? err.message : String(err),
-    };
-  }
+   try {
+      const msg: Message = await (channel as TextChannel).send({
+         content: text,
+         files,
+         // Nothing in an IG card may ever ping. The text is model output written
+         // from a caption on someone ELSE's Instagram account — i.e. attacker-
+         // controlled input that this bot re-publishes, unread, to every bound
+         // community channel. `parse: []` (stricter than the client default) means
+         // a caption engineered into "@everyone …" renders as text and notifies
+         // nobody.
+         allowedMentions: { parse: [] },
+      });
+      log.info(
+         {
+            channelId,
+            account,
+            shortcode: post.shortcode,
+            type: classification.type,
+            files: files.length,
+         },
+         "instagram_monitor.push",
+      );
+      return { messageId: msg.id, ok: true };
+   } catch (err) {
+      log.error(
+         { err, account, shortcode: post.shortcode },
+         "instagram_monitor.push_failed",
+      );
+      return {
+         messageId: null,
+         ok: false,
+         reason: err instanceof Error ? err.message : String(err),
+      };
+   }
 }
 
-export function renderText(account: string, post: RecentPost, c: Classification): string {
-  const emoji = TYPE_EMOJI[c.type] ?? '📌';
-  const meta: string[] = [`Tipo: **${c.type}**`, `@${account}`];
-  if (c.when) meta.push(`Cuándo: **${formatEventWhen(c.when)}**`);
-  if (c.where) meta.push(`Dónde: **${c.where}**`);
-  meta.push(`Posteado: ${formatPostedAt(post.takenAtMs)}`);
-  const tags = c.tags.length > 0 ? `\nTags: ${c.tags.map((t) => `\`${t}\``).join(' · ')}` : '';
-  const url = `https://instagram.com/p/${post.shortcode}`;
-  const body = c.summary || c.title;
-  // Italicize the meta line with `*…*` rather than `_…_`: Discord's
-  // underscore-italic won't close when adjacent to an alphanumeric (the line
-  // ends in a digit, e.g. "12:01"), leaving a stray literal `_`. Asterisks have
-  // no intraword restriction and close cleanly.
-  return `${emoji} **${c.title || '(sin título)'}**\n*${meta.join(' · ')}*${tags}\n\n${body}\n\n🔗 ${url}`;
+export function renderText(
+   account: string,
+   post: RecentPost,
+   c: Classification,
+): string {
+   const emoji = TYPE_EMOJI[c.type] ?? "📌";
+   const meta: string[] = [`Tipo: **${c.type}**`, `@${account}`];
+   if (c.when) meta.push(`Cuándo: **${formatEventWhen(c.when)}**`);
+   if (c.where) meta.push(`Dónde: **${c.where}**`);
+   meta.push(`Posteado: ${formatPostedAt(post.takenAtMs)}`);
+   const tags =
+      c.tags.length > 0
+         ? `\nTags: ${c.tags.map((t) => `\`${t}\``).join(" · ")}`
+         : "";
+   const url = `https://instagram.com/p/${post.shortcode}`;
+   const body = c.summary || c.title;
+   // Italicize the meta line with `*…*` rather than `_…_`: Discord's
+   // underscore-italic won't close when adjacent to an alphanumeric (the line
+   // ends in a digit, e.g. "12:01"), leaving a stray literal `_`. Asterisks have
+   // no intraword restriction and close cleanly.
+   return `${emoji} **${c.title || "(sin título)"}**\n*${meta.join(" · ")}*${tags}\n\n${body}\n\n🔗 ${url}`;
 }
 
 async function fetchBytes(url: string): Promise<Uint8Array | null> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(
-      url,
-      igCdnUseDispatcher
-        ? withIgDispatcher({ headers: igCdnHeaders(), signal: ctrl.signal })
-        : { headers: igCdnHeaders(), signal: ctrl.signal },
-    );
-    if (!res.ok) {
-      log.warn({ url, status: res.status }, 'IG CDN fetch non-ok');
-      return null;
-    }
-    const buf = await res.arrayBuffer();
-    return new Uint8Array(buf);
-  } finally {
-    clearTimeout(timer);
-  }
+   const ctrl = new AbortController();
+   const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
+   try {
+      const res = await fetch(
+         url,
+         igCdnUseDispatcher
+            ? withIgDispatcher({ headers: igCdnHeaders(), signal: ctrl.signal })
+            : { headers: igCdnHeaders(), signal: ctrl.signal },
+      );
+      if (!res.ok) {
+         log.warn({ url, status: res.status }, "IG CDN fetch non-ok");
+         return null;
+      }
+      const buf = await res.arrayBuffer();
+      return new Uint8Array(buf);
+   } finally {
+      clearTimeout(timer);
+   }
 }
 
 /** Exposed so the scheduler can pre-fetch the cover once and share with the classifier. */
 export async function fetchCover(url: string): Promise<Uint8Array | null> {
-  try {
-    return await fetchBytes(url);
-  } catch (err) {
-    log.warn({ url, err }, 'fetchCover failed');
-    return null;
-  }
+   try {
+      return await fetchBytes(url);
+   } catch (err) {
+      log.warn({ url, err }, "fetchCover failed");
+      return null;
+   }
 }

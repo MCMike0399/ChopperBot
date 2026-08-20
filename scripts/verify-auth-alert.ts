@@ -11,29 +11,31 @@
 // IMPORTANT: this connects a second session with the same bot token. Discord
 // allows this (the running bot keeps its connection), but the verify script
 // must `destroy()` cleanly to avoid leaving a ghost gateway connection.
-import 'dotenv/config';
-import { Client, GatewayIntentBits } from 'discord.js';
-import { config } from '../src/config.js';
-import { postAuthExpiredAlert } from '../src/capabilities/instagram_monitor/capability.js';
+import "dotenv/config";
+import { Client, GatewayIntentBits } from "discord.js";
+import { config } from "../src/config.js";
+import { postAuthExpiredAlert } from "../src/capabilities/instagram_monitor/capability.js";
 
 const client = new Client({
-  intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
 });
 
 await client.login(config.DISCORD_TOKEN);
 await new Promise<void>((resolve) => {
-  if (client.isReady()) return resolve();
-  client.once('ready', () => resolve());
+   if (client.isReady()) return resolve();
+   client.once("ready", () => resolve());
 });
 
 console.log(`logged in as ${client.user?.tag}`);
-console.log(`posting test alert to admin channel ${process.env.CHOPPERBOT_CONFIG_CHANNEL_ID}…`);
-
-await postAuthExpiredAlert(
-  client,
-  'TEST_ACCOUNT (verify-auth-alert.ts)',
-  'Synthetic test — drove the alert helper directly. Not a real IG auth failure. If you can read this in the admin channel, the auth-expired alert mechanism works end to end.',
+console.log(
+   `posting test alert to admin channel ${process.env.CHOPPERBOT_CONFIG_CHANNEL_ID}…`,
 );
 
-console.log('alert sent; disconnecting');
+await postAuthExpiredAlert(
+   client,
+   "TEST_ACCOUNT (verify-auth-alert.ts)",
+   "Synthetic test — drove the alert helper directly. Not a real IG auth failure. If you can read this in the admin channel, the auth-expired alert mechanism works end to end.",
+);
+
+console.log("alert sent; disconnecting");
 await client.destroy();

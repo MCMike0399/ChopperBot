@@ -1,1 +1,1 @@
-export const WORKSHOP_CAPABILITY_ID = 'workshop';
+export const WORKSHOP_CAPABILITY_ID = "workshop";

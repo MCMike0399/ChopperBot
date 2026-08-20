@@ -1,18 +1,22 @@
-import OpenAI from 'openai';
+import OpenAI from "openai";
 import {
-  BedrockRuntimeClient,
-  ConverseCommand,
-  type ContentBlock,
-  type Message,
-  type Tool,
-  type ToolConfiguration,
-} from '@aws-sdk/client-bedrock-runtime';
-import { config, textBackend } from '../config.js';
-import { log } from '../log.js';
-import { Semaphore } from './gate.js';
-import { isContentFilterRejection, llmHealth } from './health.js';
-import type { Turn } from '../discord/history.js';
-import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source.js';
+   BedrockRuntimeClient,
+   ConverseCommand,
+   type ContentBlock,
+   type Message,
+   type Tool,
+   type ToolConfiguration,
+} from "@aws-sdk/client-bedrock-runtime";
+import { config, textBackend } from "../config.js";
+import { log } from "../log.js";
+import { Semaphore } from "./gate.js";
+import { isContentFilterRejection, llmHealth } from "./health.js";
+import type { Turn } from "../discord/history.js";
+import type {
+   ComposedTools,
+   ToolHandlerResult,
+   ToolSpec,
+} from "../tools/source.js";
 
 // ── Two backends, chosen per turn ────────────────────────────────────────────
 // DEFAULT (LLM_TEXT_BACKEND=kimi, self-hosted/Pi): EVERY text turn — Discord
@@ -45,14 +49,14 @@ import type { ComposedTools, ToolHandlerResult, ToolSpec } from '../tools/source
 // Both speak chat-completions and both return `reasoning_content`, so the loop
 // below is identical for either.
 const kimi = textBackend.apiKey
-  ? new OpenAI({
-      apiKey: textBackend.apiKey,
-      baseURL: textBackend.baseUrl,
-      defaultHeaders: {
-        'User-Agent': textBackend.userAgent,
-      },
-    })
-  : null;
+   ? new OpenAI({
+        apiKey: textBackend.apiKey,
+        baseURL: textBackend.baseUrl,
+        defaultHeaders: {
+           "User-Agent": textBackend.userAgent,
+        },
+     })
+   : null;
 
 // Bedrock client (vision path always; text path when LLM_TEXT_BACKEND=bedrock).
 // Credentials: the short ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env when
@@ -61,16 +65,18 @@ const kimi = textBackend.apiKey
 // (ECS task role, instance profile, or AWS_PROFILE). Region defaults to
 // us-east-1.
 const bedrock = new BedrockRuntimeClient({
-  region: config.AWS_REGION,
-  ...(config.ACCESS_KEY_ID && config.SECRET_ACCESS_KEY
-    ? {
-        credentials: {
-          accessKeyId: config.ACCESS_KEY_ID,
-          secretAccessKey: config.SECRET_ACCESS_KEY,
-          ...(config.AWS_SESSION_TOKEN ? { sessionToken: config.AWS_SESSION_TOKEN } : {}),
-        },
-      }
-    : {}),
+   region: config.AWS_REGION,
+   ...(config.ACCESS_KEY_ID && config.SECRET_ACCESS_KEY
+      ? {
+           credentials: {
+              accessKeyId: config.ACCESS_KEY_ID,
+              secretAccessKey: config.SECRET_ACCESS_KEY,
+              ...(config.AWS_SESSION_TOKEN
+                 ? { sessionToken: config.AWS_SESSION_TOKEN }
+                 : {}),
+           },
+        }
+      : {}),
 });
 
 /**
@@ -82,40 +88,40 @@ const bedrock = new BedrockRuntimeClient({
  *            image is attached, via the images-always-go-to-Nova rule).
  *   low    — the vision tier: Amazon Nova Lite (images).
  */
-export type Effort = 'high' | 'medium' | 'low';
+export type Effort = "high" | "medium" | "low";
 
 /** Progress signal emitted by the agent loop: `thinking` right before each
  * model request, `tool` right before each tool handler runs (with the tool's
  * name). Callers use it to drive the status reaction on the user's message.
  * Callbacks must not throw (they're invoked inside the loop). */
-export type AskPhase = 'thinking' | 'tool';
+export type AskPhase = "thinking" | "tool";
 
 export interface AskInput {
-  system: string;
-  messages: Turn[];
-  tools: ComposedTools;
-  /** Model tier. Defaults to 'high' (Kimi). Images always route to Nova Lite
-   * regardless of tier; 'low' also forces Nova Lite. */
-  effort?: Effort;
-  /** Optional progress hook for user-visible status (see {@link AskPhase}). */
-  onPhase?: (phase: AskPhase, detail?: string) => void;
-  /**
-   * Optional cooperative cancellation, checked between steps of the agent
-   * loop (before each model request and before each tool execution — never
-   * mid-tool, so a create/write is never half-applied). When it returns true
-   * the loop stops and {@link TurnAbortedError} is thrown. Used by workshop
-   * sessions: a new message from the session owner interrupts the running
-   * turn instead of queueing behind it for minutes.
-   */
-  shouldAbort?: () => boolean;
+   system: string;
+   messages: Turn[];
+   tools: ComposedTools;
+   /** Model tier. Defaults to 'high' (Kimi). Images always route to Nova Lite
+    * regardless of tier; 'low' also forces Nova Lite. */
+   effort?: Effort;
+   /** Optional progress hook for user-visible status (see {@link AskPhase}). */
+   onPhase?: (phase: AskPhase, detail?: string) => void;
+   /**
+    * Optional cooperative cancellation, checked between steps of the agent
+    * loop (before each model request and before each tool execution — never
+    * mid-tool, so a create/write is never half-applied). When it returns true
+    * the loop stops and {@link TurnAbortedError} is thrown. Used by workshop
+    * sessions: a new message from the session owner interrupts the running
+    * turn instead of queueing behind it for minutes.
+    */
+   shouldAbort?: () => boolean;
 }
 
 /** Thrown by ask() when the caller's `shouldAbort` interrupted the loop. */
 export class TurnAbortedError extends Error {
-  constructor() {
-    super('Turn aborted by caller');
-    this.name = 'TurnAbortedError';
-  }
+   constructor() {
+      super("Turn aborted by caller");
+      this.name = "TurnAbortedError";
+   }
 }
 
 /**
@@ -127,24 +133,28 @@ export class TurnAbortedError extends Error {
 const kimiGate = new Semaphore(textBackend.maxConcurrent);
 
 interface AgentTrace {
-  iterations: number;
-  toolCalls: Array<{ name: string; input: unknown; status: 'success' | 'error' }>;
-  inputTokens: number;
-  outputTokens: number;
+   iterations: number;
+   toolCalls: Array<{
+      name: string;
+      input: unknown;
+      status: "success" | "error";
+   }>;
+   inputTokens: number;
+   outputTokens: number;
 }
 
 /** Run one LLM call, reporting its outcome to the LLM health watchdog
  * (admin-channel alerts on outage, recovery notice on success). Rethrows —
  * callers' error handling is unchanged. */
 async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
-  try {
-    const result = await call();
-    llmHealth.reportSuccess();
-    return result;
-  } catch (err) {
-    llmHealth.reportFailure(err);
-    throw err;
-  }
+   try {
+      const result = await call();
+      llmHealth.reportSuccess();
+      return result;
+   } catch (err) {
+      llmHealth.reportFailure(err);
+      throw err;
+   }
 }
 
 /**
@@ -154,17 +164,17 @@ async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
  * read at throw time: it's what makes the retry decision safe.
  */
 async function observedTextCompletion<T>(
-  call: () => Promise<T>,
-  trace: AgentTrace,
+   call: () => Promise<T>,
+   trace: AgentTrace,
 ): Promise<T> {
-  try {
-    return await observedCompletion(call);
-  } catch (err) {
-    if (isContentFilterRejection(err)) {
-      throw new ContentFilterRejection(err, trace.toolCalls.length);
-    }
-    throw err;
-  }
+   try {
+      return await observedCompletion(call);
+   } catch (err) {
+      if (isContentFilterRejection(err)) {
+         throw new ContentFilterRejection(err, trace.toolCalls.length);
+      }
+      throw err;
+   }
 }
 
 /**
@@ -173,20 +183,20 @@ async function observedTextCompletion<T>(
  * had already executed, because that decides whether retrying is safe.
  */
 class ContentFilterRejection extends Error {
-  constructor(
-    readonly original: unknown,
-    readonly toolCallsExecuted: number,
-  ) {
-    super(original instanceof Error ? original.message : String(original));
-    this.name = 'ContentFilterRejection';
-  }
+   constructor(
+      readonly original: unknown,
+      readonly toolCallsExecuted: number,
+   ) {
+      super(original instanceof Error ? original.message : String(original));
+      this.name = "ContentFilterRejection";
+   }
 }
 
 /** Last resort when both backends refuse the turn. Spanish + in-voice: the
  * member should learn the provider blocked it, not read a stack-trace hint.
  * Exported for history filtering (see EMPTY_RESPONSE_FALLBACK). */
 export const CONTENT_FILTER_FALLBACK =
-  'El filtro del proveedor del modelo bloqueó esa pregunta, así que no me llega la respuesta. Si la planteas de otra forma le entro sin problema.';
+   "El filtro del proveedor del modelo bloqueó esa pregunta, así que no me llega la respuesta. Si la planteas de otra forma le entro sin problema.";
 
 /**
  * Entry point. Bedrock (Amazon Nova Lite) serves image turns always: route
@@ -197,20 +207,20 @@ export const CONTENT_FILTER_FALLBACK =
  * shape differs by backend.
  */
 export async function ask(input: AskInput): Promise<string> {
-  const { messages, effort = 'high' } = input;
-  const hasImages = messages.some((m) => (m.attachments?.length ?? 0) > 0);
-  if (hasImages || effort === 'low') {
-    return askBedrock({ ...input, effort });
-  }
-  if (config.LLM_TEXT_BACKEND === 'bedrock') {
-    return askBedrock({ ...input, effort, modelId: config.BEDROCK_MODEL_ID });
-  }
-  try {
-    return await askKimi(input);
-  } catch (err) {
-    if (!(err instanceof ContentFilterRejection)) throw err;
-    return recoverFromContentFilter(input, err);
-  }
+   const { messages, effort = "high" } = input;
+   const hasImages = messages.some((m) => (m.attachments?.length ?? 0) > 0);
+   if (hasImages || effort === "low") {
+      return askBedrock({ ...input, effort });
+   }
+   if (config.LLM_TEXT_BACKEND === "bedrock") {
+      return askBedrock({ ...input, effort, modelId: config.BEDROCK_MODEL_ID });
+   }
+   try {
+      return await askKimi(input);
+   } catch (err) {
+      if (!(err instanceof ContentFilterRejection)) throw err;
+      return recoverFromContentFilter(input, err);
+   }
 }
 
 /**
@@ -232,44 +242,44 @@ export async function ask(input: AskInput): Promise<string> {
  * v1.10.0), so the metered cost stays a rounding error.
  */
 async function recoverFromContentFilter(
-  input: AskInput,
-  first: ContentFilterRejection,
+   input: AskInput,
+   first: ContentFilterRejection,
 ): Promise<string> {
-  // Both recovery paths restart the agent loop from scratch. That is only safe
-  // before any tool has run: retrying after e.g. calendar_create_event would
-  // create the event a second time. A rejection on the first request — the
-  // common case — has executed nothing.
-  if (first.toolCallsExecuted > 0) {
-    log.warn(
-      { toolCallsExecuted: first.toolCallsExecuted, err: first.message },
-      'llm.content_filter.no_retry_after_tools',
-    );
-    return CONTENT_FILTER_FALLBACK;
-  }
+   // Both recovery paths restart the agent loop from scratch. That is only safe
+   // before any tool has run: retrying after e.g. calendar_create_event would
+   // create the event a second time. A rejection on the first request — the
+   // common case — has executed nothing.
+   if (first.toolCallsExecuted > 0) {
+      log.warn(
+         { toolCallsExecuted: first.toolCallsExecuted, err: first.message },
+         "llm.content_filter.no_retry_after_tools",
+      );
+      return CONTENT_FILTER_FALLBACK;
+   }
 
-  log.warn({ err: first.message }, 'llm.content_filter.retrying_kimi');
-  try {
-    return await askKimi(input);
-  } catch (err) {
-    if (!(err instanceof ContentFilterRejection)) throw err;
-    if (err.toolCallsExecuted > 0) return CONTENT_FILTER_FALLBACK;
-  }
+   log.warn({ err: first.message }, "llm.content_filter.retrying_kimi");
+   try {
+      return await askKimi(input);
+   } catch (err) {
+      if (!(err instanceof ContentFilterRejection)) throw err;
+      if (err.toolCallsExecuted > 0) return CONTENT_FILTER_FALLBACK;
+   }
 
-  log.warn('llm.content_filter.falling_back_to_bedrock');
-  try {
-    return await askBedrock({ ...input, effort: 'low' });
-  } catch (err) {
-    log.error({ err }, 'llm.content_filter.bedrock_fallback_failed');
-    return CONTENT_FILTER_FALLBACK;
-  }
+   log.warn("llm.content_filter.falling_back_to_bedrock");
+   try {
+      return await askBedrock({ ...input, effort: "low" });
+   } catch (err) {
+      log.error({ err }, "llm.content_filter.bedrock_fallback_failed");
+      return CONTENT_FILTER_FALLBACK;
+   }
 }
 
 // ── Kimi (OpenAI-compatible chat completions) ────────────────────────────────
 
 type ToolCall = {
-  id: string;
-  type: 'function';
-  function: { name: string; arguments: string };
+   id: string;
+   type: "function";
+   function: { name: string; arguments: string };
 };
 
 /** Retries when the model returns a non-tool finish with empty text. */
@@ -281,22 +291,22 @@ const MAX_EMPTY_RESPONSE_RETRIES = 2;
  * live 2026-08-06, a session whose history contained two of these taught the
  * model to answer the user's next question with the same fallback verbatim. */
 export const EMPTY_RESPONSE_FALLBACK =
-  'No pude generar una respuesta esta vez — inténtalo de nuevo en un momento.';
+   "No pude generar una respuesta esta vez — inténtalo de nuevo en un momento.";
 
 type ChatMessage =
-  | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
-  | {
-      role: 'assistant';
-      content: string | null;
-      tool_calls?: ToolCall[];
-      // Kimi-specific: in thinking mode every assistant turn (including
-      // tool_calls turns) comes back with reasoning_content, and the gateway
-      // rejects follow-up requests that don't echo it back. Optional on OpenAI
-      // proper, which ignores unknown fields.
-      reasoning_content?: string;
-    }
-  | { role: 'tool'; tool_call_id: string; content: string };
+   | { role: "system"; content: string }
+   | { role: "user"; content: string }
+   | {
+        role: "assistant";
+        content: string | null;
+        tool_calls?: ToolCall[];
+        // Kimi-specific: in thinking mode every assistant turn (including
+        // tool_calls turns) comes back with reasoning_content, and the gateway
+        // rejects follow-up requests that don't echo it back. Optional on OpenAI
+        // proper, which ignores unknown fields.
+        reasoning_content?: string;
+     }
+   | { role: "tool"; tool_call_id: string; content: string };
 
 /**
  * Multi-turn agent loop against Moonshot Kimi 2.7 Thinking (OpenAI-compatible
@@ -305,278 +315,326 @@ type ChatMessage =
  * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Text-only — image
  * turns never reach here (see ask()).
  */
-async function askKimi({ system, messages, tools, effort = 'high', onPhase, shouldAbort }: AskInput): Promise<string> {
-  if (!kimi) {
-    throw new Error(
-      `${textBackend.provider} text backend selected but no API key is set — set ${textBackend.provider === 'deepseek' ? 'DEEPSEEK_API_KEY' : 'KIMI_API_KEY'}, or LLM_TEXT_BACKEND=bedrock for AWS-native runs`,
-    );
-  }
-  // ONE text model — effort no longer buys a pricier one (V4-Pro measured
-  // identical to Flash on the tool battery while being slower and 3.1× the
-  // price). `low` never reaches here: ask() routes it to Nova, images-only.
-  const modelId = textBackend.modelId;
-  // Effort selects the THINKING MODE instead. `high` = reason before acting,
-  // for the multi-turn tool loops that plan across calls. `medium` = answer
-  // directly, which measured ~2.2× fewer billed output tokens and ~30% faster
-  // with no loss of tool-calling — the right default for conversational turns,
-  // which are essentially all the volume. Omitted entirely on providers that
-  // don't support the switch, so their request shape is unchanged.
-  const thinking = textBackend.supportsThinkingSwitch
-    ? { thinking: { type: effort === 'high' ? ('enabled' as const) : ('disabled' as const) } }
-    : {};
-  const convo: ChatMessage[] = [
-    { role: 'system', content: system },
-    ...messages.map((m): ChatMessage =>
-      m.role === 'assistant'
-        ? { role: 'assistant', content: m.content }
-        : { role: 'user', content: m.content },
-    ),
-  ];
-
-  const trace: AgentTrace = { iterations: 0, toolCalls: [], inputTokens: 0, outputTokens: 0 };
-  let finalText = '';
-  let lastFinishReason: string | undefined;
-  // K2.7 Thinking occasionally spends every output token on reasoning_content
-  // and returns empty `content` with finish_reason 'stop' (observed live
-  // 2026-08-05: the user got the fallback string as the reply). Retry the
-  // completion a bounded number of times before giving up.
-  let emptyRetries = 0;
-  /** Set when visible text was discarded as scaffolding — forces a clean pass. */
-  let degenerate = false;
-
-  // Per-turn dedup cache: identical (toolName, inputJson) returns the cached
-  // result. Only cache successes; errors get retried (the model usually fixes
-  // the input on the next try).
-  const toolCache = new Map<string, ToolHandlerResult>();
-  const openAiTools = buildOpenAiTools(tools.tools);
-
-  for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
-    trace.iterations = i + 1;
-    if (shouldAbort?.()) throw abortTurn(trace, 'kimi');
-
-    safePhase(onPhase, 'thinking');
-    // No `temperature`: the kimi-for-coding endpoint rejects any value except 1
-    // (400 "only 1 is allowed for this model"). Omitting takes the server default.
-    const response = await observedTextCompletion(
-      () =>
-        kimiGate.run(() =>
-          kimi.chat.completions.create({
-            model: modelId,
-            messages: convo.slice() as never,
-            tools: openAiTools.length > 0 ? (openAiTools as never) : undefined,
-            max_tokens: textBackend.maxOutputTokens,
-            ...thinking,
-          } as never),
-        ),
-      trace,
-    );
-
-    if (response.usage) {
-      trace.inputTokens += response.usage.prompt_tokens ?? 0;
-      trace.outputTokens += response.usage.completion_tokens ?? 0;
-    }
-
-    const choice = response.choices?.[0];
-    if (!choice) {
-      log.warn('Kimi returned no choices');
-      break;
-    }
-    lastFinishReason = choice.finish_reason ?? undefined;
-    const assistantMsg = choice.message;
-    if (!assistantMsg) {
-      log.warn({ finishReason: lastFinishReason }, 'Kimi returned no message');
-      break;
-    }
-
-    const toolCalls = (assistantMsg.tool_calls ?? []) as ToolCall[];
-    const reasoningContent = (assistantMsg as { reasoning_content?: string }).reasoning_content;
-    convo.push({
-      role: 'assistant',
-      content: typeof assistantMsg.content === 'string' ? assistantMsg.content : null,
-      ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
-      ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
-    });
-
-    if (choice.finish_reason !== 'tool_calls' || toolCalls.length === 0) {
-      const raw = typeof assistantMsg.content === 'string' ? assistantMsg.content : '';
-      finalText = extractText(raw);
-      // Degenerate scaffolding is worse than nothing: treat it as empty so the
-      // retry / forcing path produces real prose instead of showing the loop.
-      if (finalText && isDegenerateOutput(finalText)) {
-        log.warn(
-          { chars: finalText.length, finishReason: lastFinishReason },
-          'llm.degenerate_output_discarded',
-        );
-        finalText = '';
-        degenerate = true;
-      }
-      if (!finalText) {
-        // Empty content on a non-tool finish: drop the empty assistant echo so
-        // the retry resends the same convo, and give the model another shot.
-        convo.pop();
-        emptyRetries += 1;
-        if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
-          log.warn(
-            { finishReason: lastFinishReason, attempt: emptyRetries },
-            'Kimi returned empty text on a non-tool finish — retrying',
-          );
-          continue;
+async function askKimi({
+   system,
+   messages,
+   tools,
+   effort = "high",
+   onPhase,
+   shouldAbort,
+}: AskInput): Promise<string> {
+   if (!kimi) {
+      throw new Error(
+         `${textBackend.provider} text backend selected but no API key is set — set ${textBackend.provider === "deepseek" ? "DEEPSEEK_API_KEY" : "KIMI_API_KEY"}, or LLM_TEXT_BACKEND=bedrock for AWS-native runs`,
+      );
+   }
+   // ONE text model — effort no longer buys a pricier one (V4-Pro measured
+   // identical to Flash on the tool battery while being slower and 3.1× the
+   // price). `low` never reaches here: ask() routes it to Nova, images-only.
+   const modelId = textBackend.modelId;
+   // Effort selects the THINKING MODE instead. `high` = reason before acting,
+   // for the multi-turn tool loops that plan across calls. `medium` = answer
+   // directly, which measured ~2.2× fewer billed output tokens and ~30% faster
+   // with no loss of tool-calling — the right default for conversational turns,
+   // which are essentially all the volume. Omitted entirely on providers that
+   // don't support the switch, so their request shape is unchanged.
+   const thinking = textBackend.supportsThinkingSwitch
+      ? {
+           thinking: {
+              type:
+                 effort === "high"
+                    ? ("enabled" as const)
+                    : ("disabled" as const),
+           },
         }
-      }
-      break;
-    }
+      : {};
+   const convo: ChatMessage[] = [
+      { role: "system", content: system },
+      ...messages.map((m): ChatMessage =>
+         m.role === "assistant"
+            ? { role: "assistant", content: m.content }
+            : { role: "user", content: m.content },
+      ),
+   ];
 
-    // Run every tool_call, then append one role:'tool' message per result
-    // (OpenAI's contract: one message per tool result).
-    for (const tc of toolCalls) {
-      if (shouldAbort?.()) throw abortTurn(trace, 'kimi');
-      const name = tc.function?.name;
-      const rawArgs = tc.function?.arguments ?? '{}';
-      if (!tc.id || !name) {
-        convo.push({
-          role: 'tool',
-          tool_call_id: tc.id ?? 'unknown',
-          content: JSON.stringify({ error: 'Malformed tool_call (missing id or name).' }),
-        });
-        continue;
+   const trace: AgentTrace = {
+      iterations: 0,
+      toolCalls: [],
+      inputTokens: 0,
+      outputTokens: 0,
+   };
+   let finalText = "";
+   let lastFinishReason: string | undefined;
+   // K2.7 Thinking occasionally spends every output token on reasoning_content
+   // and returns empty `content` with finish_reason 'stop' (observed live
+   // 2026-08-05: the user got the fallback string as the reply). Retry the
+   // completion a bounded number of times before giving up.
+   let emptyRetries = 0;
+   /** Set when visible text was discarded as scaffolding — forces a clean pass. */
+   let degenerate = false;
+
+   // Per-turn dedup cache: identical (toolName, inputJson) returns the cached
+   // result. Only cache successes; errors get retried (the model usually fixes
+   // the input on the next try).
+   const toolCache = new Map<string, ToolHandlerResult>();
+   const openAiTools = buildOpenAiTools(tools.tools);
+
+   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
+      trace.iterations = i + 1;
+      if (shouldAbort?.()) throw abortTurn(trace, "kimi");
+
+      safePhase(onPhase, "thinking");
+      // No `temperature`: the kimi-for-coding endpoint rejects any value except 1
+      // (400 "only 1 is allowed for this model"). Omitting takes the server default.
+      const response = await observedTextCompletion(
+         () =>
+            kimiGate.run(() =>
+               kimi.chat.completions.create({
+                  model: modelId,
+                  messages: convo.slice() as never,
+                  tools:
+                     openAiTools.length > 0
+                        ? (openAiTools as never)
+                        : undefined,
+                  max_tokens: textBackend.maxOutputTokens,
+                  ...thinking,
+               } as never),
+            ),
+         trace,
+      );
+
+      if (response.usage) {
+         trace.inputTokens += response.usage.prompt_tokens ?? 0;
+         trace.outputTokens += response.usage.completion_tokens ?? 0;
       }
 
-      let parsedInput: unknown;
-      try {
-        parsedInput = rawArgs.length > 0 ? JSON.parse(rawArgs) : {};
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        convo.push({
-          role: 'tool',
-          tool_call_id: tc.id,
-          content: JSON.stringify({ error: `Invalid tool arguments JSON: ${msg}` }),
-        });
-        trace.toolCalls.push({ name, input: rawArgs, status: 'error' });
-        continue;
+      const choice = response.choices?.[0];
+      if (!choice) {
+         log.warn("Kimi returned no choices");
+         break;
+      }
+      lastFinishReason = choice.finish_reason ?? undefined;
+      const assistantMsg = choice.message;
+      if (!assistantMsg) {
+         log.warn(
+            { finishReason: lastFinishReason },
+            "Kimi returned no message",
+         );
+         break;
       }
 
-      const cacheKey = `${name}:${stableStringify(parsedInput)}`;
-      let result: ToolHandlerResult;
-      const cached = toolCache.get(cacheKey);
-      if (cached) {
-        log.info({ tool: name, cached: true }, 'tool_call_cached');
-        result = cached;
-      } else {
-        safePhase(onPhase, 'tool', name);
-        result = await tools.handle(name, parsedInput);
-        if (result.status === 'success') toolCache.set(cacheKey, result);
-      }
-      trace.toolCalls.push({ name, input: parsedInput, status: result.status });
-
+      const toolCalls = (assistantMsg.tool_calls ?? []) as ToolCall[];
+      const reasoningContent = (assistantMsg as { reasoning_content?: string })
+         .reasoning_content;
       convo.push({
-        role: 'tool',
-        tool_call_id: tc.id,
-        content: JSON.stringify(result.payload ?? null),
+         role: "assistant",
+         content:
+            typeof assistantMsg.content === "string"
+               ? assistantMsg.content
+               : null,
+         ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+         ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
-    }
-  }
 
-  // Forcing pass without `tools` so the model must synthesize prose. Runs when
-  // we ran out of iterations mid-tool-calling, OR when the model lost the
-  // tool-call protocol and emitted scaffolding as text (removing the tools is
-  // exactly what un-sticks that). The prose nudge goes in EVERY time — live
-  // 2026-08-06 (workshop, whole-book summary): a cap-reached force with no
-  // nudge came back `finish_reason: 'tool_calls'` again (Kimi keeps calling
-  // tools from history even with none advertised) and the user got the empty
-  // fallback. One bounded retry covers a forcing pass that still misfires.
-  if (!finalText && (lastFinishReason === 'tool_calls' || degenerate)) {
-    log.info(
-      { iterations: trace.iterations, toolCalls: trace.toolCalls.length, degenerate },
-      'Forcing final answer without tools',
-    );
-    convo.push({
-      role: 'user',
-      content:
-        'Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. ' +
-        'Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea. ' +
-        'NUNCA afirmes haber enviado archivos ni haber completado acciones que no ejecutaste con herramientas en esta vuelta: ' +
-        'si un archivo quedó generado pero sin enviar, dilo explícitamente ("quedó listo pero no alcancé a adjuntarlo — pídeme que lo envíe").',
-    });
-    for (let attempt = 1; attempt <= 2 && !finalText; attempt++) {
-      safePhase(onPhase, 'thinking');
-      try {
-        const forced = await observedCompletion(() =>
-          kimiGate.run(() =>
-            kimi.chat.completions.create({
-              model: modelId,
-              messages: convo.slice() as never,
-              max_tokens: textBackend.maxOutputTokens,
-              // Same mode as the main loop: the forcing pass must not silently
-              // change the model's behavior relative to the turn it's rescuing.
-              ...thinking,
-            } as never),
-          ),
-        );
-        if (forced.usage) {
-          trace.inputTokens += forced.usage.prompt_tokens ?? 0;
-          trace.outputTokens += forced.usage.completion_tokens ?? 0;
-        }
-        lastFinishReason = forced.choices?.[0]?.finish_reason ?? lastFinishReason;
-        const forcedContent = forced.choices?.[0]?.message?.content;
-        finalText = typeof forcedContent === 'string' ? extractText(forcedContent) : '';
-        if (finalText && isDegenerateOutput(finalText)) {
-          log.warn('llm.degenerate_output_discarded_on_forcing');
-          finalText = '';
-        }
-        if (!finalText && attempt < 2) {
-          log.warn(
-            { finishReason: lastFinishReason, attempt },
-            'Forcing pass returned no usable text — retrying',
-          );
-          convo.push({
-            role: 'user',
-            content:
-              'Último intento: NO uses herramientas, ya no están disponibles. ' +
-              'Escribe la respuesta para el usuario como texto normal, aunque sea parcial.',
-          });
-        }
-      } catch (err) {
-        log.error({ err }, 'Forcing pass failed');
-        break;
+      if (choice.finish_reason !== "tool_calls" || toolCalls.length === 0) {
+         const raw =
+            typeof assistantMsg.content === "string"
+               ? assistantMsg.content
+               : "";
+         finalText = extractText(raw);
+         // Degenerate scaffolding is worse than nothing: treat it as empty so the
+         // retry / forcing path produces real prose instead of showing the loop.
+         if (finalText && isDegenerateOutput(finalText)) {
+            log.warn(
+               { chars: finalText.length, finishReason: lastFinishReason },
+               "llm.degenerate_output_discarded",
+            );
+            finalText = "";
+            degenerate = true;
+         }
+         if (!finalText) {
+            // Empty content on a non-tool finish: drop the empty assistant echo so
+            // the retry resends the same convo, and give the model another shot.
+            convo.pop();
+            emptyRetries += 1;
+            if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
+               log.warn(
+                  { finishReason: lastFinishReason, attempt: emptyRetries },
+                  "Kimi returned empty text on a non-tool finish — retrying",
+               );
+               continue;
+            }
+         }
+         break;
       }
-    }
-  }
 
-  if (!finalText) {
-    log.warn(
-      { finishReason: lastFinishReason, iterations: trace.iterations },
-      'Kimi loop ended without final text',
-    );
-    finalText = EMPTY_RESPONSE_FALLBACK;
-  }
+      // Run every tool_call, then append one role:'tool' message per result
+      // (OpenAI's contract: one message per tool result).
+      for (const tc of toolCalls) {
+         if (shouldAbort?.()) throw abortTurn(trace, "kimi");
+         const name = tc.function?.name;
+         const rawArgs = tc.function?.arguments ?? "{}";
+         if (!tc.id || !name) {
+            convo.push({
+               role: "tool",
+               tool_call_id: tc.id ?? "unknown",
+               content: JSON.stringify({
+                  error: "Malformed tool_call (missing id or name).",
+               }),
+            });
+            continue;
+         }
 
-  log.info(
-    {
-      backend: textBackend.provider,
-      effort,
-      model: modelId,
-      iterations: trace.iterations,
-      toolCalls: trace.toolCalls.length,
-      tools: trace.toolCalls.map((t) => t.name),
-      inputTokens: trace.inputTokens,
-      outputTokens: trace.outputTokens,
-      stopReason: lastFinishReason,
-    },
-    'agent_turn',
-  );
+         let parsedInput: unknown;
+         try {
+            parsedInput = rawArgs.length > 0 ? JSON.parse(rawArgs) : {};
+         } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            convo.push({
+               role: "tool",
+               tool_call_id: tc.id,
+               content: JSON.stringify({
+                  error: `Invalid tool arguments JSON: ${msg}`,
+               }),
+            });
+            trace.toolCalls.push({ name, input: rawArgs, status: "error" });
+            continue;
+         }
 
-  return finalText;
+         const cacheKey = `${name}:${stableStringify(parsedInput)}`;
+         let result: ToolHandlerResult;
+         const cached = toolCache.get(cacheKey);
+         if (cached) {
+            log.info({ tool: name, cached: true }, "tool_call_cached");
+            result = cached;
+         } else {
+            safePhase(onPhase, "tool", name);
+            result = await tools.handle(name, parsedInput);
+            if (result.status === "success") toolCache.set(cacheKey, result);
+         }
+         trace.toolCalls.push({
+            name,
+            input: parsedInput,
+            status: result.status,
+         });
+
+         convo.push({
+            role: "tool",
+            tool_call_id: tc.id,
+            content: JSON.stringify(result.payload ?? null),
+         });
+      }
+   }
+
+   // Forcing pass without `tools` so the model must synthesize prose. Runs when
+   // we ran out of iterations mid-tool-calling, OR when the model lost the
+   // tool-call protocol and emitted scaffolding as text (removing the tools is
+   // exactly what un-sticks that). The prose nudge goes in EVERY time — live
+   // 2026-08-06 (workshop, whole-book summary): a cap-reached force with no
+   // nudge came back `finish_reason: 'tool_calls'` again (Kimi keeps calling
+   // tools from history even with none advertised) and the user got the empty
+   // fallback. One bounded retry covers a forcing pass that still misfires.
+   if (!finalText && (lastFinishReason === "tool_calls" || degenerate)) {
+      log.info(
+         {
+            iterations: trace.iterations,
+            toolCalls: trace.toolCalls.length,
+            degenerate,
+         },
+         "Forcing final answer without tools",
+      );
+      convo.push({
+         role: "user",
+         content:
+            "Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. " +
+            "Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea. " +
+            "NUNCA afirmes haber enviado archivos ni haber completado acciones que no ejecutaste con herramientas en esta vuelta: " +
+            'si un archivo quedó generado pero sin enviar, dilo explícitamente ("quedó listo pero no alcancé a adjuntarlo — pídeme que lo envíe").',
+      });
+      for (let attempt = 1; attempt <= 2 && !finalText; attempt++) {
+         safePhase(onPhase, "thinking");
+         try {
+            const forced = await observedCompletion(() =>
+               kimiGate.run(() =>
+                  kimi.chat.completions.create({
+                     model: modelId,
+                     messages: convo.slice() as never,
+                     max_tokens: textBackend.maxOutputTokens,
+                     // Same mode as the main loop: the forcing pass must not silently
+                     // change the model's behavior relative to the turn it's rescuing.
+                     ...thinking,
+                  } as never),
+               ),
+            );
+            if (forced.usage) {
+               trace.inputTokens += forced.usage.prompt_tokens ?? 0;
+               trace.outputTokens += forced.usage.completion_tokens ?? 0;
+            }
+            lastFinishReason =
+               forced.choices?.[0]?.finish_reason ?? lastFinishReason;
+            const forcedContent = forced.choices?.[0]?.message?.content;
+            finalText =
+               typeof forcedContent === "string"
+                  ? extractText(forcedContent)
+                  : "";
+            if (finalText && isDegenerateOutput(finalText)) {
+               log.warn("llm.degenerate_output_discarded_on_forcing");
+               finalText = "";
+            }
+            if (!finalText && attempt < 2) {
+               log.warn(
+                  { finishReason: lastFinishReason, attempt },
+                  "Forcing pass returned no usable text — retrying",
+               );
+               convo.push({
+                  role: "user",
+                  content:
+                     "Último intento: NO uses herramientas, ya no están disponibles. " +
+                     "Escribe la respuesta para el usuario como texto normal, aunque sea parcial.",
+               });
+            }
+         } catch (err) {
+            log.error({ err }, "Forcing pass failed");
+            break;
+         }
+      }
+   }
+
+   if (!finalText) {
+      log.warn(
+         { finishReason: lastFinishReason, iterations: trace.iterations },
+         "Kimi loop ended without final text",
+      );
+      finalText = EMPTY_RESPONSE_FALLBACK;
+   }
+
+   log.info(
+      {
+         backend: textBackend.provider,
+         effort,
+         model: modelId,
+         iterations: trace.iterations,
+         toolCalls: trace.toolCalls.length,
+         tools: trace.toolCalls.map((t) => t.name),
+         inputTokens: trace.inputTokens,
+         outputTokens: trace.outputTokens,
+         stopReason: lastFinishReason,
+      },
+      "agent_turn",
+   );
+
+   return finalText;
 }
 
 function buildOpenAiTools(specs: ToolSpec[]): unknown[] {
-  return specs.map((t) => ({
-    type: 'function',
-    function: {
-      name: t.name,
-      description: t.description,
-      parameters: t.inputSchema,
-    },
-  }));
+   return specs.map((t) => ({
+      type: "function",
+      function: {
+         name: t.name,
+         description: t.description,
+         parameters: t.inputSchema,
+      },
+   }));
 }
 
 // ── Bedrock (Converse) — the vision backend ──────────────────────────────────
@@ -589,212 +647,232 @@ function buildOpenAiTools(specs: ToolSpec[]): unknown[] {
  * one `toolResult` block per call. Caps at MAX_TOOL_ITERATIONS.
  */
 async function askBedrock({
-  system,
-  messages,
-  tools,
-  effort = 'low',
-  modelId = config.BEDROCK_MODEL_LOW,
-  onPhase,
-  shouldAbort,
+   system,
+   messages,
+   tools,
+   effort = "low",
+   modelId = config.BEDROCK_MODEL_LOW,
+   onPhase,
+   shouldAbort,
 }: AskInput & { modelId?: string }): Promise<string> {
-  const convo: Message[] = messages.map(buildMessage);
+   const convo: Message[] = messages.map(buildMessage);
 
-  const trace: AgentTrace = { iterations: 0, toolCalls: [], inputTokens: 0, outputTokens: 0 };
-  let finalText = '';
-  let lastStopReason: string | undefined;
-  let emptyRetries = 0;
+   const trace: AgentTrace = {
+      iterations: 0,
+      toolCalls: [],
+      inputTokens: 0,
+      outputTokens: 0,
+   };
+   let finalText = "";
+   let lastStopReason: string | undefined;
+   let emptyRetries = 0;
 
-  const toolCache = new Map<string, ToolHandlerResult>();
-  const toolConfig = buildToolConfig(tools.tools);
-  const systemBlocks = system ? [{ text: system }] : undefined;
+   const toolCache = new Map<string, ToolHandlerResult>();
+   const toolConfig = buildToolConfig(tools.tools);
+   const systemBlocks = system ? [{ text: system }] : undefined;
 
-  for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
-    trace.iterations = i + 1;
-    if (shouldAbort?.()) throw abortTurn(trace, 'bedrock');
+   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
+      trace.iterations = i + 1;
+      if (shouldAbort?.()) throw abortTurn(trace, "bedrock");
 
-    safePhase(onPhase, 'thinking');
-    const response = await observedCompletion(() =>
-      bedrock.send(
-        new ConverseCommand({
-          modelId,
-          system: systemBlocks,
-          // Snapshot the array — we mutate `convo` after this call returns.
-          messages: convo.slice(),
-          ...(toolConfig ? { toolConfig } : {}),
-          inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
-        }),
-      ),
-    );
-
-    if (response.usage) {
-      trace.inputTokens += response.usage.inputTokens ?? 0;
-      trace.outputTokens += response.usage.outputTokens ?? 0;
-    }
-
-    lastStopReason = response.stopReason;
-    const assistantMsg = response.output?.message;
-    if (!assistantMsg) {
-      log.warn({ stopReason: lastStopReason }, 'Bedrock returned no message');
-      break;
-    }
-
-    // Echo the assistant turn back verbatim — Converse requires the toolUse
-    // blocks be present in history for the matching toolResult to validate.
-    convo.push({ role: 'assistant', content: assistantMsg.content ?? [] });
-
-    const blocks = assistantMsg.content ?? [];
-    const toolUses = blocks.filter((b): b is ContentBlock.ToolUseMember => 'toolUse' in b);
-
-    if (response.stopReason !== 'tool_use' || toolUses.length === 0) {
-      finalText = extractTextBlocks(blocks);
-      if (!finalText) {
-        // Empty content on a non-tool finish — Nova sometimes closes the loop
-        // with `end_turn` and no text block at all once the tool results land
-        // (observed live 2026-08-13: a calendar turn created + synced +
-        // published the event, then ended textless and the user got the
-        // fallback). Same policy as the Kimi path: drop the empty assistant
-        // echo so the retry resends the same convo, and give the model
-        // another shot. The retry carries toolConfig, but an identical
-        // duplicate call is served from the per-turn toolCache and does NOT
-        // re-execute — so a write can't be doubled by the retry itself.
-        convo.pop();
-        emptyRetries += 1;
-        if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
-          log.warn(
-            { stopReason: lastStopReason, attempt: emptyRetries },
-            'Bedrock returned empty text on a non-tool finish — retrying',
-          );
-          continue;
-        }
-      }
-      break;
-    }
-
-    const resultBlocks: ContentBlock[] = [];
-    for (const { toolUse } of toolUses) {
-      if (shouldAbort?.()) throw abortTurn(trace, 'bedrock');
-      const id = toolUse.toolUseId;
-      const name = toolUse.name;
-      const input = toolUse.input ?? {};
-      if (!id || !name) {
-        resultBlocks.push({
-          toolResult: {
-            toolUseId: id ?? 'unknown',
-            content: [{ text: JSON.stringify({ error: 'Malformed tool_use (missing id or name).' }) }],
-            status: 'error',
-          },
-        });
-        continue;
-      }
-
-      const cacheKey = `${name}:${stableStringify(input)}`;
-      let result: ToolHandlerResult;
-      const cached = toolCache.get(cacheKey);
-      if (cached) {
-        log.info({ tool: name, cached: true }, 'tool_call_cached');
-        result = cached;
-      } else {
-        safePhase(onPhase, 'tool', name);
-        result = await tools.handle(name, input);
-        if (result.status === 'success') toolCache.set(cacheKey, result);
-      }
-      trace.toolCalls.push({ name, input, status: result.status });
-
-      resultBlocks.push({
-        toolResult: {
-          toolUseId: id,
-          content: [{ text: JSON.stringify(result.payload ?? null) }],
-          status: result.status === 'error' ? 'error' : 'success',
-        },
-      });
-    }
-    convo.push({ role: 'user', content: resultBlocks });
-  }
-
-  // Forcing pass without toolConfig (iteration cap hit while still calling tools).
-  if (!finalText && lastStopReason === 'tool_use') {
-    log.info(
-      { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
-      'Forcing final answer without tools (iteration cap reached)',
-    );
-    try {
-      const forced = await observedCompletion(() =>
-        bedrock.send(
-          new ConverseCommand({
-            modelId,
-            system: systemBlocks,
-            messages: convo.slice(),
-            inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
-          }),
-        ),
+      safePhase(onPhase, "thinking");
+      const response = await observedCompletion(() =>
+         bedrock.send(
+            new ConverseCommand({
+               modelId,
+               system: systemBlocks,
+               // Snapshot the array — we mutate `convo` after this call returns.
+               messages: convo.slice(),
+               ...(toolConfig ? { toolConfig } : {}),
+               inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
+            }),
+         ),
       );
-      if (forced.usage) {
-        trace.inputTokens += forced.usage.inputTokens ?? 0;
-        trace.outputTokens += forced.usage.outputTokens ?? 0;
+
+      if (response.usage) {
+         trace.inputTokens += response.usage.inputTokens ?? 0;
+         trace.outputTokens += response.usage.outputTokens ?? 0;
       }
-      lastStopReason = forced.stopReason ?? lastStopReason;
-      finalText = extractTextBlocks(forced.output?.message?.content ?? []);
-    } catch (err) {
-      log.error({ err }, 'Forcing pass failed');
-    }
-  }
 
-  if (!finalText) {
-    log.warn(
-      { stopReason: lastStopReason, iterations: trace.iterations },
-      'Bedrock loop ended without final text',
-    );
-    finalText = EMPTY_RESPONSE_FALLBACK;
-  }
+      lastStopReason = response.stopReason;
+      const assistantMsg = response.output?.message;
+      if (!assistantMsg) {
+         log.warn(
+            { stopReason: lastStopReason },
+            "Bedrock returned no message",
+         );
+         break;
+      }
 
-  log.info(
-    {
-      backend: 'bedrock',
-      effort,
-      model: modelId,
-      iterations: trace.iterations,
-      toolCalls: trace.toolCalls.length,
-      tools: trace.toolCalls.map((t) => t.name),
-      inputTokens: trace.inputTokens,
-      outputTokens: trace.outputTokens,
-      stopReason: lastStopReason,
-    },
-    'agent_turn',
-  );
+      // Echo the assistant turn back verbatim — Converse requires the toolUse
+      // blocks be present in history for the matching toolResult to validate.
+      convo.push({ role: "assistant", content: assistantMsg.content ?? [] });
 
-  return finalText;
+      const blocks = assistantMsg.content ?? [];
+      const toolUses = blocks.filter(
+         (b): b is ContentBlock.ToolUseMember => "toolUse" in b,
+      );
+
+      if (response.stopReason !== "tool_use" || toolUses.length === 0) {
+         finalText = extractTextBlocks(blocks);
+         if (!finalText) {
+            // Empty content on a non-tool finish — Nova sometimes closes the loop
+            // with `end_turn` and no text block at all once the tool results land
+            // (observed live 2026-08-13: a calendar turn created + synced +
+            // published the event, then ended textless and the user got the
+            // fallback). Same policy as the Kimi path: drop the empty assistant
+            // echo so the retry resends the same convo, and give the model
+            // another shot. The retry carries toolConfig, but an identical
+            // duplicate call is served from the per-turn toolCache and does NOT
+            // re-execute — so a write can't be doubled by the retry itself.
+            convo.pop();
+            emptyRetries += 1;
+            if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
+               log.warn(
+                  { stopReason: lastStopReason, attempt: emptyRetries },
+                  "Bedrock returned empty text on a non-tool finish — retrying",
+               );
+               continue;
+            }
+         }
+         break;
+      }
+
+      const resultBlocks: ContentBlock[] = [];
+      for (const { toolUse } of toolUses) {
+         if (shouldAbort?.()) throw abortTurn(trace, "bedrock");
+         const id = toolUse.toolUseId;
+         const name = toolUse.name;
+         const input = toolUse.input ?? {};
+         if (!id || !name) {
+            resultBlocks.push({
+               toolResult: {
+                  toolUseId: id ?? "unknown",
+                  content: [
+                     {
+                        text: JSON.stringify({
+                           error: "Malformed tool_use (missing id or name).",
+                        }),
+                     },
+                  ],
+                  status: "error",
+               },
+            });
+            continue;
+         }
+
+         const cacheKey = `${name}:${stableStringify(input)}`;
+         let result: ToolHandlerResult;
+         const cached = toolCache.get(cacheKey);
+         if (cached) {
+            log.info({ tool: name, cached: true }, "tool_call_cached");
+            result = cached;
+         } else {
+            safePhase(onPhase, "tool", name);
+            result = await tools.handle(name, input);
+            if (result.status === "success") toolCache.set(cacheKey, result);
+         }
+         trace.toolCalls.push({ name, input, status: result.status });
+
+         resultBlocks.push({
+            toolResult: {
+               toolUseId: id,
+               content: [{ text: JSON.stringify(result.payload ?? null) }],
+               status: result.status === "error" ? "error" : "success",
+            },
+         });
+      }
+      convo.push({ role: "user", content: resultBlocks });
+   }
+
+   // Forcing pass without toolConfig (iteration cap hit while still calling tools).
+   if (!finalText && lastStopReason === "tool_use") {
+      log.info(
+         { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
+         "Forcing final answer without tools (iteration cap reached)",
+      );
+      try {
+         const forced = await observedCompletion(() =>
+            bedrock.send(
+               new ConverseCommand({
+                  modelId,
+                  system: systemBlocks,
+                  messages: convo.slice(),
+                  inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
+               }),
+            ),
+         );
+         if (forced.usage) {
+            trace.inputTokens += forced.usage.inputTokens ?? 0;
+            trace.outputTokens += forced.usage.outputTokens ?? 0;
+         }
+         lastStopReason = forced.stopReason ?? lastStopReason;
+         finalText = extractTextBlocks(forced.output?.message?.content ?? []);
+      } catch (err) {
+         log.error({ err }, "Forcing pass failed");
+      }
+   }
+
+   if (!finalText) {
+      log.warn(
+         { stopReason: lastStopReason, iterations: trace.iterations },
+         "Bedrock loop ended without final text",
+      );
+      finalText = EMPTY_RESPONSE_FALLBACK;
+   }
+
+   log.info(
+      {
+         backend: "bedrock",
+         effort,
+         model: modelId,
+         iterations: trace.iterations,
+         toolCalls: trace.toolCalls.length,
+         tools: trace.toolCalls.map((t) => t.name),
+         inputTokens: trace.inputTokens,
+         outputTokens: trace.outputTokens,
+         stopReason: lastStopReason,
+      },
+      "agent_turn",
+   );
+
+   return finalText;
 }
 
 /** Log + build the abort error (the turn's partial work is already durable —
  * tools either ran fully or not at all; nothing is half-applied). */
 function abortTurn(trace: AgentTrace, backend: string): TurnAbortedError {
-  log.info(
-    { backend, iterations: trace.iterations, toolCalls: trace.toolCalls.length },
-    'agent_turn_aborted',
-  );
-  return new TurnAbortedError();
+   log.info(
+      {
+         backend,
+         iterations: trace.iterations,
+         toolCalls: trace.toolCalls.length,
+      },
+      "agent_turn_aborted",
+   );
+   return new TurnAbortedError();
 }
 
 /** Invoke the caller's progress hook without letting it break the loop. */
 function safePhase(
-  onPhase: AskInput['onPhase'],
-  phase: AskPhase,
-  detail?: string,
+   onPhase: AskInput["onPhase"],
+   phase: AskPhase,
+   detail?: string,
 ): void {
-  try {
-    onPhase?.(phase, detail);
-  } catch {
-    // The hook is UI-only; never let it disturb the agent loop.
-  }
+   try {
+      onPhase?.(phase, detail);
+   } catch {
+      // The hook is UI-only; never let it disturb the agent loop.
+   }
 }
 
 /** Concatenate all `text` blocks in a Converse message, then strip reasoning. */
 function extractTextBlocks(blocks: ContentBlock[]): string {
-  const text = blocks
-    .filter((b): b is ContentBlock.TextMember => 'text' in b)
-    .map((b) => b.text)
-    .join('');
-  return extractText(text);
+   const text = blocks
+      .filter((b): b is ContentBlock.TextMember => "text" in b)
+      .map((b) => b.text)
+      .join("");
+   return extractText(text);
 }
 
 /** Strip any `<thinking>…</thinking>` / `<think>…</think>` reasoning a model
@@ -804,17 +882,19 @@ function extractTextBlocks(blocks: ContentBlock[]): string {
  * this is defensive. `<tool_call>` blocks are stripped for the same reason: a
  * confused model sometimes writes the call as TEXT instead of emitting it. */
 function extractText(text: string): string {
-  return text
-    // Well-formed <thinking>…</thinking> / <think>…</think> blocks.
-    .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, '')
-    // Unclosed leading reasoning block (truncated by max_tokens): drop from the
-    // opening tag to the first blank line, then any stray lone tags.
-    .replace(/^\s*<think(?:ing)?>[\s\S]*?(?:\n\s*\n|$)/i, '')
-    .replace(/<\/?think(?:ing)?>/gi, '')
-    // Tool-call scaffolding written as prose (see isDegenerateOutput).
-    .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/gi, '')
-    .replace(/<\/?tool_call>/gi, '')
-    .trim();
+   return (
+      text
+         // Well-formed <thinking>…</thinking> / <think>…</think> blocks.
+         .replace(/<think(?:ing)?>[\s\S]*?<\/think(?:ing)?>/gi, "")
+         // Unclosed leading reasoning block (truncated by max_tokens): drop from the
+         // opening tag to the first blank line, then any stray lone tags.
+         .replace(/^\s*<think(?:ing)?>[\s\S]*?(?:\n\s*\n|$)/i, "")
+         .replace(/<\/?think(?:ing)?>/gi, "")
+         // Tool-call scaffolding written as prose (see isDegenerateOutput).
+         .replace(/<tool_call>[\s\S]*?(?:<\/tool_call>|$)/gi, "")
+         .replace(/<\/?tool_call>/gi, "")
+         .trim()
+   );
 }
 
 /**
@@ -830,49 +910,53 @@ function extractText(text: string): string {
  * tells at once.
  */
 export function isDegenerateOutput(text: string): boolean {
-  const t = text.trim();
-  if (!t) return false;
-  // A bare tool-call envelope written as text.
-  if (/<tool_call>|<\|tool_call/i.test(t)) return true;
-  if (/^\{\s*"(?:tool_)?name"\s*:\s*"[\w.]+"\s*,\s*"(?:arguments|parameters)"\s*:/i.test(t)) {
-    return true;
-  }
-  const tells = [
-    /\buse (?:the )?tool\b/gi,
-    /\b(?:tool_name|"arguments"|"parameters")\b/gi,
-    /\b(?:let'?s go|i'?ll output|now\.? end|stop\.? use)\b/gi,
-  ];
-  const hits = tells.reduce((acc, re) => acc + (t.match(re)?.length ?? 0), 0);
-  // Loop-y self-talk repeats its tells many times; prose does not.
-  return hits >= 5;
+   const t = text.trim();
+   if (!t) return false;
+   // A bare tool-call envelope written as text.
+   if (/<tool_call>|<\|tool_call/i.test(t)) return true;
+   if (
+      /^\{\s*"(?:tool_)?name"\s*:\s*"[\w.]+"\s*,\s*"(?:arguments|parameters)"\s*:/i.test(
+         t,
+      )
+   ) {
+      return true;
+   }
+   const tells = [
+      /\buse (?:the )?tool\b/gi,
+      /\b(?:tool_name|"arguments"|"parameters")\b/gi,
+      /\b(?:let'?s go|i'?ll output|now\.? end|stop\.? use)\b/gi,
+   ];
+   const hits = tells.reduce((acc, re) => acc + (t.match(re)?.length ?? 0), 0);
+   // Loop-y self-talk repeats its tells many times; prose does not.
+   return hits >= 5;
 }
 
 function buildMessage(turn: Turn): Message {
-  if (turn.role === 'assistant') {
-    return { role: 'assistant', content: [{ text: turn.content }] };
-  }
-  const content: ContentBlock[] = [{ text: turn.content }];
-  for (const att of turn.attachments ?? []) {
-    content.push({ image: { format: att.format, source: { bytes: att.bytes } } });
-  }
-  return { role: 'user', content };
+   if (turn.role === "assistant") {
+      return { role: "assistant", content: [{ text: turn.content }] };
+   }
+   const content: ContentBlock[] = [{ text: turn.content }];
+   for (const att of turn.attachments ?? []) {
+      content.push({
+         image: { format: att.format, source: { bytes: att.bytes } },
+      });
+   }
+   return { role: "user", content };
 }
 
 function buildToolConfig(specs: ToolSpec[]): ToolConfiguration | undefined {
-  if (specs.length === 0) return undefined;
-  const tools: Tool[] = specs.map(
-    (t): Tool.ToolSpecMember => ({
+   if (specs.length === 0) return undefined;
+   const tools: Tool[] = specs.map((t): Tool.ToolSpecMember => ({
       toolSpec: {
-        name: t.name,
-        description: t.description,
-        // inputSchema.json is a Smithy `DocumentType` (recursive JSON value);
-        // a JSON-Schema object is a valid document but `Record<string, unknown>`
-        // doesn't structurally match the strict union, so cast at this boundary.
-        inputSchema: { json: t.inputSchema as never },
+         name: t.name,
+         description: t.description,
+         // inputSchema.json is a Smithy `DocumentType` (recursive JSON value);
+         // a JSON-Schema object is a valid document but `Record<string, unknown>`
+         // doesn't structurally match the strict union, so cast at this boundary.
+         inputSchema: { json: t.inputSchema as never },
       },
-    }),
-  );
-  return { tools };
+   }));
+   return { tools };
 }
 
 /**
@@ -880,9 +964,17 @@ function buildToolConfig(specs: ToolSpec[]): ToolConfiguration | undefined {
  * the same cache key. Only used for the per-turn dedupe cache.
  */
 function stableStringify(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) return '[' + value.map(stableStringify).join(',') + ']';
-  const obj = value as Record<string, unknown>;
-  const keys = Object.keys(obj).sort();
-  return '{' + keys.map((k) => JSON.stringify(k) + ':' + stableStringify(obj[k])).join(',') + '}';
+   if (value === null || typeof value !== "object")
+      return JSON.stringify(value);
+   if (Array.isArray(value))
+      return "[" + value.map(stableStringify).join(",") + "]";
+   const obj = value as Record<string, unknown>;
+   const keys = Object.keys(obj).sort();
+   return (
+      "{" +
+      keys
+         .map((k) => JSON.stringify(k) + ":" + stableStringify(obj[k]))
+         .join(",") +
+      "}"
+   );
 }

@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+data/
+logs/
+db-export/
+pnpm-lock.yaml
+calendar/

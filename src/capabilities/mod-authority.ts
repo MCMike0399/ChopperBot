@@ -1,6 +1,6 @@
-import type Database from 'better-sqlite3';
-import { isModCaller, type TurnAuthority } from '../discord/mod-roles.js';
-import { EventIntakeStore } from './event_intake/store.js';
+import type Database from "better-sqlite3";
+import { isModCaller, type TurnAuthority } from "../discord/mod-roles.js";
+import { EventIntakeStore } from "./event_intake/store.js";
 
 /**
  * "May this caller run privileged actions here?" for channel-bound
@@ -14,15 +14,18 @@ import { EventIntakeStore } from './event_intake/store.js';
  * DEFAULT_MOD_ROLES — never to "everybody".
  */
 export function modRoleTokens(db: Database.Database | null): string[] {
-  if (!db) return [];
-  try {
-    return new EventIntakeStore(db).getModRoles();
-  } catch {
-    return [];
-  }
+   if (!db) return [];
+   try {
+      return new EventIntakeStore(db).getModRoles();
+   } catch {
+      return [];
+   }
 }
 
 /** Fail-closed mod check for a capability turn. See {@link isModCaller}. */
-export function isModTurn(db: Database.Database | null, caller: TurnAuthority): boolean {
-  return isModCaller(caller, modRoleTokens(db));
+export function isModTurn(
+   db: Database.Database | null,
+   caller: TurnAuthority,
+): boolean {
+   return isModCaller(caller, modRoleTokens(db));
 }

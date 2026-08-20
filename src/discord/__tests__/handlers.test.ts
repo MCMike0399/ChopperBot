@@ -1,216 +1,268 @@
-import { describe, test, expect } from 'vitest';
-import type { Client, Message } from 'discord.js';
-import { shouldRespond, stripBotMention } from '../handlers.js';
+import { describe, test, expect } from "vitest";
+import type { Client, Message } from "discord.js";
+import { shouldRespond, stripBotMention } from "../handlers.js";
 
-const BOT_ID = '999999999999999999';
-const CHANNEL = '12345678901234567890';
+const BOT_ID = "999999999999999999";
+const CHANNEL = "12345678901234567890";
 
 function makeClient(): Client {
-  return { user: { id: BOT_ID, username: 'ChopperBot' } } as unknown as Client;
+   return { user: { id: BOT_ID, username: "ChopperBot" } } as unknown as Client;
 }
 
 interface MsgOverrides {
-  authorBot?: boolean;
-  channelId?: string;
-  mentioned?: boolean;
-  isReplyToBot?: boolean;
-  refId?: string;
-  inGuild?: boolean;
-  content?: string;
-  botNickname?: string;
+   authorBot?: boolean;
+   channelId?: string;
+   mentioned?: boolean;
+   isReplyToBot?: boolean;
+   refId?: string;
+   inGuild?: boolean;
+   content?: string;
+   botNickname?: string;
 }
 
 function makeMessage(o: MsgOverrides = {}): Message {
-  return {
-    author: { bot: o.authorBot ?? false },
-    channelId: o.channelId ?? CHANNEL,
-    content: o.content ?? '',
-    guild: o.inGuild
-      ? {
-          id: '40000000000000000001',
-          members: { me: o.botNickname ? { displayName: o.botNickname } : null },
-        }
-      : null,
-    mentions: {
-      users: { has: (id: string) => (o.mentioned ? id === BOT_ID : false) },
-      repliedUser: o.isReplyToBot ? { id: BOT_ID } : null,
-    },
-    reference: o.refId ? { messageId: o.refId } : null,
-  } as unknown as Message;
+   return {
+      author: { bot: o.authorBot ?? false },
+      channelId: o.channelId ?? CHANNEL,
+      content: o.content ?? "",
+      guild: o.inGuild
+         ? {
+              id: "40000000000000000001",
+              members: {
+                 me: o.botNickname ? { displayName: o.botNickname } : null,
+              },
+           }
+         : null,
+      mentions: {
+         users: { has: (id: string) => (o.mentioned ? id === BOT_ID : false) },
+         repliedUser: o.isReplyToBot ? { id: BOT_ID } : null,
+      },
+      reference: o.refId ? { messageId: o.refId } : null,
+   } as unknown as Message;
 }
 
-describe('shouldRespond (live authorized-channel set is passed in per call)', () => {
-  test('responds to an @mention from a human in an authorized channel', () => {
-    expect(
-      shouldRespond(makeClient(), makeMessage({ mentioned: true }), new Set([CHANNEL])),
-    ).toBe(true);
-  });
+describe("shouldRespond (live authorized-channel set is passed in per call)", () => {
+   test("responds to an @mention from a human in an authorized channel", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ mentioned: true }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(true);
+   });
 
-  test('responds to a reply where repliedUser is the bot', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ isReplyToBot: true, refId: '1' }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(true);
-  });
+   test("responds to a reply where repliedUser is the bot", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ isReplyToBot: true, refId: "1" }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(true);
+   });
 
-  test('ignores messages from other bots', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ mentioned: true, authorBot: true }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(false);
-  });
+   test("ignores messages from other bots", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ mentioned: true, authorBot: true }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(false);
+   });
 
-  test('ignores messages in unauthorized channels', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ mentioned: true, channelId: '00000000000000001' }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(false);
-  });
+   test("ignores messages in unauthorized channels", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ mentioned: true, channelId: "00000000000000001" }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(false);
+   });
 
-  test('responds in any authorized channel (multi-channel)', () => {
-    const auth = new Set(['11111111111111111111', '22222222222222222222', '33333333333333333333']);
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ mentioned: true, channelId: '22222222222222222222' }),
-        auth,
-      ),
-    ).toBe(true);
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ mentioned: true, channelId: '33333333333333333333' }),
-        auth,
-      ),
-    ).toBe(true);
-  });
+   test("responds in any authorized channel (multi-channel)", () => {
+      const auth = new Set([
+         "11111111111111111111",
+         "22222222222222222222",
+         "33333333333333333333",
+      ]);
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ mentioned: true, channelId: "22222222222222222222" }),
+            auth,
+         ),
+      ).toBe(true);
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ mentioned: true, channelId: "33333333333333333333" }),
+            auth,
+         ),
+      ).toBe(true);
+   });
 
-  test('denies all when no channels configured', () => {
-    expect(
-      shouldRespond(makeClient(), makeMessage({ mentioned: true }), new Set()),
-    ).toBe(false);
-  });
+   test("denies all when no channels configured", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ mentioned: true }),
+            new Set(),
+         ),
+      ).toBe(false);
+   });
 
-  test('ignores messages with no mention and no reply', () => {
-    expect(shouldRespond(makeClient(), makeMessage(), new Set([CHANNEL]))).toBe(false);
-  });
+   test("ignores messages with no mention and no reply", () => {
+      expect(
+         shouldRespond(makeClient(), makeMessage(), new Set([CHANNEL])),
+      ).toBe(false);
+   });
 
-  test('returns false if the client has no user yet', () => {
-    const c = { user: null } as unknown as Client;
-    expect(shouldRespond(c, makeMessage({ mentioned: true }), new Set([CHANNEL]))).toBe(false);
-  });
+   test("returns false if the client has no user yet", () => {
+      const c = { user: null } as unknown as Client;
+      expect(
+         shouldRespond(c, makeMessage({ mentioned: true }), new Set([CHANNEL])),
+      ).toBe(false);
+   });
 
-  test('newly added bindings take effect immediately (the same call gets a different auth set)', () => {
-    const auth = new Set<string>();
-    expect(shouldRespond(makeClient(), makeMessage({ mentioned: true }), auth)).toBe(false);
-    auth.add(CHANNEL);
-    expect(shouldRespond(makeClient(), makeMessage({ mentioned: true }), auth)).toBe(true);
-  });
+   test("newly added bindings take effect immediately (the same call gets a different auth set)", () => {
+      const auth = new Set<string>();
+      expect(
+         shouldRespond(makeClient(), makeMessage({ mentioned: true }), auth),
+      ).toBe(false);
+      auth.add(CHANNEL);
+      expect(
+         shouldRespond(makeClient(), makeMessage({ mentioned: true }), auth),
+      ).toBe(true);
+   });
 
-  test('responds to an @mention in any guild channel even if not in the authorized set (general_chat fallback)', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ mentioned: true, channelId: '99999999999999999999', inGuild: true }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(true);
-  });
+   test("responds to an @mention in any guild channel even if not in the authorized set (general_chat fallback)", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({
+               mentioned: true,
+               channelId: "99999999999999999999",
+               inGuild: true,
+            }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(true);
+   });
 
-  test('still ignores DMs (no guild) when not in the authorized set', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ mentioned: true, channelId: '99999999999999999999', inGuild: false }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(false);
-  });
+   test("still ignores DMs (no guild) when not in the authorized set", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({
+               mentioned: true,
+               channelId: "99999999999999999999",
+               inGuild: false,
+            }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(false);
+   });
 
-  test('responds to a copy-pasted plain-text "@ChopperBot" (no mention entity)', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ content: 'ya lo anunció @ChopperBot andas emocionado?', inGuild: true }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(true);
-  });
+   test('responds to a copy-pasted plain-text "@ChopperBot" (no mention entity)', () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({
+               content: "ya lo anunció @ChopperBot andas emocionado?",
+               inGuild: true,
+            }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(true);
+   });
 
-  test('plain-text mention is case-insensitive', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ content: 'oye @chopperbot qué onda', inGuild: true }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(true);
-  });
+   test("plain-text mention is case-insensitive", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({ content: "oye @chopperbot qué onda", inGuild: true }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(true);
+   });
 
-  test('plain-text mention matches the guild nickname too', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ content: 'hola @Chopper dime algo', inGuild: true, botNickname: 'Chopper' }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(true);
-  });
+   test("plain-text mention matches the guild nickname too", () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({
+               content: "hola @Chopper dime algo",
+               inGuild: true,
+               botNickname: "Chopper",
+            }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(true);
+   });
 
-  test('ignores the bare bot name without "@" (talking ABOUT the bot)', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ content: 'chopperbot ya lo anunció ayer', inGuild: true }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(false);
-  });
+   test('ignores the bare bot name without "@" (talking ABOUT the bot)', () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({
+               content: "chopperbot ya lo anunció ayer",
+               inGuild: true,
+            }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(false);
+   });
 
-  test('ignores "@" + a longer name that merely starts with the bot name', () => {
-    expect(
-      shouldRespond(
-        makeClient(),
-        makeMessage({ content: 'saludos @ChopperBotFan2000', inGuild: true }),
-        new Set([CHANNEL]),
-      ),
-    ).toBe(false);
-  });
+   test('ignores "@" + a longer name that merely starts with the bot name', () => {
+      expect(
+         shouldRespond(
+            makeClient(),
+            makeMessage({
+               content: "saludos @ChopperBotFan2000",
+               inGuild: true,
+            }),
+            new Set([CHANNEL]),
+         ),
+      ).toBe(false);
+   });
 });
 
-describe('stripBotMention', () => {
-  test('strips the canonical mention pattern', () => {
-    expect(stripBotMention(makeClient(), `hello <@${BOT_ID}> there`)).toBe('hello  there');
-  });
-  test('strips the nickname mention pattern', () => {
-    expect(stripBotMention(makeClient(), `<@!${BOT_ID}> ping`)).toBe(' ping');
-  });
-  test('leaves other mentions alone', () => {
-    expect(stripBotMention(makeClient(), '<@111> hi')).toBe('<@111> hi');
-  });
-  test('returns content unchanged when client has no user', () => {
-    const c = { user: null } as unknown as Client;
-    expect(stripBotMention(c, '<@999> x')).toBe('<@999> x');
-  });
-  test('strips the plain-text "@ChopperBot" form (copy-pasted mention)', () => {
-    expect(stripBotMention(makeClient(), 'ya lo anunció @ChopperBot andas emocionado?')).toBe(
-      'ya lo anunció  andas emocionado?',
-    );
-  });
-  test('strips the plain-text guild nickname when a guild is passed', () => {
-    const guild = { members: { me: { displayName: 'Chopper' } } } as never;
-    expect(stripBotMention(makeClient(), 'hola @Chopper dime', guild)).toBe('hola  dime');
-  });
-  test('leaves longer names that start with the bot name alone', () => {
-    expect(stripBotMention(makeClient(), 'saludos @ChopperBotFan')).toBe('saludos @ChopperBotFan');
-  });
+describe("stripBotMention", () => {
+   test("strips the canonical mention pattern", () => {
+      expect(stripBotMention(makeClient(), `hello <@${BOT_ID}> there`)).toBe(
+         "hello  there",
+      );
+   });
+   test("strips the nickname mention pattern", () => {
+      expect(stripBotMention(makeClient(), `<@!${BOT_ID}> ping`)).toBe(" ping");
+   });
+   test("leaves other mentions alone", () => {
+      expect(stripBotMention(makeClient(), "<@111> hi")).toBe("<@111> hi");
+   });
+   test("returns content unchanged when client has no user", () => {
+      const c = { user: null } as unknown as Client;
+      expect(stripBotMention(c, "<@999> x")).toBe("<@999> x");
+   });
+   test('strips the plain-text "@ChopperBot" form (copy-pasted mention)', () => {
+      expect(
+         stripBotMention(
+            makeClient(),
+            "ya lo anunció @ChopperBot andas emocionado?",
+         ),
+      ).toBe("ya lo anunció  andas emocionado?");
+   });
+   test("strips the plain-text guild nickname when a guild is passed", () => {
+      const guild = { members: { me: { displayName: "Chopper" } } } as never;
+      expect(stripBotMention(makeClient(), "hola @Chopper dime", guild)).toBe(
+         "hola  dime",
+      );
+   });
+   test("leaves longer names that start with the bot name alone", () => {
+      expect(stripBotMention(makeClient(), "saludos @ChopperBotFan")).toBe(
+         "saludos @ChopperBotFan",
+      );
+   });
 });

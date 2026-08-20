@@ -3,384 +3,552 @@
 // `export FOO=...` in ~/.zshrc or ~/.profile shadowing .env. `unset FOO`
 // or fix the rc file; do not flip override to true here (legitimate dev
 // workflows depend on shell-var overrides).
-import 'dotenv/config';
-import { z } from 'zod';
+import "dotenv/config";
+import { z } from "zod";
 
 const GuildChannelConfigSchema = z.object({
-  guildId: z.string().regex(/^\d{17,20}$/).optional(),
-  guildName: z.string().optional(),
-  channels: z.array(z.string().regex(/^\d{17,20}$/)).min(1),
+   guildId: z
+      .string()
+      .regex(/^\d{17,20}$/)
+      .optional(),
+   guildName: z.string().optional(),
+   channels: z.array(z.string().regex(/^\d{17,20}$/)).min(1),
 });
 
 const ChannelCapabilityConfigSchema = z.object({
-  guildId: z.string().regex(/^\d{17,20}$/).optional(),
-  guildName: z.string().optional(),
-  channels: z
-    .array(
-      z.object({
-        id: z.string().regex(/^\d{17,20}$/),
-        capability: z.string().min(1),
-      }),
-    )
-    .min(1),
+   guildId: z
+      .string()
+      .regex(/^\d{17,20}$/)
+      .optional(),
+   guildName: z.string().optional(),
+   channels: z
+      .array(
+         z.object({
+            id: z.string().regex(/^\d{17,20}$/),
+            capability: z.string().min(1),
+         }),
+      )
+      .min(1),
 });
 
 // Empty env-var values (e.g. `DISCORD_CHANNEL_ID=` left blank in a .env file
 // where the operator only populates DISCORD_CHANNEL_CAPABILITIES) should be
 // treated as "not set" — not as an invalid empty string that crashes boot.
-const emptyToUndefined = (v: unknown) => (v === '' ? undefined : v);
+const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
 
-const ConfigSchema = z.object({
-  DISCORD_TOKEN: z.string().min(1, 'DISCORD_TOKEN is required'),
-  // Request the privileged MessageContent gateway intent at login. Default true
-  // (self-hosted app has it enabled). Set to the literal string 'false' when the
-  // Discord app does NOT have the intent toggled on — the gateway would reject
-  // IDENTIFY with "Used disallowed intents". Without it the bot still receives
-  // content for messages that @mention it (Discord always delivers those), so
-  // the mention-driven flows keep working; passive listeners do not.
-  DISCORD_MESSAGE_CONTENT_INTENT: z.string().optional(),
-  DISCORD_CHANNEL_ID: z.preprocess(
-    emptyToUndefined,
-    z
-      .string()
-      .regex(/^\d{17,20}$/, 'DISCORD_CHANNEL_ID must be a Discord snowflake')
-      .optional(),
-  ),
-  DISCORD_AUTHORIZED_CHANNELS: z.string().optional(),
-  DISCORD_CHANNEL_CAPABILITIES: z.string().optional(),
-  CHOPPERBOT_DATA_DIR: z.string().default('./data'),
-  DEFAULT_CAPABILITY: z.string().min(1).default('calendar'),
-  // Channel where the calendar capability publishes rendered month PDFs + the
-  // master ICS. Distinct from the INPUT channel (which is bound to `calendar`
-  // via the normal routing table and is where mods talk to the bot). Optional —
-  // seeds the calendar's DB setting on first boot; after that the DB value wins
-  // (changeable from the config channel via `config_calendar`).
-  CALENDAR_OUTPUT_CHANNEL_ID: z.preprocess(
-    emptyToUndefined,
-    z.string().regex(/^\d{17,20}$/, 'CALENDAR_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
-  ),
-  // Community channel where the calendar posts the daily "hoy hay evento"
-  // announcement (the server's #anuncios), distinct from both the calendar INPUT
-  // channel and the month-PDF OUTPUT channel. Optional — seeds the calendar's DB
-  // setting on first boot, after which the DB wins (`config_calendar
-  // action:set_announce_channel`). Unset and unseeded → no daily announcement.
-  CALENDAR_ANNOUNCE_CHANNEL_ID: z.preprocess(
-    emptyToUndefined,
-    z.string().regex(/^\d{17,20}$/, 'CALENDAR_ANNOUNCE_CHANNEL_ID must be a Discord snowflake').optional(),
-  ),
-  // Who the daily announcement pings. Comma/space list or JSON array of role
-  // snowflakes, plus the literal token `everyone` for @everyone. Seeds the DB
-  // setting on first boot (DB wins after). Empty → the announcement still posts,
-  // it just pings nobody. Deliberately NOT defaulted to `everyone`: a daily
-  // automated @everyone is a big escalation over what admins did by hand.
-  CALENDAR_ANNOUNCE_MENTIONS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // Local (America/Mexico_City) hour from which today's events may be announced.
-  // Not an alarm: the watcher opens a window at this hour and the SQLite ledger
-  // guarantees one post per event, so a late boot or a same-day booking still
-  // announces exactly once.
-  CALENDAR_ANNOUNCE_HOUR: z.coerce.number().int().min(0).max(23).default(10),
-  // ── Text brain selector ────────────────────────────────────────────────────
-  // `kimi` (default, self-hosted/Pi): every text turn runs on Moonshot Kimi 2.7
-  // Thinking (KIMI_API_KEY required). `deepseek`: the same OpenAI-compatible
-  // code path pointed at DeepSeek V4-Flash (DEEPSEEK_API_KEY required) — see the
-  // DEEPSEEK_ block below. `bedrock` (AWS-native deploys):
-  // text turns run on Amazon Bedrock Converse with BEDROCK_MODEL_ID,
-  // authenticated by the ambient AWS credential chain (task role on ECS, named
-  // profile locally) — no external API key needed.
-  //
-  // NOTE: this selects the TEXT brain only. Image turns always route to Amazon
-  // Nova Lite regardless, because neither Kimi nor DeepSeek V4 can see images —
-  // DeepSeek rejects `image_url` with a 400 at the deserialization layer on both
-  // Flash and Pro (probed 2026-08-10, scripts/probe-deepseek-api.ts §8).
-  LLM_TEXT_BACKEND: z.enum(['kimi', 'deepseek', 'bedrock']).default('kimi'),
-  // ── Moonshot Kimi (the text brain — ALL text, every domain) ────────────────
-  // Every text turn — Discord chat, the calendar/config tool-calling, the
-  // event-intake proposals, and the IG classifier's caption-only fallback — runs
-  // on Moonshot Kimi 2.7 Thinking via the OpenAI-compatible chat-completions API
-  // (the `openai` SDK). Bedrock is used ONLY for images: Kimi 2.7 Thinking is
-  // text-only, so any turn carrying an image is routed to Amazon Nova Lite (the
-  // `low` tier — see BEDROCK_MODEL_LOW below and src/llm/client.ts).
-  // Required when LLM_TEXT_BACKEND=kimi (enforced by the superRefine below);
-  // optional in bedrock mode, where no Kimi client is constructed.
-  KIMI_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // OpenAI-compatible base URL. Default is the Kimi-for-Coding endpoint, which
-  // serves the K2.7 model but gates on a coding-agent User-Agent (see
-  // KIMI_USER_AGENT). Point at https://api.moonshot.ai/v1 for the plain platform
-  // API (model id `kimi-k2-thinking`, no UA gate).
-  KIMI_BASE_URL: z.string().min(1).default('https://api.kimi.com/coding/v1'),
-  // Model id. `kimi-for-coding` on the coding endpoint IS Kimi 2.7 Thinking (it
-  // returns `reasoning_content` — the client echoes it back so follow-up turns
-  // validate). On the platform API use `kimi-k2-thinking`.
-  KIMI_MODEL_ID: z.string().min(1).default('kimi-for-coding'),
-  // The coding endpoint 403s requests whose User-Agent isn't a known coding
-  // agent with "Kimi For Coding is currently only available for Coding Agents".
-  // `claude-cli/1.0.0` is empirically on the allowlist. Ignored by the plain
-  // platform API. Override if the allowlist changes.
-  KIMI_USER_AGENT: z.string().min(1).default('claude-cli/1.0.0'),
+const ConfigSchema = z
+   .object({
+      DISCORD_TOKEN: z.string().min(1, "DISCORD_TOKEN is required"),
+      // Request the privileged MessageContent gateway intent at login. Default true
+      // (self-hosted app has it enabled). Set to the literal string 'false' when the
+      // Discord app does NOT have the intent toggled on — the gateway would reject
+      // IDENTIFY with "Used disallowed intents". Without it the bot still receives
+      // content for messages that @mention it (Discord always delivers those), so
+      // the mention-driven flows keep working; passive listeners do not.
+      DISCORD_MESSAGE_CONTENT_INTENT: z.string().optional(),
+      DISCORD_CHANNEL_ID: z.preprocess(
+         emptyToUndefined,
+         z
+            .string()
+            .regex(
+               /^\d{17,20}$/,
+               "DISCORD_CHANNEL_ID must be a Discord snowflake",
+            )
+            .optional(),
+      ),
+      DISCORD_AUTHORIZED_CHANNELS: z.string().optional(),
+      DISCORD_CHANNEL_CAPABILITIES: z.string().optional(),
+      CHOPPERBOT_DATA_DIR: z.string().default("./data"),
+      DEFAULT_CAPABILITY: z.string().min(1).default("calendar"),
+      // Channel where the calendar capability publishes rendered month PDFs + the
+      // master ICS. Distinct from the INPUT channel (which is bound to `calendar`
+      // via the normal routing table and is where mods talk to the bot). Optional —
+      // seeds the calendar's DB setting on first boot; after that the DB value wins
+      // (changeable from the config channel via `config_calendar`).
+      CALENDAR_OUTPUT_CHANNEL_ID: z.preprocess(
+         emptyToUndefined,
+         z
+            .string()
+            .regex(
+               /^\d{17,20}$/,
+               "CALENDAR_OUTPUT_CHANNEL_ID must be a Discord snowflake",
+            )
+            .optional(),
+      ),
+      // Community channel where the calendar posts the daily "hoy hay evento"
+      // announcement (the server's #anuncios), distinct from both the calendar INPUT
+      // channel and the month-PDF OUTPUT channel. Optional — seeds the calendar's DB
+      // setting on first boot, after which the DB wins (`config_calendar
+      // action:set_announce_channel`). Unset and unseeded → no daily announcement.
+      CALENDAR_ANNOUNCE_CHANNEL_ID: z.preprocess(
+         emptyToUndefined,
+         z
+            .string()
+            .regex(
+               /^\d{17,20}$/,
+               "CALENDAR_ANNOUNCE_CHANNEL_ID must be a Discord snowflake",
+            )
+            .optional(),
+      ),
+      // Who the daily announcement pings. Comma/space list or JSON array of role
+      // snowflakes, plus the literal token `everyone` for @everyone. Seeds the DB
+      // setting on first boot (DB wins after). Empty → the announcement still posts,
+      // it just pings nobody. Deliberately NOT defaulted to `everyone`: a daily
+      // automated @everyone is a big escalation over what admins did by hand.
+      CALENDAR_ANNOUNCE_MENTIONS: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Local (America/Mexico_City) hour from which today's events may be announced.
+      // Not an alarm: the watcher opens a window at this hour and the SQLite ledger
+      // guarantees one post per event, so a late boot or a same-day booking still
+      // announces exactly once.
+      CALENDAR_ANNOUNCE_HOUR: z.coerce
+         .number()
+         .int()
+         .min(0)
+         .max(23)
+         .default(10),
+      // ── Text brain selector ────────────────────────────────────────────────────
+      // `kimi` (default, self-hosted/Pi): every text turn runs on Moonshot Kimi 2.7
+      // Thinking (KIMI_API_KEY required). `deepseek`: the same OpenAI-compatible
+      // code path pointed at DeepSeek V4-Flash (DEEPSEEK_API_KEY required) — see the
+      // DEEPSEEK_ block below. `bedrock` (AWS-native deploys):
+      // text turns run on Amazon Bedrock Converse with BEDROCK_MODEL_ID,
+      // authenticated by the ambient AWS credential chain (task role on ECS, named
+      // profile locally) — no external API key needed.
+      //
+      // NOTE: this selects the TEXT brain only. Image turns always route to Amazon
+      // Nova Lite regardless, because neither Kimi nor DeepSeek V4 can see images —
+      // DeepSeek rejects `image_url` with a 400 at the deserialization layer on both
+      // Flash and Pro (probed 2026-08-10, scripts/probe-deepseek-api.ts §8).
+      LLM_TEXT_BACKEND: z.enum(["kimi", "deepseek", "bedrock"]).default("kimi"),
+      // ── Moonshot Kimi (the text brain — ALL text, every domain) ────────────────
+      // Every text turn — Discord chat, the calendar/config tool-calling, the
+      // event-intake proposals, and the IG classifier's caption-only fallback — runs
+      // on Moonshot Kimi 2.7 Thinking via the OpenAI-compatible chat-completions API
+      // (the `openai` SDK). Bedrock is used ONLY for images: Kimi 2.7 Thinking is
+      // text-only, so any turn carrying an image is routed to Amazon Nova Lite (the
+      // `low` tier — see BEDROCK_MODEL_LOW below and src/llm/client.ts).
+      // Required when LLM_TEXT_BACKEND=kimi (enforced by the superRefine below);
+      // optional in bedrock mode, where no Kimi client is constructed.
+      KIMI_API_KEY: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // OpenAI-compatible base URL. Default is the Kimi-for-Coding endpoint, which
+      // serves the K2.7 model but gates on a coding-agent User-Agent (see
+      // KIMI_USER_AGENT). Point at https://api.moonshot.ai/v1 for the plain platform
+      // API (model id `kimi-k2-thinking`, no UA gate).
+      KIMI_BASE_URL: z
+         .string()
+         .min(1)
+         .default("https://api.kimi.com/coding/v1"),
+      // Model id. `kimi-for-coding` on the coding endpoint IS Kimi 2.7 Thinking (it
+      // returns `reasoning_content` — the client echoes it back so follow-up turns
+      // validate). On the platform API use `kimi-k2-thinking`.
+      KIMI_MODEL_ID: z.string().min(1).default("kimi-for-coding"),
+      // The coding endpoint 403s requests whose User-Agent isn't a known coding
+      // agent with "Kimi For Coding is currently only available for Coding Agents".
+      // `claude-cli/1.0.0` is empirically on the allowlist. Ignored by the plain
+      // platform API. Override if the allowlist changes.
+      KIMI_USER_AGENT: z.string().min(1).default("claude-cli/1.0.0"),
 
-  // ── DeepSeek (the other OpenAI-compatible text brain) ──────────────────────
-  // Selected with LLM_TEXT_BACKEND=deepseek. Speaks the SAME chat-completions
-  // wire shape as Kimi, so it reuses askKimi's agent loop verbatim — only the
-  // base URL, key and model id differ (resolved into `textBackend` below).
-  //
-  // Why it's here (measured 2026-08-10, scripts/text-backend-trial.ts, 2 runs):
-  // V4-Flash matched or beat the Kimi coding endpoint on every axis — tool
-  // battery 7/8 vs 6/8, voice 2/2, zero scaffolding leaks, and 9.1s/turn vs
-  // 33.5s. It also returns `reasoning_content` exactly like K2.7 Thinking, so
-  // the degenerate-output guard and the empty-content retry both still apply.
-  //
-  // Both spellings are accepted: DEEPSEEK_API_KEY is canonical, DEEP_SEEK_API_KEY
-  // is the spelling already sitting in the Pi's .env. Set either.
-  DEEPSEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  DEEP_SEEK_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  DEEPSEEK_BASE_URL: z.string().min(1).default('https://api.deepseek.com/v1'),
-  // The MEDIUM tier and the workhorse: deepseek-v4-flash is the agentic-tuned,
-  // cheap one ($0.14/M in, $0.28/M out, $0.0028/M on a cache hit). It serves
-  // every conversational surface (general_chat, the IG classifier's decision,
-  // the calendar announcer, workshop compaction) — i.e. essentially all volume.
-  DEEPSEEK_MODEL_ID: z.string().min(1).default('deepseek-v4-flash'),
-  // There is deliberately NO second model id. V4-Pro was wired to the `high`
-  // tier on 2026-08-13 and removed the same day: measured on the calendar
-  // battery it scored **7/8 tool-calling at 10.5 s/turn vs Flash's 7/8 at
-  // 7.1 s** — identical accuracy, ~48% slower, 3.1× the price. Effort selects
-  // a THINKING MODE on the one model now (see DEEPSEEK_THINKING below), not a
-  // pricier model. Re-measure before reintroducing a tier.
+      // ── DeepSeek (the other OpenAI-compatible text brain) ──────────────────────
+      // Selected with LLM_TEXT_BACKEND=deepseek. Speaks the SAME chat-completions
+      // wire shape as Kimi, so it reuses askKimi's agent loop verbatim — only the
+      // base URL, key and model id differ (resolved into `textBackend` below).
+      //
+      // Why it's here (measured 2026-08-10, scripts/text-backend-trial.ts, 2 runs):
+      // V4-Flash matched or beat the Kimi coding endpoint on every axis — tool
+      // battery 7/8 vs 6/8, voice 2/2, zero scaffolding leaks, and 9.1s/turn vs
+      // 33.5s. It also returns `reasoning_content` exactly like K2.7 Thinking, so
+      // the degenerate-output guard and the empty-content retry both still apply.
+      //
+      // Both spellings are accepted: DEEPSEEK_API_KEY is canonical, DEEP_SEEK_API_KEY
+      // is the spelling already sitting in the Pi's .env. Set either.
+      DEEPSEEK_API_KEY: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      DEEP_SEEK_API_KEY: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      DEEPSEEK_BASE_URL: z
+         .string()
+         .min(1)
+         .default("https://api.deepseek.com/v1"),
+      // The MEDIUM tier and the workhorse: deepseek-v4-flash is the agentic-tuned,
+      // cheap one ($0.14/M in, $0.28/M out, $0.0028/M on a cache hit). It serves
+      // every conversational surface (general_chat, the IG classifier's decision,
+      // the calendar announcer, workshop compaction) — i.e. essentially all volume.
+      DEEPSEEK_MODEL_ID: z.string().min(1).default("deepseek-v4-flash"),
+      // There is deliberately NO second model id. V4-Pro was wired to the `high`
+      // tier on 2026-08-13 and removed the same day: measured on the calendar
+      // battery it scored **7/8 tool-calling at 10.5 s/turn vs Flash's 7/8 at
+      // 7.1 s** — identical accuracy, ~48% slower, 3.1× the price. Effort selects
+      // a THINKING MODE on the one model now (see DEEPSEEK_THINKING below), not a
+      // pricier model. Re-measure before reintroducing a tier.
 
-  // Amazon Bedrock (Converse API) credentials + models. On the Pi these are the
-  // static ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env (the IMAGES-ONLY
-  // backend: Kimi is text-only, so the ONLY thing Bedrock serves there is
-  // vision — any turn carrying an image goes to Amazon Nova Lite). The env var
-  // names are deliberately the short ACCESS_KEY_ID / SECRET_ACCESS_KEY (NOT the
-  // AWS_-prefixed standard names) so they don't collide with any ambient AWS CLI
-  // credentials on the host. BOTH are OPTIONAL: when unset, the Bedrock client
-  // falls back to the AWS default credential chain (ECS task role, EC2 instance
-  // profile, or AWS_PROFILE locally) — the mode used by the AWS-native deploy.
-  ACCESS_KEY_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  SECRET_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // Optional STS session token (only for temporary credentials).
-  AWS_SESSION_TOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  AWS_REGION: z.string().min(1).default('us-east-1'),
-  // Legacy Bedrock text model id. No longer on any hot path — every text domain
-  // is Kimi now (see KIMI_MODEL_ID). Kept only for the dev smoke/bake-off scripts
-  // and so a future all-Bedrock rollback needs no schema change.
-  BEDROCK_MODEL_ID: z.string().min(1).default('us.anthropic.claude-sonnet-4-6'),
-  // The vision model (Amazon Nova Lite), the effort `low` tier. This is the ONLY
-  // model Bedrock serves and it is used ONLY for image turns — `high`/`medium`
-  // are text and go to Kimi. Directive (2026-07-13): "Nova only for images; it is
-  // the low tier; medium and high are Kimi." MUST be image-capable.
-  BEDROCK_MODEL_LOW: z.string().min(1).default('us.amazon.nova-lite-v1:0'),
-  MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
-  // Output budget for the KIMI path specifically. K2.7 Thinking's
-  // reasoning_content counts against max_tokens, so 4096 starves complex
-  // multi-step turns — live 2026-08-06: a workshop turn hit stopReason
-  // 'length' after 8 file reads and the visible reply was cut mid-sentence
-  // ("Ahora te armo un documento Word…") with the promised docx never created.
-  // The coding endpoint accepts ≥24k (probed); the subscription is flat-rate.
-  KIMI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(16384),
-  MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
-  // Max Kimi HTTP requests in flight at once (a semaphore inside llm/client.ts,
-  // NOT whole turns — two agent loops interleave their requests). Default 1: the
-  // coding endpoint degrades under overlapping requests (2026-08-05: two
-  // overlapping mentions → one turn returned empty content).
-  KIMI_MAX_CONCURRENT: z.coerce.number().int().positive().default(1),
-  // Max message-handling turns executing at once across ALL channels (the
-  // per-channel ordering is always strict FIFO regardless). Protects the Pi;
-  // queued turns show ⏳ on the user's message.
-  MAX_CONCURRENT_TURNS: z.coerce.number().int().positive().default(3),
-  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info'),
-  MAX_ATTACHMENT_BYTES: z.coerce.number().int().positive().default(10 * 1024 * 1024),
-  MAX_ATTACHMENT_COUNT: z.coerce.number().int().positive().default(5),
-  // Instagram session auth (optional). When IG_SESSIONID + IG_CSRFTOKEN +
-  // IG_DS_USER_ID are all present, direct fetches attach the logged-in cookies
-  // and x-csrftoken header, which gets far higher rate limits than anonymous
-  // requests. Use a THROWAWAY account — automated polling risks a ban. Sessions
-  // expire; the scheduler logs `instagram_monitor.auth.expired` so the
-  // log-watcher can alert you to refresh the cookies.
-  IG_SESSIONID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  IG_CSRFTOKEN: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  IG_DS_USER_ID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  IG_MID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  IG_DID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // User-Agent sent on every IG request. SHOULD match the browser the session
-  // cookies were extracted from — a session driven from a UA different than the
-  // one that created it is a fingerprint signal. Critical on a personal account.
-  // Unset = the built-in desktop-Chrome default (DEFAULT_IG_USER_AGENT).
-  IG_USER_AGENT: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // Hard ceiling on outbound IG HTTP requests in a rolling 24h window (one poll
-  // ≈ 2–3 calls: optional warmup + pk-resolve + feed). On hit, polling
-  // soft-pauses (auto-recovers as the window drains) and the operator is
-  // alerted. A backstop against runaway request volume.
-  IG_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(90),
+      // Amazon Bedrock (Converse API) credentials + models. On the Pi these are the
+      // static ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env (the IMAGES-ONLY
+      // backend: Kimi is text-only, so the ONLY thing Bedrock serves there is
+      // vision — any turn carrying an image goes to Amazon Nova Lite). The env var
+      // names are deliberately the short ACCESS_KEY_ID / SECRET_ACCESS_KEY (NOT the
+      // AWS_-prefixed standard names) so they don't collide with any ambient AWS CLI
+      // credentials on the host. BOTH are OPTIONAL: when unset, the Bedrock client
+      // falls back to the AWS default credential chain (ECS task role, EC2 instance
+      // profile, or AWS_PROFILE locally) — the mode used by the AWS-native deploy.
+      ACCESS_KEY_ID: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      SECRET_ACCESS_KEY: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Optional STS session token (only for temporary credentials).
+      AWS_SESSION_TOKEN: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      AWS_REGION: z.string().min(1).default("us-east-1"),
+      // Legacy Bedrock text model id. No longer on any hot path — every text domain
+      // is Kimi now (see KIMI_MODEL_ID). Kept only for the dev smoke/bake-off scripts
+      // and so a future all-Bedrock rollback needs no schema change.
+      BEDROCK_MODEL_ID: z
+         .string()
+         .min(1)
+         .default("us.anthropic.claude-sonnet-4-6"),
+      // The vision model (Amazon Nova Lite), the effort `low` tier. This is the ONLY
+      // model Bedrock serves and it is used ONLY for image turns — `high`/`medium`
+      // are text and go to Kimi. Directive (2026-07-13): "Nova only for images; it is
+      // the low tier; medium and high are Kimi." MUST be image-capable.
+      BEDROCK_MODEL_LOW: z.string().min(1).default("us.amazon.nova-lite-v1:0"),
+      MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
+      // Output budget for the KIMI path specifically. K2.7 Thinking's
+      // reasoning_content counts against max_tokens, so 4096 starves complex
+      // multi-step turns — live 2026-08-06: a workshop turn hit stopReason
+      // 'length' after 8 file reads and the visible reply was cut mid-sentence
+      // ("Ahora te armo un documento Word…") with the promised docx never created.
+      // The coding endpoint accepts ≥24k (probed); the subscription is flat-rate.
+      KIMI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(16384),
+      MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
+      // Max Kimi HTTP requests in flight at once (a semaphore inside llm/client.ts,
+      // NOT whole turns — two agent loops interleave their requests). Default 1: the
+      // coding endpoint degrades under overlapping requests (2026-08-05: two
+      // overlapping mentions → one turn returned empty content).
+      KIMI_MAX_CONCURRENT: z.coerce.number().int().positive().default(1),
+      // Max message-handling turns executing at once across ALL channels (the
+      // per-channel ordering is always strict FIFO regardless). Protects the Pi;
+      // queued turns show ⏳ on the user's message.
+      MAX_CONCURRENT_TURNS: z.coerce.number().int().positive().default(3),
+      LOG_LEVEL: z
+         .enum(["trace", "debug", "info", "warn", "error", "fatal"])
+         .default("info"),
+      MAX_ATTACHMENT_BYTES: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(10 * 1024 * 1024),
+      MAX_ATTACHMENT_COUNT: z.coerce.number().int().positive().default(5),
+      // Instagram session auth (optional). When IG_SESSIONID + IG_CSRFTOKEN +
+      // IG_DS_USER_ID are all present, direct fetches attach the logged-in cookies
+      // and x-csrftoken header, which gets far higher rate limits than anonymous
+      // requests. Use a THROWAWAY account — automated polling risks a ban. Sessions
+      // expire; the scheduler logs `instagram_monitor.auth.expired` so the
+      // log-watcher can alert you to refresh the cookies.
+      IG_SESSIONID: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      IG_CSRFTOKEN: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      IG_DS_USER_ID: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      IG_MID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+      IG_DID: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+      // User-Agent sent on every IG request. SHOULD match the browser the session
+      // cookies were extracted from — a session driven from a UA different than the
+      // one that created it is a fingerprint signal. Critical on a personal account.
+      // Unset = the built-in desktop-Chrome default (DEFAULT_IG_USER_AGENT).
+      IG_USER_AGENT: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Hard ceiling on outbound IG HTTP requests in a rolling 24h window (one poll
+      // ≈ 2–3 calls: optional warmup + pk-resolve + feed). On hit, polling
+      // soft-pauses (auto-recovers as the window drains) and the operator is
+      // alerted. A backstop against runaway request volume.
+      IG_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(90),
 
-  // ── VirusTotal file scanner (file_scanner capability) ──────────────────────
-  // Optional. When VIRUSTOTAL_API_KEY is set, the file_scanner capability
-  // registers a passive listener that scans non-image uploads in the watched
-  // channels and posts a friendly verdict. Unset → the capability self-disables
-  // at boot (logs a warning; nothing else changes), so the code can ship and be
-  // tested against a mocked client before a key exists.
-  VIRUSTOTAL_API_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // Channels the scanner watches, independent of the channel→capability routing
-  // table (the scanner coexists with whatever else a channel already does).
-  // JSON array (`["123","456"]`) or comma/space-separated tokens. Each token is
-  // a channel snowflake, `guild:<serverId>` (all channels the bot can see in
-  // that server), or `all` (every channel it can see). Seeds the DB setting on
-  // first boot; after that the DB value wins (manage it live from the config
-  // channel via `config_filescanner action:set_channels`).
-  FILE_SCANNER_CHANNEL_IDS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // Rolling-24h ceiling on VirusTotal API calls. Free tier is 500/day; 480 keeps
-  // headroom. On hit the scanner skips the file and tells the user politely.
-  VIRUSTOTAL_DAILY_REQUEST_BUDGET: z.coerce.number().int().positive().default(480),
-  // Minimum spacing between VT API calls (free tier is 4 req/min = 15s; 16s is a
-  // safe margin). Enforced by a single global serialized request queue.
-  VIRUSTOTAL_MIN_REQUEST_INTERVAL_MS: z.coerce.number().int().positive().default(16_000),
-  // Max analysis polls before giving up on a fresh upload (each poll is one
-  // budgeted, spaced call; ~8 polls ≈ a couple of minutes of VT queue time).
-  VIRUSTOTAL_MAX_POLLS: z.coerce.number().int().positive().default(8),
-  // Files larger than this are skipped (VT's simple /files upload endpoint caps
-  // around 32 MB on the public API).
-  VIRUSTOTAL_MAX_FILE_BYTES: z.coerce.number().int().positive().default(32 * 1024 * 1024),
-  // Number of engines flagging "malicious" required to render 🛑 malicioso. A
-  // single detection below this (or any suspicious hit) renders ⚠️ sospechoso.
-  VIRUSTOTAL_MALICIOUS_THRESHOLD: z.coerce.number().int().positive().default(2),
+      // ── VirusTotal file scanner (file_scanner capability) ──────────────────────
+      // Optional. When VIRUSTOTAL_API_KEY is set, the file_scanner capability
+      // registers a passive listener that scans non-image uploads in the watched
+      // channels and posts a friendly verdict. Unset → the capability self-disables
+      // at boot (logs a warning; nothing else changes), so the code can ship and be
+      // tested against a mocked client before a key exists.
+      VIRUSTOTAL_API_KEY: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Channels the scanner watches, independent of the channel→capability routing
+      // table (the scanner coexists with whatever else a channel already does).
+      // JSON array (`["123","456"]`) or comma/space-separated tokens. Each token is
+      // a channel snowflake, `guild:<serverId>` (all channels the bot can see in
+      // that server), or `all` (every channel it can see). Seeds the DB setting on
+      // first boot; after that the DB value wins (manage it live from the config
+      // channel via `config_filescanner action:set_channels`).
+      FILE_SCANNER_CHANNEL_IDS: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Rolling-24h ceiling on VirusTotal API calls. Free tier is 500/day; 480 keeps
+      // headroom. On hit the scanner skips the file and tells the user politely.
+      VIRUSTOTAL_DAILY_REQUEST_BUDGET: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(480),
+      // Minimum spacing between VT API calls (free tier is 4 req/min = 15s; 16s is a
+      // safe margin). Enforced by a single global serialized request queue.
+      VIRUSTOTAL_MIN_REQUEST_INTERVAL_MS: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(16_000),
+      // Max analysis polls before giving up on a fresh upload (each poll is one
+      // budgeted, spaced call; ~8 polls ≈ a couple of minutes of VT queue time).
+      VIRUSTOTAL_MAX_POLLS: z.coerce.number().int().positive().default(8),
+      // Files larger than this are skipped (VT's simple /files upload endpoint caps
+      // around 32 MB on the public API).
+      VIRUSTOTAL_MAX_FILE_BYTES: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(32 * 1024 * 1024),
+      // Number of engines flagging "malicious" required to render 🛑 malicioso. A
+      // single detection below this (or any suspicious hit) renders ⚠️ sospechoso.
+      VIRUSTOTAL_MALICIOUS_THRESHOLD: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(2),
 
-  // ── Event intake from the ticket funnel (event_intake capability) ──────────
-  // Passive capability that reads the Ticket Tool event-request form in a ticket
-  // channel, posts a normalized + conflict-checked proposal, and lets a MOD
-  // approve by talking to the bot (which auto-creates the calendar event). Like
-  // file_scanner it is NOT in the routing table and self-manages its own
-  // MessageCreate listener over a watched CATEGORY set. All three vars are
-  // optional (no secret needed): with no category configured it simply idles
-  // until a mod points it at the ticket category via `config_eventintake`.
-  //
-  // Categories the intake watches. JSON array (`["123"]`) or comma/space list.
-  // Each token is a CATEGORY snowflake, `guild:<serverId>` (every channel the
-  // bot can see in that server), or `all`. Seeds the DB setting on first boot;
-  // after that the DB value wins (manage it live from the config channel via
-  // `config_eventintake action:set_categories`).
-  EVENT_INTAKE_TICKET_CATEGORY_IDS: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // Roles whose members may APPROVE a request (→ create the calendar event).
-  // Each token is a role id snowflake (deterministic — preferred) or a role
-  // NAME (accent/case-insensitive, e.g. "Moderador"); JSON array or comma list.
-  // Seeds the DB setting on first boot; DB wins after (manage via
-  // `config_eventintake action:set_mod_roles`). Empty/unset → the built-in
-  // default Moderador/Administrador/Administradora role IDS (see roles.ts),
-  // plus anyone with Discord's Administrator permission always qualifies.
-  EVENT_INTAKE_MOD_ROLES: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  // Discord user id of the ticket bot whose form messages we parse. Defaults to
-  // Ticket Tool. Change it if the server switches ticket bots.
-  EVENT_INTAKE_TICKET_BOT_ID: z.string().regex(/^\d{17,20}$/).default('557628352828014614'),
-  // Agitprop flyer inbox channel (Comisión de Agitprop). Seeds the DB setting
-  // on first boot; DB wins after (`config_eventintake action:set_agitprop_channel`).
-  EVENT_INTAKE_AGITPROP_CHANNEL_ID: z.preprocess(
-    emptyToUndefined,
-    z.string().regex(/^\d{17,20}$/, 'EVENT_INTAKE_AGITPROP_CHANNEL_ID must be a Discord snowflake').optional(),
-  ),
-  // Roles whose members may fulfill/manage flyer jobs. Names or ids; empty → "Agitprop".
-  EVENT_INTAKE_AGITPROP_ROLES: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
+      // ── Event intake from the ticket funnel (event_intake capability) ──────────
+      // Passive capability that reads the Ticket Tool event-request form in a ticket
+      // channel, posts a normalized + conflict-checked proposal, and lets a MOD
+      // approve by talking to the bot (which auto-creates the calendar event). Like
+      // file_scanner it is NOT in the routing table and self-manages its own
+      // MessageCreate listener over a watched CATEGORY set. All three vars are
+      // optional (no secret needed): with no category configured it simply idles
+      // until a mod points it at the ticket category via `config_eventintake`.
+      //
+      // Categories the intake watches. JSON array (`["123"]`) or comma/space list.
+      // Each token is a CATEGORY snowflake, `guild:<serverId>` (every channel the
+      // bot can see in that server), or `all`. Seeds the DB setting on first boot;
+      // after that the DB value wins (manage it live from the config channel via
+      // `config_eventintake action:set_categories`).
+      EVENT_INTAKE_TICKET_CATEGORY_IDS: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Roles whose members may APPROVE a request (→ create the calendar event).
+      // Each token is a role id snowflake (deterministic — preferred) or a role
+      // NAME (accent/case-insensitive, e.g. "Moderador"); JSON array or comma list.
+      // Seeds the DB setting on first boot; DB wins after (manage via
+      // `config_eventintake action:set_mod_roles`). Empty/unset → the built-in
+      // default Moderador/Administrador/Administradora role IDS (see roles.ts),
+      // plus anyone with Discord's Administrator permission always qualifies.
+      EVENT_INTAKE_MOD_ROLES: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Discord user id of the ticket bot whose form messages we parse. Defaults to
+      // Ticket Tool. Change it if the server switches ticket bots.
+      EVENT_INTAKE_TICKET_BOT_ID: z
+         .string()
+         .regex(/^\d{17,20}$/)
+         .default("557628352828014614"),
+      // Agitprop flyer inbox channel (Comisión de Agitprop). Seeds the DB setting
+      // on first boot; DB wins after (`config_eventintake action:set_agitprop_channel`).
+      EVENT_INTAKE_AGITPROP_CHANNEL_ID: z.preprocess(
+         emptyToUndefined,
+         z
+            .string()
+            .regex(
+               /^\d{17,20}$/,
+               "EVENT_INTAKE_AGITPROP_CHANNEL_ID must be a Discord snowflake",
+            )
+            .optional(),
+      ),
+      // Roles whose members may fulfill/manage flyer jobs. Names or ids; empty → "Agitprop".
+      EVENT_INTAKE_AGITPROP_ROLES: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
 
-  // ── Workshop (escuela/trabajo) private LLM sessions (workshop capability) ──
-  // Passive capability: a member reacts to the bot's welcome message in the
-  // WELCOME channel and gets a private text channel under the CATEGORY where
-  // they chat with the bot like a web LLM (no mentions needed), with sandboxed
-  // Python + document skills. All vars seed the DB settings on first boot; the
-  // DB wins after (manage live via `config_workshop`). Unset and unseeded → the
-  // capability idles.
-  WORKSHOP_WELCOME_CHANNEL_ID: z.preprocess(
-    emptyToUndefined,
-    z.string().regex(/^\d{17,20}$/, 'WORKSHOP_WELCOME_CHANNEL_ID must be a Discord snowflake').optional(),
-  ),
-  WORKSHOP_CATEGORY_ID: z.preprocess(
-    emptyToUndefined,
-    z.string().regex(/^\d{17,20}$/, 'WORKSHOP_CATEGORY_ID must be a Discord snowflake').optional(),
-  ),
-  // The emoji members react with on the welcome message. A unicode emoji.
-  WORKSHOP_REACTION_EMOJI: z.string().min(1).default('🎓'),
-  // Active private sessions a single member may have at once.
-  WORKSHOP_MAX_SESSIONS_PER_USER: z.coerce.number().int().positive().default(2),
-  // Wall-clock cap for one sandboxed python run, seconds (the tool may ask for
-  // less; never more).
-  WORKSHOP_PY_TIMEOUT_S: z.coerce.number().int().positive().default(60),
+      // ── Workshop (escuela/trabajo) private LLM sessions (workshop capability) ──
+      // Passive capability: a member reacts to the bot's welcome message in the
+      // WELCOME channel and gets a private text channel under the CATEGORY where
+      // they chat with the bot like a web LLM (no mentions needed), with sandboxed
+      // Python + document skills. All vars seed the DB settings on first boot; the
+      // DB wins after (manage live via `config_workshop`). Unset and unseeded → the
+      // capability idles.
+      WORKSHOP_WELCOME_CHANNEL_ID: z.preprocess(
+         emptyToUndefined,
+         z
+            .string()
+            .regex(
+               /^\d{17,20}$/,
+               "WORKSHOP_WELCOME_CHANNEL_ID must be a Discord snowflake",
+            )
+            .optional(),
+      ),
+      WORKSHOP_CATEGORY_ID: z.preprocess(
+         emptyToUndefined,
+         z
+            .string()
+            .regex(
+               /^\d{17,20}$/,
+               "WORKSHOP_CATEGORY_ID must be a Discord snowflake",
+            )
+            .optional(),
+      ),
+      // The emoji members react with on the welcome message. A unicode emoji.
+      WORKSHOP_REACTION_EMOJI: z.string().min(1).default("🎓"),
+      // Active private sessions a single member may have at once.
+      WORKSHOP_MAX_SESSIONS_PER_USER: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(2),
+      // Wall-clock cap for one sandboxed python run, seconds (the tool may ask for
+      // less; never more).
+      WORKSHOP_PY_TIMEOUT_S: z.coerce.number().int().positive().default(60),
 
-  // ── Minutas (voice/stage meeting recorder → minutes) ───────────────────────
-  // Passive capability (own listeners, not channel-routed): `/chopperbot-join`
-  // makes the bot join the caller's voice/stage channel and record per-speaker
-  // audio bursts + the channel's text chat; `/chopperbot-leave` (or the channel
-  // emptying, or its scheduled event ending) stops the session, transcribes
-  // locally with whisper.cpp, and posts an LLM-written minuta to the output
-  // channel. Drafts live in MinIO under `minutas/<guild>/<date>/<session>/`.
-  // All vars optional: with no output channel the capability idles; with no
-  // whisper binary it still records and keeps the raw drafts.
-  // Channel where minutes are published. Seeds the DB setting on first boot;
-  // after that the DB wins (`config_minutas action:set_output_channel`).
-  MINUTAS_OUTPUT_CHANNEL_ID: z.preprocess(
-    emptyToUndefined,
-    z.string().regex(/^\d{17,20}$/, 'MINUTAS_OUTPUT_CHANNEL_ID must be a Discord snowflake').optional(),
-  ),
-  // Local whisper.cpp binary + model (built by scripts/setup-minutas-whisper.sh).
-  MINUTAS_WHISPER_BIN: z.string().min(1).default('./data/minutas/bin/whisper-cli'),
-  MINUTAS_WHISPER_MODEL_PATH: z.string().min(1).default('./data/minutas/models/ggml-small.bin'),
-  MINUTAS_WHISPER_LANGUAGE: z.string().min(2).default('es'),
-  // whisper-cli threads. Live transcription runs during the meeting; leftover
-  // whisper at leave is the last un-flushed tail. A single whisper process at
-  // a time. Live .env often uses 2 so cores stay free alongside the gateway.
-  MINUTAS_WHISPER_THREADS: z.coerce.number().int().min(1).max(8).default(4),
-  // Backstop auto-end for a forgotten session (e.g. the mod walks away).
-  MINUTAS_MAX_SESSION_MINUTES: z.coerce.number().int().positive().default(300),
-  // Nightly deferral (MINUTAS_HEAVY_WINDOW_* / MINUTAS_IMMEDIATE_MAX_WHISPER_MIN)
-  // was removed 2026-08-19: live transcription keeps pace, so /chopperbot-leave
-  // always finalizes immediately (leftover whisper is the last un-flushed tail).
+      // ── Minutas (voice/stage meeting recorder → minutes) ───────────────────────
+      // Passive capability (own listeners, not channel-routed): `/chopperbot-join`
+      // makes the bot join the caller's voice/stage channel and record per-speaker
+      // audio bursts + the channel's text chat; `/chopperbot-leave` (or the channel
+      // emptying, or its scheduled event ending) stops the session, transcribes
+      // locally with whisper.cpp, and posts an LLM-written minuta to the output
+      // channel. Drafts live in MinIO under `minutas/<guild>/<date>/<session>/`.
+      // All vars optional: with no output channel the capability idles; with no
+      // whisper binary it still records and keeps the raw drafts.
+      // Channel where minutes are published. Seeds the DB setting on first boot;
+      // after that the DB wins (`config_minutas action:set_output_channel`).
+      MINUTAS_OUTPUT_CHANNEL_ID: z.preprocess(
+         emptyToUndefined,
+         z
+            .string()
+            .regex(
+               /^\d{17,20}$/,
+               "MINUTAS_OUTPUT_CHANNEL_ID must be a Discord snowflake",
+            )
+            .optional(),
+      ),
+      // Local whisper.cpp binary + model (built by scripts/setup-minutas-whisper.sh).
+      MINUTAS_WHISPER_BIN: z
+         .string()
+         .min(1)
+         .default("./data/minutas/bin/whisper-cli"),
+      MINUTAS_WHISPER_MODEL_PATH: z
+         .string()
+         .min(1)
+         .default("./data/minutas/models/ggml-small.bin"),
+      MINUTAS_WHISPER_LANGUAGE: z.string().min(2).default("es"),
+      // whisper-cli threads. Live transcription runs during the meeting; leftover
+      // whisper at leave is the last un-flushed tail. A single whisper process at
+      // a time. Live .env often uses 2 so cores stay free alongside the gateway.
+      MINUTAS_WHISPER_THREADS: z.coerce.number().int().min(1).max(8).default(4),
+      // Backstop auto-end for a forgotten session (e.g. the mod walks away).
+      MINUTAS_MAX_SESSION_MINUTES: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(300),
+      // Nightly deferral (MINUTAS_HEAVY_WINDOW_* / MINUTAS_IMMEDIATE_MAX_WHISPER_MIN)
+      // was removed 2026-08-19: live transcription keeps pace, so /chopperbot-leave
+      // always finalizes immediately (leftover whisper is the last un-flushed tail).
 
-  // ── Object storage (MinIO on the Pi's 1TB SSD) ─────────────────────────────
-  // Durable byte store behind capabilities that outgrow the local disk —
-  // today: workshop session files (the Pi workspace stays a bounded cache;
-  // the Discord carrier message remains the fallback copy). Self-hosted MinIO,
-  // S3 API bound to localhost, data under /srv/minio (moved off the 2 TB HDD
-  // 2026-08-10 so the file store no longer depends on the external disk).
-  // BOTH keys unset → storage disabled → pre-MinIO behavior (Discord-only).
-  MINIO_ENDPOINT: z.string().min(1).default('http://127.0.0.1:9500'),
-  // MinIO accepts any region string; the SDK requires one to sign requests.
-  MINIO_REGION: z.string().min(1).default('us-east-1'),
-  MINIO_BUCKET: z.string().min(1).default('chopperbot'),
-  // Scoped service account (bucket-rw policy only), NOT the MinIO root user.
-  MINIO_ACCESS_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-  MINIO_SECRET_KEY: z.preprocess(emptyToUndefined, z.string().min(1).optional()),
-
-}).superRefine((c, ctx) => {
-  if (c.LLM_TEXT_BACKEND === 'kimi' && !c.KIMI_API_KEY) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['KIMI_API_KEY'],
-      message: 'KIMI_API_KEY is required when LLM_TEXT_BACKEND=kimi',
-    });
-  }
-  if (c.LLM_TEXT_BACKEND === 'deepseek' && !(c.DEEPSEEK_API_KEY ?? c.DEEP_SEEK_API_KEY)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['DEEPSEEK_API_KEY'],
-      message: 'DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY) is required when LLM_TEXT_BACKEND=deepseek',
-    });
-  }
-  if ((c.ACCESS_KEY_ID && !c.SECRET_ACCESS_KEY) || (!c.ACCESS_KEY_ID && c.SECRET_ACCESS_KEY)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['ACCESS_KEY_ID'],
-      message: 'ACCESS_KEY_ID and SECRET_ACCESS_KEY must be set together (or both unset for the default AWS credential chain)',
-    });
-  }
-  if ((c.MINIO_ACCESS_KEY && !c.MINIO_SECRET_KEY) || (!c.MINIO_ACCESS_KEY && c.MINIO_SECRET_KEY)) {
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['MINIO_ACCESS_KEY'],
-      message: 'MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set together (or both unset to disable object storage)',
-    });
-  }
-});
+      // ── Object storage (MinIO on the Pi's 1TB SSD) ─────────────────────────────
+      // Durable byte store behind capabilities that outgrow the local disk —
+      // today: workshop session files (the Pi workspace stays a bounded cache;
+      // the Discord carrier message remains the fallback copy). Self-hosted MinIO,
+      // S3 API bound to localhost, data under /srv/minio (moved off the 2 TB HDD
+      // 2026-08-10 so the file store no longer depends on the external disk).
+      // BOTH keys unset → storage disabled → pre-MinIO behavior (Discord-only).
+      MINIO_ENDPOINT: z.string().min(1).default("http://127.0.0.1:9500"),
+      // MinIO accepts any region string; the SDK requires one to sign requests.
+      MINIO_REGION: z.string().min(1).default("us-east-1"),
+      MINIO_BUCKET: z.string().min(1).default("chopperbot"),
+      // Scoped service account (bucket-rw policy only), NOT the MinIO root user.
+      MINIO_ACCESS_KEY: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      MINIO_SECRET_KEY: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+   })
+   .superRefine((c, ctx) => {
+      if (c.LLM_TEXT_BACKEND === "kimi" && !c.KIMI_API_KEY) {
+         ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["KIMI_API_KEY"],
+            message: "KIMI_API_KEY is required when LLM_TEXT_BACKEND=kimi",
+         });
+      }
+      if (
+         c.LLM_TEXT_BACKEND === "deepseek" &&
+         !(c.DEEPSEEK_API_KEY ?? c.DEEP_SEEK_API_KEY)
+      ) {
+         ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["DEEPSEEK_API_KEY"],
+            message:
+               "DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY) is required when LLM_TEXT_BACKEND=deepseek",
+         });
+      }
+      if (
+         (c.ACCESS_KEY_ID && !c.SECRET_ACCESS_KEY) ||
+         (!c.ACCESS_KEY_ID && c.SECRET_ACCESS_KEY)
+      ) {
+         ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["ACCESS_KEY_ID"],
+            message:
+               "ACCESS_KEY_ID and SECRET_ACCESS_KEY must be set together (or both unset for the default AWS credential chain)",
+         });
+      }
+      if (
+         (c.MINIO_ACCESS_KEY && !c.MINIO_SECRET_KEY) ||
+         (!c.MINIO_ACCESS_KEY && c.MINIO_SECRET_KEY)
+      ) {
+         ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            path: ["MINIO_ACCESS_KEY"],
+            message:
+               "MINIO_ACCESS_KEY and MINIO_SECRET_KEY must be set together (or both unset to disable object storage)",
+         });
+      }
+   });
 
 const parsed = ConfigSchema.safeParse(process.env);
 if (!parsed.success) {
-  // eslint-disable-next-line no-console
-  console.error('Invalid environment configuration:', parsed.error.flatten().fieldErrors);
-  process.exit(1);
+   // eslint-disable-next-line no-console
+   console.error(
+      "Invalid environment configuration:",
+      parsed.error.flatten().fieldErrors,
+   );
+   process.exit(1);
 }
 
 export const config = parsed.data;
@@ -399,57 +567,57 @@ export type Config = typeof config;
  * is what keeps the client construction lazy.
  */
 export interface TextBackend {
-  provider: 'kimi' | 'deepseek';
-  apiKey: string | undefined;
-  baseUrl: string;
-  /** The one text model. Every text tier runs on it; effort picks a mode. */
-  modelId: string;
-  /**
-   * Whether this provider honours DeepSeek's `thinking: {type}` switch, which
-   * is how the effort tier is expressed now (2026-08-13). Measured on
-   * v4-flash, 3 reps per variant (`scripts/probe-deepseek-thinking.ts`):
-   * `type:'disabled'` reliably yields **0 reasoning tokens, 95 output tokens,
-   * 1.34 s** vs **111 / 207 / 1.89 s** with thinking on — a ~2.2× cut in
-   * billed output tokens — while still tool-calling correctly 3/3.
-   *
-   * Its sibling `reasoning_effort` is NOT honoured on Flash and must not be
-   * sent: across the same reps `low` produced MORE reasoning than `high`, and
-   * a deliberately invalid value ("banana") returned 200 and landed mid-pack.
-   * An ignored knob that never errors is worse than no knob, so only the
-   * on/off switch is wired.
-   */
-  supportsThinkingSwitch: boolean;
-  /** Only the Kimi coding endpoint gates on this; DeepSeek ignores it. */
-  userAgent: string;
-  maxOutputTokens: number;
-  maxConcurrent: number;
+   provider: "kimi" | "deepseek";
+   apiKey: string | undefined;
+   baseUrl: string;
+   /** The one text model. Every text tier runs on it; effort picks a mode. */
+   modelId: string;
+   /**
+    * Whether this provider honours DeepSeek's `thinking: {type}` switch, which
+    * is how the effort tier is expressed now (2026-08-13). Measured on
+    * v4-flash, 3 reps per variant (`scripts/probe-deepseek-thinking.ts`):
+    * `type:'disabled'` reliably yields **0 reasoning tokens, 95 output tokens,
+    * 1.34 s** vs **111 / 207 / 1.89 s** with thinking on — a ~2.2× cut in
+    * billed output tokens — while still tool-calling correctly 3/3.
+    *
+    * Its sibling `reasoning_effort` is NOT honoured on Flash and must not be
+    * sent: across the same reps `low` produced MORE reasoning than `high`, and
+    * a deliberately invalid value ("banana") returned 200 and landed mid-pack.
+    * An ignored knob that never errors is worse than no knob, so only the
+    * on/off switch is wired.
+    */
+   supportsThinkingSwitch: boolean;
+   /** Only the Kimi coding endpoint gates on this; DeepSeek ignores it. */
+   userAgent: string;
+   maxOutputTokens: number;
+   maxConcurrent: number;
 }
 
 export const textBackend: TextBackend =
-  config.LLM_TEXT_BACKEND === 'deepseek'
-    ? {
-        provider: 'deepseek',
-        apiKey: config.DEEPSEEK_API_KEY ?? config.DEEP_SEEK_API_KEY,
-        baseUrl: config.DEEPSEEK_BASE_URL,
-        modelId: config.DEEPSEEK_MODEL_ID,
-        supportsThinkingSwitch: true,
-        userAgent: config.KIMI_USER_AGENT,
-        maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
-        maxConcurrent: config.KIMI_MAX_CONCURRENT,
-      }
-    : {
-        provider: 'kimi',
-        apiKey: config.KIMI_API_KEY,
-        baseUrl: config.KIMI_BASE_URL,
-        modelId: config.KIMI_MODEL_ID,
-        // Moonshot's endpoint is not known to accept `thinking`, and it 400s on
-        // unexpected params (it already does for `temperature`), so never send
-        // it there — the tier is a no-op on kimi, as it was before 2026-08-13.
-        supportsThinkingSwitch: false,
-        userAgent: config.KIMI_USER_AGENT,
-        maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
-        maxConcurrent: config.KIMI_MAX_CONCURRENT,
-      };
+   config.LLM_TEXT_BACKEND === "deepseek"
+      ? {
+           provider: "deepseek",
+           apiKey: config.DEEPSEEK_API_KEY ?? config.DEEP_SEEK_API_KEY,
+           baseUrl: config.DEEPSEEK_BASE_URL,
+           modelId: config.DEEPSEEK_MODEL_ID,
+           supportsThinkingSwitch: true,
+           userAgent: config.KIMI_USER_AGENT,
+           maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
+           maxConcurrent: config.KIMI_MAX_CONCURRENT,
+        }
+      : {
+           provider: "kimi",
+           apiKey: config.KIMI_API_KEY,
+           baseUrl: config.KIMI_BASE_URL,
+           modelId: config.KIMI_MODEL_ID,
+           // Moonshot's endpoint is not known to accept `thinking`, and it 400s on
+           // unexpected params (it already does for `temperature`), so never send
+           // it there — the tier is a no-op on kimi, as it was before 2026-08-13.
+           supportsThinkingSwitch: false,
+           userAgent: config.KIMI_USER_AGENT,
+           maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
+           maxConcurrent: config.KIMI_MAX_CONCURRENT,
+        };
 
 let cachedChannels: Set<string> | null = null;
 let cachedCapabilityMap: Map<string, string> | null = null;
@@ -463,9 +631,9 @@ let cachedCapabilityMap: Map<string, string> | null = null;
  *   3. DISCORD_CHANNEL_ID           (single legacy channel)
  */
 export function getAuthorizedChannelIds(): Set<string> {
-  if (cachedChannels) return cachedChannels;
-  cachedChannels = new Set(getChannelCapabilityMap().keys());
-  return cachedChannels;
+   if (cachedChannels) return cachedChannels;
+   cachedChannels = new Set(getChannelCapabilityMap().keys());
+   return cachedChannels;
 }
 
 /**
@@ -473,40 +641,40 @@ export function getAuthorizedChannelIds(): Set<string> {
  * `getAuthorizedChannelIds()` is a projection of this.
  */
 export function getChannelCapabilityMap(): Map<string, string> {
-  if (cachedCapabilityMap) return cachedCapabilityMap;
-  const map = new Map<string, string>();
-  const fallback = config.DEFAULT_CAPABILITY;
+   if (cachedCapabilityMap) return cachedCapabilityMap;
+   const map = new Map<string, string>();
+   const fallback = config.DEFAULT_CAPABILITY;
 
-  if (config.DISCORD_CHANNEL_CAPABILITIES) {
-    const raw = JSON.parse(config.DISCORD_CHANNEL_CAPABILITIES);
-    const validated = z.array(ChannelCapabilityConfigSchema).parse(raw);
-    for (const guild of validated) {
-      for (const ch of guild.channels) {
-        if (map.has(ch.id)) {
-          throw new Error(
-            `Channel "${ch.id}" appears more than once in DISCORD_CHANNEL_CAPABILITIES`,
-          );
-        }
-        map.set(ch.id, ch.capability);
+   if (config.DISCORD_CHANNEL_CAPABILITIES) {
+      const raw = JSON.parse(config.DISCORD_CHANNEL_CAPABILITIES);
+      const validated = z.array(ChannelCapabilityConfigSchema).parse(raw);
+      for (const guild of validated) {
+         for (const ch of guild.channels) {
+            if (map.has(ch.id)) {
+               throw new Error(
+                  `Channel "${ch.id}" appears more than once in DISCORD_CHANNEL_CAPABILITIES`,
+               );
+            }
+            map.set(ch.id, ch.capability);
+         }
       }
-    }
-  } else if (config.DISCORD_AUTHORIZED_CHANNELS) {
-    const parsed = JSON.parse(config.DISCORD_AUTHORIZED_CHANNELS);
-    const validated = z.array(GuildChannelConfigSchema).parse(parsed);
-    for (const guild of validated) {
-      for (const id of guild.channels) {
-        map.set(id, fallback);
+   } else if (config.DISCORD_AUTHORIZED_CHANNELS) {
+      const parsed = JSON.parse(config.DISCORD_AUTHORIZED_CHANNELS);
+      const validated = z.array(GuildChannelConfigSchema).parse(parsed);
+      for (const guild of validated) {
+         for (const id of guild.channels) {
+            map.set(id, fallback);
+         }
       }
-    }
-  } else if (config.DISCORD_CHANNEL_ID) {
-    map.set(config.DISCORD_CHANNEL_ID, fallback);
-  }
+   } else if (config.DISCORD_CHANNEL_ID) {
+      map.set(config.DISCORD_CHANNEL_ID, fallback);
+   }
 
-  cachedCapabilityMap = map;
-  return cachedCapabilityMap;
+   cachedCapabilityMap = map;
+   return cachedCapabilityMap;
 }
 
 export function _resetChannelCache(): void {
-  cachedChannels = null;
-  cachedCapabilityMap = null;
+   cachedChannels = null;
+   cachedCapabilityMap = null;
 }

@@ -1,8 +1,8 @@
-export const MINUTAS_CAPABILITY_ID = 'minutas';
+export const MINUTAS_CAPABILITY_ID = "minutas";
 
 /** Slash command names (Discord: lowercase, hyphens ok, 1–32 chars). */
-export const JOIN_COMMAND = 'chopperbot-join';
-export const LEAVE_COMMAND = 'chopperbot-leave';
+export const JOIN_COMMAND = "chopperbot-join";
+export const LEAVE_COMMAND = "chopperbot-leave";
 
 /** A burst closes after this much continuous silence from the speaker. */
 export const SILENCE_END_MS = 1500;
@@ -67,21 +67,21 @@ export const EMPTY_CHANNEL_GRACE_MS = 60_000;
 
 /** Per-session artifact layout (both on disk and under the MinIO prefix). */
 export const ARTIFACTS = {
-  sessionMeta: 'session.json',
-  chat: 'chat.jsonl',
-  bursts: 'bursts.jsonl',
-  transcript: 'transcript.jsonl',
-  draft: 'draft.md',
-  minutes: 'minuta.md',
-  /** Rendered full transcript. Archive-only — never attached to the Discord post. */
-  transcriptDoc: 'transcripcion.md',
-  /**
-   * Live-transcription ledger: one line per burst already transcribed during
-   * the meeting (file, speaker, timeline position, segments). Finalize treats
-   * it as the source of truth and only transcribes bursts missing from it —
-   * that is what makes mid-meeting transcription crash-safe.
-   */
-  liveLedger: 'transcripts-live.jsonl',
-  audioDir: 'audio',
-  whisperDir: 'transcript',
+   sessionMeta: "session.json",
+   chat: "chat.jsonl",
+   bursts: "bursts.jsonl",
+   transcript: "transcript.jsonl",
+   draft: "draft.md",
+   minutes: "minuta.md",
+   /** Rendered full transcript. Archive-only — never attached to the Discord post. */
+   transcriptDoc: "transcripcion.md",
+   /**
+    * Live-transcription ledger: one line per burst already transcribed during
+    * the meeting (file, speaker, timeline position, segments). Finalize treats
+    * it as the source of truth and only transcribes bursts missing from it —
+    * that is what makes mid-meeting transcription crash-safe.
+    */
+   liveLedger: "transcripts-live.jsonl",
+   audioDir: "audio",
+   whisperDir: "transcript",
 } as const;

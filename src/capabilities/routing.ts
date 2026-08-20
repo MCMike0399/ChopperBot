@@ -8,9 +8,9 @@
  * are added/removed from chat.
  */
 export interface CapabilityRouter {
-  resolve(channelId: string): string | null;
-  /** All channel ids known to the router (= the authorized set). */
-  allChannelIds(): Set<string>;
+   resolve(channelId: string): string | null;
+   /** All channel ids known to the router (= the authorized set). */
+   allChannelIds(): Set<string>;
 }
 
 /**
@@ -20,21 +20,23 @@ export interface CapabilityRouter {
  * as the parent {@link CapabilityRouter} instead.
  */
 export interface MutableCapabilityRouter extends CapabilityRouter {
-  setBinding(channelId: string, capabilityId: string): void;
-  /** Returns true if a binding was actually removed. */
-  removeBinding(channelId: string): boolean;
-  getAllBindings(): Map<string, string>;
+   setBinding(channelId: string, capabilityId: string): void;
+   /** Returns true if a binding was actually removed. */
+   removeBinding(channelId: string): boolean;
+   getAllBindings(): Map<string, string>;
 }
 
-export function buildRouter(channelToCapability: Map<string, string>): MutableCapabilityRouter {
-  const map = new Map(channelToCapability);
-  return {
-    resolve: (channelId: string) => map.get(channelId) ?? null,
-    allChannelIds: () => new Set(map.keys()),
-    setBinding: (channelId: string, capabilityId: string) => {
-      map.set(channelId, capabilityId);
-    },
-    removeBinding: (channelId: string) => map.delete(channelId),
-    getAllBindings: () => new Map(map),
-  };
+export function buildRouter(
+   channelToCapability: Map<string, string>,
+): MutableCapabilityRouter {
+   const map = new Map(channelToCapability);
+   return {
+      resolve: (channelId: string) => map.get(channelId) ?? null,
+      allChannelIds: () => new Set(map.keys()),
+      setBinding: (channelId: string, capabilityId: string) => {
+         map.set(channelId, capabilityId);
+      },
+      removeBinding: (channelId: string) => map.delete(channelId),
+      getAllBindings: () => new Map(map),
+   };
 }

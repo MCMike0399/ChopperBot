@@ -1,17 +1,17 @@
 import {
-  closeSync,
-  constants as fsConstants,
-  lstatSync,
-  mkdirSync,
-  openSync,
-  readdirSync,
-  statSync,
-  readFileSync,
-  writeFileSync,
-  existsSync,
-  unlinkSync,
-} from 'node:fs';
-import { join, resolve, sep, normalize, dirname } from 'node:path';
+   closeSync,
+   constants as fsConstants,
+   lstatSync,
+   mkdirSync,
+   openSync,
+   readdirSync,
+   statSync,
+   readFileSync,
+   writeFileSync,
+   existsSync,
+   unlinkSync,
+} from "node:fs";
+import { join, resolve, sep, normalize, dirname } from "node:path";
 
 /**
  * Per-session file workspace: `data/workshop/sessions/<channelId>/`.
@@ -34,22 +34,22 @@ import { join, resolve, sep, normalize, dirname } from 'node:path';
  */
 
 export interface WorkspaceFile {
-  /** Path relative to the workspace root, using forward slashes. */
-  path: string;
-  bytes: number;
-  modifiedAt: number;
+   /** Path relative to the workspace root, using forward slashes. */
+   path: string;
+   bytes: number;
+   modifiedAt: number;
 }
 
 /** Files/dirs never shown to the model nor sent to Discord. `.workshop` is
  * the per-run staging dir (wiped after each python run); `.docindex` holds the
  * document indexes (see docindex.ts) and persists between turns. */
-const HIDDEN_PREFIXES = ['.workshop', '.docindex'];
+const HIDDEN_PREFIXES = [".workshop", ".docindex"];
 
 export class PathEscapeError extends Error {
-  constructor(requested: string) {
-    super(`Path escapes the session workspace: ${requested}`);
-    this.name = 'PathEscapeError';
-  }
+   constructor(requested: string) {
+      super(`Path escapes the session workspace: ${requested}`);
+      this.name = "PathEscapeError";
+   }
 }
 
 /**
@@ -58,15 +58,15 @@ export class PathEscapeError extends Error {
  * unit-tested directly.
  */
 export function safeJoin(root: string, requested: string): string {
-  if (requested.includes('\0')) throw new PathEscapeError(requested);
-  const cleaned = requested.trim().replace(/^[/\\]+/, '');
-  if (cleaned.length === 0) throw new PathEscapeError(requested);
-  const abs = resolve(root, normalize(cleaned));
-  const rootAbs = resolve(root);
-  if (abs !== rootAbs && !abs.startsWith(rootAbs + sep)) {
-    throw new PathEscapeError(requested);
-  }
-  return abs;
+   if (requested.includes("\0")) throw new PathEscapeError(requested);
+   const cleaned = requested.trim().replace(/^[/\\]+/, "");
+   if (cleaned.length === 0) throw new PathEscapeError(requested);
+   const abs = resolve(root, normalize(cleaned));
+   const rootAbs = resolve(root);
+   if (abs !== rootAbs && !abs.startsWith(rootAbs + sep)) {
+      throw new PathEscapeError(requested);
+   }
+   return abs;
 }
 
 /**
@@ -82,21 +82,25 @@ export function safeJoin(root: string, requested: string): string {
  * A component that does not exist yet ends the walk: nothing below it can exist
  * either, and creating it is what `writeText` is for.
  */
-export function assertNoSymlink(root: string, abs: string, requested = abs): void {
-  const rootAbs = resolve(root);
-  if (abs === rootAbs) return;
-  const parts = abs.slice(rootAbs.length).split(sep).filter(Boolean);
-  let cursor = rootAbs;
-  for (const part of parts) {
-    cursor = join(cursor, part);
-    let st;
-    try {
-      st = lstatSync(cursor);
-    } catch {
-      return; // not there (yet) — nothing to follow
-    }
-    if (st.isSymbolicLink()) throw new PathEscapeError(requested);
-  }
+export function assertNoSymlink(
+   root: string,
+   abs: string,
+   requested = abs,
+): void {
+   const rootAbs = resolve(root);
+   if (abs === rootAbs) return;
+   const parts = abs.slice(rootAbs.length).split(sep).filter(Boolean);
+   let cursor = rootAbs;
+   for (const part of parts) {
+      cursor = join(cursor, part);
+      let st;
+      try {
+         st = lstatSync(cursor);
+      } catch {
+         return; // not there (yet) — nothing to follow
+      }
+      if (st.isSymbolicLink()) throw new PathEscapeError(requested);
+   }
 }
 
 /**
@@ -105,9 +109,9 @@ export function assertNoSymlink(root: string, abs: string, requested = abs): voi
  * this — use it instead of `safeJoin` anywhere a path is about to be opened.
  */
 export function resolveInside(root: string, requested: string): string {
-  const abs = safeJoin(root, requested);
-  assertNoSymlink(root, abs, requested);
-  return abs;
+   const abs = safeJoin(root, requested);
+   assertNoSymlink(root, abs, requested);
+   return abs;
 }
 
 /** `O_NOFOLLOW` where the platform has it (POSIX); 0 elsewhere. */
@@ -120,115 +124,140 @@ const O_NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
  * can be made one. `ELOOP` (the final component is a symlink) surfaces as the
  * same {@link PathEscapeError} as every other escape.
  */
-function withNoFollowFd<T>(abs: string, flags: number, requested: string, body: (fd: number) => T): T {
-  let fd: number;
-  try {
-    fd = openSync(abs, flags | O_NOFOLLOW);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ELOOP') throw new PathEscapeError(requested);
-    throw err;
-  }
-  try {
-    return body(fd);
-  } finally {
-    closeSync(fd);
-  }
+function withNoFollowFd<T>(
+   abs: string,
+   flags: number,
+   requested: string,
+   body: (fd: number) => T,
+): T {
+   let fd: number;
+   try {
+      fd = openSync(abs, flags | O_NOFOLLOW);
+   } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ELOOP")
+         throw new PathEscapeError(requested);
+      throw err;
+   }
+   try {
+      return body(fd);
+   } finally {
+      closeSync(fd);
+   }
 }
 
 export class SessionWorkspace {
-  constructor(readonly root: string) {}
+   constructor(readonly root: string) {}
 
-  ensure(): void {
-    mkdirSync(this.root, { recursive: true });
-  }
+   ensure(): void {
+      mkdirSync(this.root, { recursive: true });
+   }
 
-  /**
-   * Absolute path for a workspace-relative path, guarded against BOTH `..`
-   * traversal and symlink escapes. Throws {@link PathEscapeError} either way —
-   * callers outside this class (docindex, the file tools) get the same boundary.
-   */
-  absolute(relPath: string): string {
-    return resolveInside(this.root, relPath);
-  }
+   /**
+    * Absolute path for a workspace-relative path, guarded against BOTH `..`
+    * traversal and symlink escapes. Throws {@link PathEscapeError} either way —
+    * callers outside this class (docindex, the file tools) get the same boundary.
+    */
+   absolute(relPath: string): string {
+      return resolveInside(this.root, relPath);
+   }
 
-  exists(relPath: string): boolean {
-    return existsSync(this.absolute(relPath));
-  }
+   exists(relPath: string): boolean {
+      return existsSync(this.absolute(relPath));
+   }
 
-  writeText(relPath: string, content: string): void {
-    this.write(relPath, content, 'utf-8');
-  }
+   writeText(relPath: string, content: string): void {
+      this.write(relPath, content, "utf-8");
+   }
 
-  writeBytes(relPath: string, bytes: Uint8Array): void {
-    this.write(relPath, bytes);
-  }
+   writeBytes(relPath: string, bytes: Uint8Array): void {
+      this.write(relPath, bytes);
+   }
 
-  /** Create-or-truncate write that never follows a symlink (see the file header). */
-  private write(relPath: string, data: string | Uint8Array, encoding?: BufferEncoding): void {
-    const abs = this.absolute(relPath);
-    mkdirSync(dirname(abs), { recursive: true });
-    const flags = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC;
-    withNoFollowFd(abs, flags, relPath, (fd) => {
-      if (typeof data === 'string') writeFileSync(fd, data, encoding ?? 'utf-8');
-      else writeFileSync(fd, data);
-    });
-  }
+   /** Create-or-truncate write that never follows a symlink (see the file header). */
+   private write(
+      relPath: string,
+      data: string | Uint8Array,
+      encoding?: BufferEncoding,
+   ): void {
+      const abs = this.absolute(relPath);
+      mkdirSync(dirname(abs), { recursive: true });
+      const flags =
+         fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC;
+      withNoFollowFd(abs, flags, relPath, (fd) => {
+         if (typeof data === "string")
+            writeFileSync(fd, data, encoding ?? "utf-8");
+         else writeFileSync(fd, data);
+      });
+   }
 
-  readText(relPath: string, maxBytes: number): { content: string; truncated: boolean; bytes: number } {
-    const buf = Buffer.from(this.readBytes(relPath));
-    const slice = buf.subarray(0, maxBytes);
-    return { content: slice.toString('utf-8'), truncated: buf.length > maxBytes, bytes: buf.length };
-  }
+   readText(
+      relPath: string,
+      maxBytes: number,
+   ): { content: string; truncated: boolean; bytes: number } {
+      const buf = Buffer.from(this.readBytes(relPath));
+      const slice = buf.subarray(0, maxBytes);
+      return {
+         content: slice.toString("utf-8"),
+         truncated: buf.length > maxBytes,
+         bytes: buf.length,
+      };
+   }
 
-  /** Raw bytes of a workspace file (binary-safe — for storage uploads). */
-  readBytes(relPath: string): Uint8Array {
-    const abs = this.absolute(relPath);
-    return withNoFollowFd(abs, fsConstants.O_RDONLY, relPath, (fd) => readFileSync(fd));
-  }
+   /** Raw bytes of a workspace file (binary-safe — for storage uploads). */
+   readBytes(relPath: string): Uint8Array {
+      const abs = this.absolute(relPath);
+      return withNoFollowFd(abs, fsConstants.O_RDONLY, relPath, (fd) =>
+         readFileSync(fd),
+      );
+   }
 
-  stat(relPath: string): { bytes: number } {
-    // lstat, not stat: `absolute()` already refused a symlink, and lstat can't
-    // be talked into reporting the size of something outside the workspace.
-    return { bytes: lstatSync(this.absolute(relPath)).size };
-  }
+   stat(relPath: string): { bytes: number } {
+      // lstat, not stat: `absolute()` already refused a symlink, and lstat can't
+      // be talked into reporting the size of something outside the workspace.
+      return { bytes: lstatSync(this.absolute(relPath)).size };
+   }
 
-  /** Delete one local file (the durable copy may live on Discord). */
-  remove(relPath: string): void {
-    unlinkSync(this.absolute(relPath));
-  }
+   /** Delete one local file (the durable copy may live on Discord). */
+   remove(relPath: string): void {
+      unlinkSync(this.absolute(relPath));
+   }
 
-  /** Recursive listing (visible files only), sorted by path. */
-  list(): WorkspaceFile[] {
-    if (!existsSync(this.root)) return [];
-    const out: WorkspaceFile[] = [];
-    const walk = (dir: string, prefix: string): void => {
-      for (const entry of readdirSync(dir, { withFileTypes: true })) {
-        const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
-        if (HIDDEN_PREFIXES.some((h) => rel === h || rel.startsWith(`${h}/`))) continue;
-        const abs = join(dir, entry.name);
-        if (entry.isDirectory()) {
-          walk(abs, rel);
-        } else if (entry.isFile()) {
-          const st = statSync(abs);
-          out.push({ path: rel, bytes: st.size, modifiedAt: st.mtimeMs });
-        }
-      }
-    };
-    walk(this.root, '');
-    return out.sort((a, b) => a.path.localeCompare(b.path));
-  }
+   /** Recursive listing (visible files only), sorted by path. */
+   list(): WorkspaceFile[] {
+      if (!existsSync(this.root)) return [];
+      const out: WorkspaceFile[] = [];
+      const walk = (dir: string, prefix: string): void => {
+         for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+            if (
+               HIDDEN_PREFIXES.some((h) => rel === h || rel.startsWith(`${h}/`))
+            )
+               continue;
+            const abs = join(dir, entry.name);
+            if (entry.isDirectory()) {
+               walk(abs, rel);
+            } else if (entry.isFile()) {
+               const st = statSync(abs);
+               out.push({ path: rel, bytes: st.size, modifiedAt: st.mtimeMs });
+            }
+         }
+      };
+      walk(this.root, "");
+      return out.sort((a, b) => a.path.localeCompare(b.path));
+   }
 
-  /** Total bytes of visible files (for status/limits). */
-  totalBytes(): number {
-    return this.list().reduce((acc, f) => acc + f.bytes, 0);
-  }
+   /** Total bytes of visible files (for status/limits). */
+   totalBytes(): number {
+      return this.list().reduce((acc, f) => acc + f.bytes, 0);
+   }
 }
 
 /** Workspace root for one session channel. */
 export function workspaceDirFor(dataDir: string, channelId: string): string {
-  // channelId is a snowflake (digits only) — safe as a path segment; guard anyway.
-  if (!/^\d{5,25}$/.test(channelId)) throw new Error(`Invalid channel id: ${channelId}`);
-  return join(dataDir, 'workshop', 'sessions', channelId);
+   // channelId is a snowflake (digits only) — safe as a path segment; guard anyway.
+   if (!/^\d{5,25}$/.test(channelId))
+      throw new Error(`Invalid channel id: ${channelId}`);
+   return join(dataDir, "workshop", "sessions", channelId);
 }
 
 /**
@@ -237,19 +266,19 @@ export function workspaceDirFor(dataDir: string, channelId: string): string {
  * deliberately excluded — only files a member would want to download.
  */
 const DELIVERABLE_EXTS = new Set([
-  '.xlsx',
-  '.docx',
-  '.pptx',
-  '.pdf',
-  '.png',
-  '.jpg',
-  '.jpeg',
-  '.gif',
-  '.svg',
-  '.csv',
-  '.zip',
-  '.mp3',
-  '.wav',
+   ".xlsx",
+   ".docx",
+   ".pptx",
+   ".pdf",
+   ".png",
+   ".jpg",
+   ".jpeg",
+   ".gif",
+   ".svg",
+   ".csv",
+   ".zip",
+   ".mp3",
+   ".wav",
 ]);
 
 /**
@@ -257,9 +286,9 @@ const DELIVERABLE_EXTS = new Set([
  * (`uploads/…`) never qualify — they came FROM the user.
  */
 export function isDeliverablePath(relPath: string): boolean {
-  if (relPath.startsWith('uploads/')) return false;
-  const ext = /\.[a-z0-9]{1,10}$/i.exec(relPath)?.[0]?.toLowerCase();
-  return ext !== undefined && DELIVERABLE_EXTS.has(ext);
+   if (relPath.startsWith("uploads/")) return false;
+   const ext = /\.[a-z0-9]{1,10}$/i.exec(relPath)?.[0]?.toLowerCase();
+   return ext !== undefined && DELIVERABLE_EXTS.has(ext);
 }
 
 /**
@@ -271,14 +300,14 @@ export function isDeliverablePath(relPath: string): boolean {
  * the model couldn't tell. The watcher sends whatever this returns.
  */
 export function listUndeliveredDeliverables(
-  before: Map<string, number>,
-  after: WorkspaceFile[],
-  skip: ReadonlySet<string>,
+   before: Map<string, number>,
+   after: WorkspaceFile[],
+   skip: ReadonlySet<string>,
 ): WorkspaceFile[] {
-  return after.filter(
-    (f) =>
-      isDeliverablePath(f.path) &&
-      before.get(f.path) !== f.modifiedAt && // created or rewritten this turn
-      !skip.has(f.path),
-  );
+   return after.filter(
+      (f) =>
+         isDeliverablePath(f.path) &&
+         before.get(f.path) !== f.modifiedAt && // created or rewritten this turn
+         !skip.has(f.path),
+   );
 }

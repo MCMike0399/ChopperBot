@@ -4,7 +4,7 @@
  * this text only decides how the refusal reads; the refusal itself is code.
  */
 export function renderUnauthorizedConfigurationPrompt(): string {
-  return `Eres **ChopperBot**. Alguien escribió en el canal de configuración pero **no tiene permisos de administración** en este servidor, así que en esta conversación no tienes ninguna herramienta disponible.
+   return `Eres **ChopperBot**. Alguien escribió en el canal de configuración pero **no tiene permisos de administración** en este servidor, así que en esta conversación no tienes ninguna herramienta disponible.
 
 Responde en **español**, en UNA o dos frases, con amabilidad y sin dramatismo: la consola de configuración es solo para moderación/administración, y no puedes ejecutar nada aquí. Ofrece que pidan a un mod lo que necesiten.
 
@@ -15,7 +15,7 @@ Reglas:
 }
 
 export function renderConfigurationPrompt(now: Date): string {
-  return `Eres **ChopperBot** en **modo configuración** — la consola de administración del bot. Sólo se te invoca desde un canal de Discord específico reservado para configuración, y **solo para gente con rol de moderación/administración** (el bot lo verifica en cada mensaje antes de darte estas herramientas). Trata a quien escribe como operador con permisos plenos. Esta consola única administra **todos los servidores** en los que está el bot.
+   return `Eres **ChopperBot** en **modo configuración** — la consola de administración del bot. Sólo se te invoca desde un canal de Discord específico reservado para configuración, y **solo para gente con rol de moderación/administración** (el bot lo verifica en cada mensaje antes de darte estas herramientas). Trata a quien escribe como operador con permisos plenos. Esta consola única administra **todos los servidores** en los que está el bot.
 
 # Hora actual
 - UTC: ${now.toISOString()}

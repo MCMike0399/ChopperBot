@@ -1,41 +1,61 @@
 import {
-  PermissionFlagsBits,
-  type Client,
-  type GuildMember,
-  type Message,
-  type OmitPartialGroupDMChannel,
-} from 'discord.js';
-import { log } from '../../log.js';
-import { ask } from '../../llm/client.js';
-import { reportSpanishStyle } from '../../lang/report.js';
-import { EVENT_INTAKE_CAPABILITY_ID } from './constants.js';
-import { buildHistory, normalizeTurns, type Turn } from '../../discord/history.js';
-import { chunkBotReply } from '../../discord/chunk.js';
-import { stripBotMention } from '../../discord/handlers.js';
-import { composeToolSources, type ToolSource } from '../../tools/source.js';
-import { CalendarStore } from '../calendar/store.js';
-import { CalendarToolSource } from '../calendar/source.js';
-import type { CalendarPublisher } from '../calendar/publisher.js';
-import { createEventSyncer, type DiscordEventSyncer } from '../calendar/discord-events.js';
-import { formatInTimezone } from '../calendar/time.js';
-import { listImageAttachments } from '../../attachments/resolver.js';
-import { EventIntakeStore } from './store.js';
-import { isEventForm, parseTicketForm, extractRequesterId, type ParsedForm } from './parse.js';
+   PermissionFlagsBits,
+   type Client,
+   type GuildMember,
+   type Message,
+   type OmitPartialGroupDMChannel,
+} from "discord.js";
+import { log } from "../../log.js";
+import { ask } from "../../llm/client.js";
+import { reportSpanishStyle } from "../../lang/report.js";
+import { EVENT_INTAKE_CAPABILITY_ID } from "./constants.js";
 import {
-  appendModPing,
-  EMPTY_MOD_MENTIONS,
-  isModByRole,
-  mentionedRoleIds,
-  resolveModMentions,
-  sanitizeRoleMentions,
-  shouldNotifyRoles,
-  type ModMentions,
-} from '../../discord/mod-roles.js';
-import { renderProposalPrompt, renderTicketConversationPrompt, renderAgitpropConversationPrompt } from './preamble.js';
-import { FlyerToolSource } from './flyer-tools.js';
-import { FlyerService } from './flyer-service.js';
-import { isFlyerOperator, resolveAgitpropMentions, resolveAgitpropMentionsInGuild } from './roles.js';
-import type { TextChannel } from 'discord.js';
+   buildHistory,
+   normalizeTurns,
+   type Turn,
+} from "../../discord/history.js";
+import { chunkBotReply } from "../../discord/chunk.js";
+import { stripBotMention } from "../../discord/handlers.js";
+import { composeToolSources, type ToolSource } from "../../tools/source.js";
+import { CalendarStore } from "../calendar/store.js";
+import { CalendarToolSource } from "../calendar/source.js";
+import type { CalendarPublisher } from "../calendar/publisher.js";
+import {
+   createEventSyncer,
+   type DiscordEventSyncer,
+} from "../calendar/discord-events.js";
+import { formatInTimezone } from "../calendar/time.js";
+import { listImageAttachments } from "../../attachments/resolver.js";
+import { EventIntakeStore } from "./store.js";
+import {
+   isEventForm,
+   parseTicketForm,
+   extractRequesterId,
+   type ParsedForm,
+} from "./parse.js";
+import {
+   appendModPing,
+   EMPTY_MOD_MENTIONS,
+   isModByRole,
+   mentionedRoleIds,
+   resolveModMentions,
+   sanitizeRoleMentions,
+   shouldNotifyRoles,
+   type ModMentions,
+} from "../../discord/mod-roles.js";
+import {
+   renderProposalPrompt,
+   renderTicketConversationPrompt,
+   renderAgitpropConversationPrompt,
+} from "./preamble.js";
+import { FlyerToolSource } from "./flyer-tools.js";
+import { FlyerService } from "./flyer-service.js";
+import {
+   isFlyerOperator,
+   resolveAgitpropMentions,
+   resolveAgitpropMentionsInGuild,
+} from "./roles.js";
+import type { TextChannel } from "discord.js";
 
 /** The Message shape the MessageCreate gateway event actually delivers. */
 type GatewayMessage = OmitPartialGroupDMChannel<Message>;
@@ -46,14 +66,14 @@ type GatewayMessage = OmitPartialGroupDMChannel<Message>;
  * @everyone/@here — omitting them from `parse` is what blocks them.
  */
 function mentionPolicy(roleIds: readonly string[], repliedUser: boolean) {
-  return { parse: ['users' as const], roles: [...roleIds], repliedUser };
+   return { parse: ["users" as const], roles: [...roleIds], repliedUser };
 }
 
 /** Read-only calendar tools every ticket participant gets (conflict checks). */
 const READ_TOOLS = [
-  'calendar_search_events',
-  'calendar_list_upcoming',
-  'calendar_get_event',
+   "calendar_search_events",
+   "calendar_list_upcoming",
+   "calendar_get_event",
 ] as const;
 
 /**
@@ -83,28 +103,28 @@ const FORM_SCAN_MAX_PAGES = 5;
  * the calendar's own safety rule: confirm the exact event once before deleting.
  */
 const MOD_TOOLS = [
-  'calendar_create_event',
-  'calendar_update_event',
-  'calendar_delete_event',
-  'calendar_sync_discord_event',
-  'calendar_set_session_theme',
-  'calendar_publish',
+   "calendar_create_event",
+   "calendar_update_event",
+   "calendar_delete_event",
+   "calendar_sync_discord_event",
+   "calendar_set_session_theme",
+   "calendar_publish",
 ] as const;
 
 export interface EventIntakeWatcherDeps {
-  store: EventIntakeStore;
-  calendarStore: CalendarStore;
-  client: Client;
-  botUserId: string;
-  ticketBotId: string;
-  getModRoles: () => string[];
-  getAgitpropChannelId: () => string | null;
-  getAgitpropRoles: () => string[];
-  /** Present at runtime so an approved create auto-publishes the PDF/ICS. */
-  publisher?: CalendarPublisher;
-  /** Test seam: overrides the real syncer factory ({@link makeSyncer}). */
-  makeEventSyncer?: (message: Message) => DiscordEventSyncer | undefined;
-  now?: () => number;
+   store: EventIntakeStore;
+   calendarStore: CalendarStore;
+   client: Client;
+   botUserId: string;
+   ticketBotId: string;
+   getModRoles: () => string[];
+   getAgitpropChannelId: () => string | null;
+   getAgitpropRoles: () => string[];
+   /** Present at runtime so an approved create auto-publishes the PDF/ICS. */
+   publisher?: CalendarPublisher;
+   /** Test seam: overrides the real syncer factory ({@link makeSyncer}). */
+   makeEventSyncer?: (message: Message) => DiscordEventSyncer | undefined;
+   now?: () => number;
 }
 
 /**
@@ -115,827 +135,1042 @@ export interface EventIntakeWatcherDeps {
  *     calendar WRITE tool included only when that author is a moderator.
  */
 export class EventIntakeWatcher {
-  private readonly now: () => number;
-  private readonly flyerService: FlyerService;
-  /** Last time we actually NOTIFIED the approver roles, per ticket channel. */
-  private readonly lastModPingAt = new Map<string, number>();
-  /** Guilds we already warned about unpingable approver roles (log once). */
-  private readonly warnedUnpingable = new Set<string>();
+   private readonly now: () => number;
+   private readonly flyerService: FlyerService;
+   /** Last time we actually NOTIFIED the approver roles, per ticket channel. */
+   private readonly lastModPingAt = new Map<string, number>();
+   /** Guilds we already warned about unpingable approver roles (log once). */
+   private readonly warnedUnpingable = new Set<string>();
 
-  constructor(private readonly deps: EventIntakeWatcherDeps) {
-    this.now = deps.now ?? (() => Date.now());
-    this.flyerService = new FlyerService({
-      client: deps.client,
-      store: deps.store,
-      calendarStore: deps.calendarStore,
-      getAgitpropChannelId: deps.getAgitpropChannelId,
-      resolveAgitpropMentions: (ch) => this.resolveAgitpropMentionsForChannel(ch),
-      makeSyncer: (guildId) =>
-        createEventSyncer({
-          client: deps.client,
-          guildId,
-          store: deps.calendarStore,
-          now: this.now,
-          formatLocal: formatInTimezone,
-        }),
-      now: this.now,
-    });
-  }
+   constructor(private readonly deps: EventIntakeWatcherDeps) {
+      this.now = deps.now ?? (() => Date.now());
+      this.flyerService = new FlyerService({
+         client: deps.client,
+         store: deps.store,
+         calendarStore: deps.calendarStore,
+         getAgitpropChannelId: deps.getAgitpropChannelId,
+         resolveAgitpropMentions: (ch) =>
+            this.resolveAgitpropMentionsForChannel(ch),
+         makeSyncer: (guildId) =>
+            createEventSyncer({
+               client: deps.client,
+               guildId,
+               store: deps.calendarStore,
+               now: this.now,
+               formatLocal: formatInTimezone,
+            }),
+         now: this.now,
+      });
+   }
 
-  /** Whether this message is in the configured Agitprop inbox channel. */
-  isAgitpropChannel(channelId: string): boolean {
-    const id = this.deps.getAgitpropChannelId();
-    return id !== null && id === channelId;
-  }
+   /** Whether this message is in the configured Agitprop inbox channel. */
+   isAgitpropChannel(channelId: string): boolean {
+      const id = this.deps.getAgitpropChannelId();
+      return id !== null && id === channelId;
+   }
 
-  /** Entry point wired to Events.MessageCreate for watched ticket categories. */
-  async handleMessage(message: GatewayMessage): Promise<void> {
-    try {
-      const authorId = message.author?.id ?? null;
-      if (authorId === this.deps.botUserId) return; // never react to our own posts
+   /** Entry point wired to Events.MessageCreate for watched ticket categories. */
+   async handleMessage(message: GatewayMessage): Promise<void> {
+      try {
+         const authorId = message.author?.id ?? null;
+         if (authorId === this.deps.botUserId) return; // never react to our own posts
 
-      if (this.isAgitpropChannel(message.channelId)) {
-        await this.handleAgitpropMessage(message);
-        return;
+         if (this.isAgitpropChannel(message.channelId)) {
+            await this.handleAgitpropMessage(message);
+            return;
+         }
+
+         const msgLike = toMessageLike(message);
+
+         if (isEventForm(msgLike, this.deps.ticketBotId)) {
+            await this.handleForm(message);
+            return;
+         }
+
+         // Anything else only matters if a human is talking TO the bot — or
+         // delivering a flyer image in the ticket (no @ needed when a job is open).
+         if (message.author?.bot) return;
+
+         if (await this.tryFulfillFlyerFromTicketImage(message)) return;
+
+         if (!this.addressesBot(message)) return;
+
+         await this.handleConversation(message);
+      } catch (err) {
+         log.error(
+            { err, channelId: message.channelId },
+            "event_intake.watcher.error",
+         );
+      }
+   }
+
+   // ── Form → proposal ─────────────────────────────────────────────────────
+
+   private async handleForm(message: GatewayMessage): Promise<void> {
+      // Dedup: one proposal per ticket, survives restarts.
+      if (this.deps.store.getTicket(message.channelId)) {
+         log.info(
+            { channelId: message.channelId },
+            "event_intake.form.already_proposed",
+         );
+         return;
+      }
+      if (!this.canPost(message)) {
+         log.warn(
+            { channelId: message.channelId, guildId: message.guildId },
+            "event_intake.cannot_send",
+         );
+         return;
       }
 
-      const msgLike = toMessageLike(message);
+      const parsed = parseTicketForm(toMessageLike(message));
+      if (!parsed) return;
+      const requesterId = extractRequesterId(message.content ?? "", [
+         this.deps.ticketBotId,
+         this.deps.botUserId,
+      ]);
 
-      if (isEventForm(msgLike, this.deps.ticketBotId)) {
-        await this.handleForm(message);
-        return;
+      const mentions = await this.resolveMentions(message);
+
+      await message.channel.sendTyping().catch(() => {});
+      const system = renderProposalPrompt(
+         new Date(this.now()),
+         parsed,
+         requesterId,
+      );
+      // Read-only bundle: the proposal must never create anything.
+      const tools = composeToolSources([
+         this.calendarSource(message, { write: false }),
+      ]);
+      const proposal = await ask({
+         system,
+         messages: [
+            {
+               role: "user",
+               content: "Genera la propuesta para esta solicitud.",
+            },
+         ],
+         tools,
+         // High tier: this proposal is what a mod approves into a real calendar
+         // event, so a mis-read date/time propagates straight into the calendar.
+         effort: "high",
+      });
+
+      reportSpanishStyle(proposal, {
+         capability: EVENT_INTAKE_CAPABILITY_ID,
+         channelId: message.channelId,
+         toolNames: tools.tools.map((t) => t.name),
+      });
+      // The proposal is THE message mods must not miss, so the ping is appended
+      // deterministically rather than left to the model.
+      const body = appendModPing(
+         sanitizeRoleMentions(proposal, mentions.notifyIds),
+         mentions,
+      );
+      const posted = await this.post(message, body, mentions.notifyIds);
+      if (posted && mentions.notifyIds.length > 0) {
+         this.lastModPingAt.set(message.channelId, this.now());
       }
+      this.deps.store.recordProposal({
+         channelId: message.channelId,
+         guildId: message.guildId,
+         requesterId,
+         parsedForm: parsed,
+         resolvedStartAt: null,
+         proposalMessageId: posted?.id ?? null,
+      });
+      log.info(
+         {
+            channelId: message.channelId,
+            requesterId,
+            title: parsed.title,
+            modRolesPinged: mentions.notifyIds.length,
+            modRolesSilent: mentions.silent.length,
+         },
+         "event_intake.proposal.posted",
+      );
 
-      // Anything else only matters if a human is talking TO the bot — or
-      // delivering a flyer image in the ticket (no @ needed when a job is open).
+      // When the requester won't make the flyer, open the Agitprop job immediately.
+      // A false result already posted an `open_failed` ticket notice (no card, status stays none).
+      if (parsed.flyerSelf === false && message.guildId) {
+         const opened = await this.flyerService.openFlyerJob({
+            ticketChannelId: message.channelId,
+            guildId: message.guildId,
+            parsed,
+            requesterId,
+         });
+         if (!opened) {
+            log.warn(
+               { channelId: message.channelId },
+               "event_intake.flyer.auto_open_failed",
+            );
+         }
+      }
+   }
+
+   // ── Agitprop channel ──────────────────────────────────────────────────────
+
+   private async handleAgitpropMessage(message: GatewayMessage): Promise<void> {
       if (message.author?.bot) return;
 
-      if (await this.tryFulfillFlyerFromTicketImage(message)) return;
+      // Image reply to a request card — fulfill without @ mention.
+      if (await this.tryFulfillFlyerFromAgitpropReply(message)) return;
 
       if (!this.addressesBot(message)) return;
-
-      await this.handleConversation(message);
-    } catch (err) {
-      log.error({ err, channelId: message.channelId }, 'event_intake.watcher.error');
-    }
-  }
-
-  // ── Form → proposal ─────────────────────────────────────────────────────
-
-  private async handleForm(message: GatewayMessage): Promise<void> {
-    // Dedup: one proposal per ticket, survives restarts.
-    if (this.deps.store.getTicket(message.channelId)) {
-      log.info({ channelId: message.channelId }, 'event_intake.form.already_proposed');
-      return;
-    }
-    if (!this.canPost(message)) {
-      log.warn({ channelId: message.channelId, guildId: message.guildId }, 'event_intake.cannot_send');
-      return;
-    }
-
-    const parsed = parseTicketForm(toMessageLike(message));
-    if (!parsed) return;
-    const requesterId = extractRequesterId(message.content ?? '', [
-      this.deps.ticketBotId,
-      this.deps.botUserId,
-    ]);
-
-    const mentions = await this.resolveMentions(message);
-
-    await message.channel.sendTyping().catch(() => {});
-    const system = renderProposalPrompt(new Date(this.now()), parsed, requesterId);
-    // Read-only bundle: the proposal must never create anything.
-    const tools = composeToolSources([this.calendarSource(message, { write: false })]);
-    const proposal = await ask({
-      system,
-      messages: [{ role: 'user', content: 'Genera la propuesta para esta solicitud.' }],
-      tools,
-      // High tier: this proposal is what a mod approves into a real calendar
-      // event, so a mis-read date/time propagates straight into the calendar.
-      effort: 'high',
-    });
-
-    reportSpanishStyle(proposal, {
-      capability: EVENT_INTAKE_CAPABILITY_ID,
-      channelId: message.channelId,
-      toolNames: tools.tools.map((t) => t.name),
-    });
-    // The proposal is THE message mods must not miss, so the ping is appended
-    // deterministically rather than left to the model.
-    const body = appendModPing(sanitizeRoleMentions(proposal, mentions.notifyIds), mentions);
-    const posted = await this.post(message, body, mentions.notifyIds);
-    if (posted && mentions.notifyIds.length > 0) {
-      this.lastModPingAt.set(message.channelId, this.now());
-    }
-    this.deps.store.recordProposal({
-      channelId: message.channelId,
-      guildId: message.guildId,
-      requesterId,
-      parsedForm: parsed,
-      resolvedStartAt: null,
-      proposalMessageId: posted?.id ?? null,
-    });
-    log.info(
-      {
-        channelId: message.channelId,
-        requesterId,
-        title: parsed.title,
-        modRolesPinged: mentions.notifyIds.length,
-        modRolesSilent: mentions.silent.length,
-      },
-      'event_intake.proposal.posted',
-    );
-
-    // When the requester won't make the flyer, open the Agitprop job immediately.
-    // A false result already posted an `open_failed` ticket notice (no card, status stays none).
-    if (parsed.flyerSelf === false && message.guildId) {
-      const opened = await this.flyerService.openFlyerJob({
-        ticketChannelId: message.channelId,
-        guildId: message.guildId,
-        parsed,
-        requesterId,
-      });
-      if (!opened) {
-        log.warn({ channelId: message.channelId }, 'event_intake.flyer.auto_open_failed');
+      if (
+         !(await isFlyerOperator(
+            message,
+            this.deps.getModRoles(),
+            this.deps.getAgitpropRoles(),
+         ))
+      ) {
+         return;
       }
-    }
-  }
 
-  // ── Agitprop channel ──────────────────────────────────────────────────────
+      const ticket = await this.resolveAgitpropTicketContext(message);
+      if (!ticket) return;
 
-  private async handleAgitpropMessage(message: GatewayMessage): Promise<void> {
-    if (message.author?.bot) return;
+      const parsed = EventIntakeStore.parseForm(ticket);
+      if (!parsed) return;
 
-    // Image reply to a request card — fulfill without @ mention.
-    if (await this.tryFulfillFlyerFromAgitpropReply(message)) return;
+      const userText = stripBotMention(
+         this.deps.client,
+         message.content ?? "",
+      ).trim();
+      if (!userText) return;
 
-    if (!this.addressesBot(message)) return;
-    if (!(await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()))) {
-      return;
-    }
+      const isMod = await this.isModerator(message);
+      await message.channel.sendTyping().catch(() => {});
 
-    const ticket = await this.resolveAgitpropTicketContext(message);
-    if (!ticket) return;
-
-    const parsed = EventIntakeStore.parseForm(ticket);
-    if (!parsed) return;
-
-    const userText = stripBotMention(this.deps.client, message.content ?? '').trim();
-    if (!userText) return;
-
-    const isMod = await this.isModerator(message);
-    await message.channel.sendTyping().catch(() => {});
-
-    const system = renderAgitpropConversationPrompt({
-      ticketChannelId: ticket.channel_id,
-      parsed,
-      requesterId: ticket.requester_id,
-      flyerStatus: ticket.flyer_status,
-      isMod,
-    });
-    const tools = composeToolSources([this.flyerToolSource(ticket.channel_id, 'agitprop')]);
-    const history = await buildHistory(this.deps.client, message);
-    const turns: Turn[] = normalizeTurns([...history, { role: 'user', content: userText }]);
-    const reply = await ask({ system, messages: turns, tools, effort: 'high' });
-    reportSpanishStyle(reply, {
-      capability: EVENT_INTAKE_CAPABILITY_ID,
-      channelId: message.channelId,
-      toolNames: tools.tools.map((t) => t.name),
-    });
-    const parts = chunkBotReply(reply);
-    await message.reply({ content: parts[0], allowedMentions: { parse: [] } }).catch(() => {});
-  }
-
-  /** Find the ticket linked to an Agitprop conversation (reply to card or open job). */
-  private async resolveAgitpropTicketContext(message: GatewayMessage) {
-    const refId = message.reference?.messageId;
-    if (refId) {
-      // A reply that doesn't match a request card must not fall through to
-      // "the sole open job" — that binds flyer tools to the wrong ticket.
-      return this.deps.store.getTicketByFlyerRequestMessage(refId) ?? null;
-    }
-    const open = this.deps.store.openFlyerJobs(2);
-    if (open.length === 1) return open[0];
-    return null;
-  }
-
-  private async tryFulfillFlyerFromAgitpropReply(message: GatewayMessage): Promise<boolean> {
-    if (!message.attachments?.size) return false;
-    if (listImageAttachments(message).length === 0) return false;
-    if (!(await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()))) {
-      return false;
-    }
-    const refId = message.reference?.messageId;
-    if (!refId) return false;
-    const ticket = this.deps.store.getTicketByFlyerRequestMessage(refId);
-    if (
-      !ticket ||
-      (ticket.flyer_status !== 'requested' && ticket.flyer_status !== 'delivered')
-    ) {
-      return false;
-    }
-    await this.flyerService.fulfillFlyer(ticket.channel_id, message, 'agitprop');
-    return true;
-  }
-
-  private async tryFulfillFlyerFromTicketImage(message: GatewayMessage): Promise<boolean> {
-    if (!message.attachments?.size) return false;
-    if (listImageAttachments(message).length === 0) return false;
-    if (!(await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()))) {
-      return false;
-    }
-    const ticket = this.deps.store.getTicket(message.channelId);
-    if (
-      !ticket ||
-      (ticket.flyer_status !== 'requested' && ticket.flyer_status !== 'delivered')
-    ) {
-      return false;
-    }
-    await this.flyerService.fulfillFlyer(message.channelId, message, 'ticket');
-    return true;
-  }
-
-  private flyerToolSource(ticketChannelId: string, source: 'ticket' | 'agitprop'): FlyerToolSource {
-    return new FlyerToolSource({
-      store: this.deps.store,
-      ticketChannelId,
-      onFlyerAction: async (action, notes) => {
-        if (action === 'request') {
-          const ticket = this.deps.store.getTicket(ticketChannelId);
-          const parsed = ticket ? EventIntakeStore.parseForm(ticket) : null;
-          if (!ticket?.guild_id || !parsed) return false;
-          return this.flyerService.openFlyerJob({
-            ticketChannelId,
-            guildId: ticket.guild_id,
-            parsed,
-            requesterId: ticket.requester_id,
-            notes: notes ?? ticket.flyer_notes,
-          });
-        }
-        if (action === 'update') {
-          await this.flyerService.updateFlyerJob(ticketChannelId, notes ?? null, source);
-          return true;
-        }
-        if (action === 'cancel') {
-          await this.flyerService.cancelFlyerJob(ticketChannelId, source);
-          return true;
-        }
-        return false;
-      },
-    });
-  }
-
-  private async resolveAgitpropMentionsForChannel(channel: TextChannel): Promise<ModMentions> {
-    return resolveAgitpropMentionsInGuild(channel.guild, channel, this.deps.getAgitpropRoles());
-  }
-
-  // ── Human conversation (mod-gated create) ─────────────────────────────────
-
-  private async handleConversation(message: GatewayMessage): Promise<void> {
-    if (!this.canPost(message)) {
-      log.warn({ channelId: message.channelId }, 'event_intake.cannot_send');
-      return;
-    }
-    const userText = stripBotMention(this.deps.client, message.content ?? '').trim();
-    if (!userText) return;
-
-    // GUARDRAIL: only ever talk in a ticket we recognized as an EVENT request.
-    // In any other ticket type (report/support/etc.) in this category we stay
-    // completely silent, even if @-mentioned.
-    const ctx = await this.resolveEventContext(message);
-    if (!ctx) {
-      log.info({ channelId: message.channelId }, 'event_intake.conversation.not_event_ticket');
-      return;
-    }
-    const { parsed, requesterId } = ctx;
-    const ticketRow = this.deps.store.getTicket(message.channelId);
-
-    const isMod = await this.isModerator(message);
-    const isFlyerOp =
-      isMod ||
-      (await isFlyerOperator(message, this.deps.getModRoles(), this.deps.getAgitpropRoles()));
-    const mentions = await this.resolveMentions(message);
-    // The newest image posted in the ticket is almost always the event flyer
-    // (requesters attach it right after opening — the Calibán ticket pattern).
-    // Only mod turns can do anything with it (the sync tool is mod-only), so
-    // non-mod turns skip the fetch.
-    const flyer = isMod ? await this.findLatestTicketImage(message) : null;
-
-    const reaction = await message.react('🔍').catch(() => null);
-    await message.channel.sendTyping().catch(() => {});
-    const heartbeat = setInterval(() => void message.channel.sendTyping().catch(() => {}), 8000);
-
-    let reply: string;
-    /** Set by the tool tap below when THIS turn actually created the event. */
-    let createdEventId: number | null = null;
-    /** Set when THIS turn edited/themed an event (the ticket's own or any other). */
-    let updatedEventId: number | null = null;
-    try {
+      const system = renderAgitpropConversationPrompt({
+         ticketChannelId: ticket.channel_id,
+         parsed,
+         requesterId: ticket.requester_id,
+         flyerStatus: ticket.flyer_status,
+         isMod,
+      });
+      const tools = composeToolSources([
+         this.flyerToolSource(ticket.channel_id, "agitprop"),
+      ]);
       const history = await buildHistory(this.deps.client, message);
-      const turns: Turn[] = normalizeTurns([...history, { role: 'user', content: userText }]);
-      const system = renderTicketConversationPrompt({
-        now: new Date(this.now()),
-        parsed,
-        requesterId,
-        isMod,
-        isFlyerOperator: isFlyerOp,
-        flyerStatus: ticketRow?.flyer_status ?? 'none',
-        modMention: mentions.notifies ? mentions.text : '',
-        flyer,
+      const turns: Turn[] = normalizeTurns([
+         ...history,
+         { role: "user", content: userText },
+      ]);
+      const reply = await ask({
+         system,
+         messages: turns,
+         tools,
+         effort: "high",
       });
-      const toolSources: ToolSource[] = [this.calendarSource(message, {
-        write: isMod,
-        onCreated: (id) => {
-          createdEventId = id;
-        },
-        onUpdated: (id) => {
-          updatedEventId = id;
-        },
-        imageUrls: flyer ? [flyer.url] : [],
-      })];
-      if (isFlyerOp) {
-        toolSources.push(this.flyerToolSource(message.channelId, 'ticket'));
-      }
-      const tools = composeToolSources(toolSources);
-      log.info(
-        { channelId: message.channelId, user: message.author?.tag, isMod, isFlyerOp },
-        'event_intake.conversation',
-      );
-      // High tier: this is the turn where a mod's approval runs the real
-      // calendar_create_event tool loop.
-      reply = await ask({ system, messages: turns, tools, effort: 'high' });
       reportSpanishStyle(reply, {
-        capability: EVENT_INTAKE_CAPABILITY_ID,
-        channelId: message.channelId,
-        toolNames: tools.tools.map((t) => t.name),
+         capability: EVENT_INTAKE_CAPABILITY_ID,
+         channelId: message.channelId,
+         toolNames: tools.tools.map((t) => t.name),
       });
-    } finally {
-      clearInterval(heartbeat);
-      if (reaction && this.deps.client.user) {
-        await reaction.users.remove(this.deps.client.user.id).catch(() => {});
+      const parts = chunkBotReply(reply);
+      await message
+         .reply({ content: parts[0], allowedMentions: { parse: [] } })
+         .catch(() => {});
+   }
+
+   /** Find the ticket linked to an Agitprop conversation (reply to card or open job). */
+   private async resolveAgitpropTicketContext(message: GatewayMessage) {
+      const refId = message.reference?.messageId;
+      if (refId) {
+         // A reply that doesn't match a request card must not fall through to
+         // "the sole open job" — that binds flyer tools to the wrong ticket.
+         return this.deps.store.getTicketByFlyerRequestMessage(refId) ?? null;
       }
-    }
-
-    // The model decides WHETHER to call the mods; we decide whether that call
-    // actually rings. A ping is suppressed (chip still renders, silently) when
-    // we already notified this ticket inside the cooldown, so a mention echoed
-    // out of conversation history can't turn into repeat pages for the mods.
-    //
-    // The approval itself is the exception: when THIS turn created the event,
-    // the team is told deterministically and the cooldown does not apply — it's
-    // the outcome everyone in the ticket was waiting for, and it happens at most
-    // once per ticket.
-    let body = sanitizeRoleMentions(reply, mentions.notifyIds);
-    if (createdEventId !== null) {
-      // Close the loop while we're still in the ticket: calendar row → Discord
-      // scheduled event → the link the daily announcement will carry.
-      body += await this.syncDiscordEventFor(message, createdEventId);
-      body = appendModPing(body, mentions, 'created');
-    } else if (updatedEventId !== null) {
-      // An edit only REFRESHES a live Discord event — it never creates one. If
-      // the ticket's own event lost its card (the original date passed and
-      // Discord completed it), the confirmation must not claim it "se refleja
-      // solo" while nothing exists: recreate it, deterministically.
-      body += await this.ensureDiscordEventAfterUpdate(message, updatedEventId);
-    }
-    const wanted = mentionedRoleIds(body, mentions.notifyIds);
-    const notify =
-      wanted.length > 0 &&
-      (createdEventId !== null ||
-        shouldNotifyRoles(this.lastModPingAt.get(message.channelId), this.now()));
-    if (wanted.length > 0) {
-      log.info(
-        {
-          channelId: message.channelId,
-          roles: wanted.length,
-          notified: notify,
-          reason: createdEventId !== null ? 'created' : 'requested',
-        },
-        'event_intake.mod_ping',
-      );
-    }
-    if (notify) this.lastModPingAt.set(message.channelId, this.now());
-
-    const parts = chunkBotReply(body);
-    const roleIds = notify ? wanted : [];
-    let anchor = await message.reply({
-      content: parts[0],
-      allowedMentions: mentionPolicy(roleIds, true),
-    }).catch(() => null);
-    for (let i = 1; anchor && i < parts.length; i++) {
-      anchor = await anchor
-        .reply({ content: parts[i], allowedMentions: mentionPolicy(roleIds, false) })
-        .catch(() => null);
-    }
-  }
-
-  /**
-   * The event context for a ticket, or null if this ticket isn't a recognized
-   * event request (→ stay silent). Prefer the stored proposal row; if there's
-   * none (bot added after the form, a missed MessageCreate, a restart) re-scan
-   * recent history for the ticket-bot event form. A ticket that has neither is
-   * some other ticket type and we don't touch it.
-   */
-  private async resolveEventContext(
-    message: GatewayMessage,
-  ): Promise<{ parsed: ParsedForm | null; requesterId: string | null } | null> {
-    const row = this.deps.store.getTicket(message.channelId);
-    if (row) {
-      return { parsed: EventIntakeStore.parseForm(row), requesterId: row.requester_id ?? null };
-    }
-    return this.findEventFormInHistory(message);
-  }
-
-  /**
-   * Scan the ticket's history for the ticket-bot event form, newest → oldest,
-   * null if none present. Pages backwards so a chatty ticket can't bury the
-   * form; a ticket with no form anywhere is some other ticket type. A form
-   * found here was already missed live exactly once (that's why we're
-   * scanning), so it is persisted on the spot — without the row, recognition
-   * would keep depending on how much people chat.
-   */
-  private async findEventFormInHistory(
-    message: GatewayMessage,
-  ): Promise<{ parsed: ParsedForm; requesterId: string | null } | null> {
-    try {
-      let before: string | undefined;
-      for (let page = 0; page < FORM_SCAN_MAX_PAGES; page++) {
-        const msgs = await message.channel.messages.fetch(
-          before ? { limit: FORM_SCAN_PAGE_SIZE, before } : { limit: FORM_SCAN_PAGE_SIZE },
-        );
-        if (msgs.size === 0) return null;
-        let oldest: string | undefined;
-        for (const [id, m] of msgs) {
-          if (oldest === undefined || BigInt(id) < BigInt(oldest)) oldest = id;
-          const ml = toMessageLike(m);
-          if (isEventForm(ml, this.deps.ticketBotId)) {
-            const ctx = {
-              parsed: parseTicketForm(ml)!,
-              requesterId: extractRequesterId(m.content ?? '', [
-                this.deps.ticketBotId,
-                this.deps.botUserId,
-              ]),
-            };
-            this.persistRecoveredForm(message, ctx.parsed, ctx.requesterId);
-            return ctx;
-          }
-        }
-        if (msgs.size < FORM_SCAN_PAGE_SIZE || oldest === undefined) return null;
-        before = oldest;
-      }
-    } catch {
-      // fetch failed (perms/deleted) — treat as unrecognized, stay silent.
-    }
-    return null;
-  }
-
-  /**
-   * Persist a form recovered by the history rescan so the ticket is recognized
-   * from the row from now on (and approval bookkeeping — markCreated — has a
-   * row to land on). Best-effort: a store failure must not cost the ticket
-   * its answer.
-   */
-  private persistRecoveredForm(
-    message: GatewayMessage,
-    parsed: ParsedForm,
-    requesterId: string | null,
-  ): void {
-    try {
-      if (this.deps.store.getTicket(message.channelId)) return;
-      this.deps.store.recordProposal({
-        channelId: message.channelId,
-        guildId: message.guildId ?? null,
-        requesterId,
-        parsedForm: parsed,
-        resolvedStartAt: null,
-        proposalMessageId: null,
-      });
-      log.info(
-        { channelId: message.channelId, title: parsed.title },
-        'event_intake.form.recovered_from_history',
-      );
-    } catch (err) {
-      log.warn({ err, channelId: message.channelId }, 'event_intake.form.recover_persist_failed');
-    }
-  }
-
-  // ── Tool bundle (gated) ───────────────────────────────────────────────────
-
-  /**
-   * A calendar tool source restricted for the ticket flow: read tools always,
-   * plus the MOD_TOOLS write bundle only when `write` (the author is a mod). A
-   * successful create is tapped to mark the ticket resolved; a successful
-   * update/theme is tapped so the ticket can repair a missing Discord event; a
-   * whole-series delete of the ticket's OWN event is tapped so the row stops
-   * claiming an event that no longer exists.
-   */
-  private calendarSource(
-    message: Message,
-    opts: {
-      write: boolean;
-      onCreated?: (eventId: number) => void;
-      onUpdated?: (eventId: number) => void;
-      imageUrls?: readonly string[];
-    },
-  ): ToolSource {
-    const include = opts.write ? [...READ_TOOLS, ...MOD_TOOLS] : [...READ_TOOLS];
-    const inner = new CalendarToolSource(
-      this.deps.calendarStore,
-      message.author?.id ?? 'event_intake',
-      this.now(),
-      opts.write ? this.deps.publisher : undefined,
-      {
-        include,
-        allowWrite: opts.write,
-        syncer: opts.write ? this.makeSyncer(message) : undefined,
-        allowedImageUrls: opts.imageUrls ?? [],
-      },
-    );
-    const store = this.deps.store;
-    const channelId = message.channelId;
-    const flyerService = this.flyerService;
-    return {
-      name: inner.name,
-      systemPromptSection: () => inner.systemPromptSection(),
-      tools: () => inner.tools(),
-      async handle(name, input) {
-        const res = await inner.handle(name, input);
-        if (name === 'calendar_create_event' && res.status === 'success') {
-          const eventId = (res.payload as { event?: { id?: number } })?.event?.id;
-          if (typeof eventId === 'number') {
-            store.markCreated(channelId, eventId);
-            opts.onCreated?.(eventId);
-            log.info({ channelId, eventId }, 'event_intake.event_created');
-          }
-        }
-        if (
-          (name === 'calendar_update_event' || name === 'calendar_set_session_theme') &&
-          res.status === 'success'
-        ) {
-          const eventId = (input as { id?: unknown })?.id;
-          if (typeof eventId === 'number' && Number.isInteger(eventId) && eventId > 0) {
-            opts.onUpdated?.(eventId);
-          }
-        }
-        // A whole-series delete of THIS ticket's own event un-approves it: the
-        // row must not keep pointing at a calendar id that's gone (the Discord
-        // repair path and `recent_tickets` both read it). Occurrence/following
-        // scopes only trim a series that still exists → leave the row alone.
-        if (name === 'calendar_delete_event' && res.status === 'success') {
-          const scope = (res.payload as { deleted_scope?: string })?.deleted_scope;
-          const eventId = (input as { id?: unknown })?.id;
-          if (scope === 'series' && typeof eventId === 'number') {
-            const ticket = store.getTicket(channelId);
-            if (ticket?.created_event_id === eventId) {
-              store.markEventDeleted(channelId);
-              log.info({ channelId, eventId }, 'event_intake.event_deleted');
-              if (ticket.flyer_status === 'requested') {
-                await flyerService.cancelFlyerJob(channelId, 'ticket');
-              }
-            }
-          }
-        }
-        return res;
-      },
-    };
-  }
-
-  /** Exposed for capability.claimed-channel checks. */
-  agitpropChannelId(): string | null {
-    return this.deps.getAgitpropChannelId();
-  }
-
-  /** Discord-scheduled-event access for this ticket's guild (null in a DM). */
-  private makeSyncer(message: Message): DiscordEventSyncer | undefined {
-    if (this.deps.makeEventSyncer) return this.deps.makeEventSyncer(message);
-    if (!message.guildId) return undefined;
-    return createEventSyncer({
-      client: this.deps.client,
-      guildId: message.guildId,
-      store: this.deps.calendarStore,
-      now: this.now,
-      formatLocal: formatInTimezone,
-    });
-  }
-
-  /**
-   * Create the Discord scheduled event for a just-approved request and return
-   * the line to append to the confirmation.
-   *
-   * Done deterministically on approval rather than left to the model, for the
-   * same reason the mod ping is: this is the moment the whole ticket existed
-   * for, and "the event is in the calendar but nobody can RSVP to it" is exactly
-   * the gap the daily announcement then has to apologise for. When the bot lacks
-   * the permission, the line says so and asks the mods — which is strictly
-   * better than silence.
-   *
-   * The newest image posted in the ticket (the flyer requesters attach right
-   * after opening) becomes the event's cover image automatically — before this,
-   * a mod had to open the Discord event and upload it by hand.
-   */
-  private async syncDiscordEventFor(message: GatewayMessage, eventId: number): Promise<string> {
-    const syncer = this.makeSyncer(message);
-    if (!syncer) return '';
-    const storedUrl = await this.flyerService.resolveFlyerImageUrl(message.channelId, eventId);
-    const scanned = storedUrl ? null : await this.findLatestTicketImage(message);
-    const flyerUrl = storedUrl ?? scanned?.url ?? null;
-    const result = await syncer.sync(eventId, { imageUrl: flyerUrl }).catch((err) => {
-      log.warn({ err, eventId }, 'event_intake.discord_event.sync_threw');
+      const open = this.deps.store.openFlyerJobs(2);
+      if (open.length === 1) return open[0];
       return null;
-    });
-    if (!result) return '';
-    if (result.ok) {
+   }
+
+   private async tryFulfillFlyerFromAgitpropReply(
+      message: GatewayMessage,
+   ): Promise<boolean> {
+      if (!message.attachments?.size) return false;
+      if (listImageAttachments(message).length === 0) return false;
+      if (
+         !(await isFlyerOperator(
+            message,
+            this.deps.getModRoles(),
+            this.deps.getAgitpropRoles(),
+         ))
+      ) {
+         return false;
+      }
+      const refId = message.reference?.messageId;
+      if (!refId) return false;
+      const ticket = this.deps.store.getTicketByFlyerRequestMessage(refId);
+      if (
+         !ticket ||
+         (ticket.flyer_status !== "requested" &&
+            ticket.flyer_status !== "delivered")
+      ) {
+         return false;
+      }
+      await this.flyerService.fulfillFlyer(
+         ticket.channel_id,
+         message,
+         "agitprop",
+      );
+      return true;
+   }
+
+   private async tryFulfillFlyerFromTicketImage(
+      message: GatewayMessage,
+   ): Promise<boolean> {
+      if (!message.attachments?.size) return false;
+      if (listImageAttachments(message).length === 0) return false;
+      if (
+         !(await isFlyerOperator(
+            message,
+            this.deps.getModRoles(),
+            this.deps.getAgitpropRoles(),
+         ))
+      ) {
+         return false;
+      }
+      const ticket = this.deps.store.getTicket(message.channelId);
+      if (
+         !ticket ||
+         (ticket.flyer_status !== "requested" &&
+            ticket.flyer_status !== "delivered")
+      ) {
+         return false;
+      }
+      await this.flyerService.fulfillFlyer(
+         message.channelId,
+         message,
+         "ticket",
+      );
+      return true;
+   }
+
+   private flyerToolSource(
+      ticketChannelId: string,
+      source: "ticket" | "agitprop",
+   ): FlyerToolSource {
+      return new FlyerToolSource({
+         store: this.deps.store,
+         ticketChannelId,
+         onFlyerAction: async (action, notes) => {
+            if (action === "request") {
+               const ticket = this.deps.store.getTicket(ticketChannelId);
+               const parsed = ticket
+                  ? EventIntakeStore.parseForm(ticket)
+                  : null;
+               if (!ticket?.guild_id || !parsed) return false;
+               return this.flyerService.openFlyerJob({
+                  ticketChannelId,
+                  guildId: ticket.guild_id,
+                  parsed,
+                  requesterId: ticket.requester_id,
+                  notes: notes ?? ticket.flyer_notes,
+               });
+            }
+            if (action === "update") {
+               await this.flyerService.updateFlyerJob(
+                  ticketChannelId,
+                  notes ?? null,
+                  source,
+               );
+               return true;
+            }
+            if (action === "cancel") {
+               await this.flyerService.cancelFlyerJob(ticketChannelId, source);
+               return true;
+            }
+            return false;
+         },
+      });
+   }
+
+   private async resolveAgitpropMentionsForChannel(
+      channel: TextChannel,
+   ): Promise<ModMentions> {
+      return resolveAgitpropMentionsInGuild(
+         channel.guild,
+         channel,
+         this.deps.getAgitpropRoles(),
+      );
+   }
+
+   // ── Human conversation (mod-gated create) ─────────────────────────────────
+
+   private async handleConversation(message: GatewayMessage): Promise<void> {
+      if (!this.canPost(message)) {
+         log.warn({ channelId: message.channelId }, "event_intake.cannot_send");
+         return;
+      }
+      const userText = stripBotMention(
+         this.deps.client,
+         message.content ?? "",
+      ).trim();
+      if (!userText) return;
+
+      // GUARDRAIL: only ever talk in a ticket we recognized as an EVENT request.
+      // In any other ticket type (report/support/etc.) in this category we stay
+      // completely silent, even if @-mentioned.
+      const ctx = await this.resolveEventContext(message);
+      if (!ctx) {
+         log.info(
+            { channelId: message.channelId },
+            "event_intake.conversation.not_event_ticket",
+         );
+         return;
+      }
+      const { parsed, requesterId } = ctx;
+      const ticketRow = this.deps.store.getTicket(message.channelId);
+
+      const isMod = await this.isModerator(message);
+      const isFlyerOp =
+         isMod ||
+         (await isFlyerOperator(
+            message,
+            this.deps.getModRoles(),
+            this.deps.getAgitpropRoles(),
+         ));
+      const mentions = await this.resolveMentions(message);
+      // The newest image posted in the ticket is almost always the event flyer
+      // (requesters attach it right after opening — the Calibán ticket pattern).
+      // Only mod turns can do anything with it (the sync tool is mod-only), so
+      // non-mod turns skip the fetch.
+      const flyer = isMod ? await this.findLatestTicketImage(message) : null;
+
+      const reaction = await message.react("🔍").catch(() => null);
+      await message.channel.sendTyping().catch(() => {});
+      const heartbeat = setInterval(
+         () => void message.channel.sendTyping().catch(() => {}),
+         8000,
+      );
+
+      let reply: string;
+      /** Set by the tool tap below when THIS turn actually created the event. */
+      let createdEventId: number | null = null;
+      /** Set when THIS turn edited/themed an event (the ticket's own or any other). */
+      let updatedEventId: number | null = null;
+      try {
+         const history = await buildHistory(this.deps.client, message);
+         const turns: Turn[] = normalizeTurns([
+            ...history,
+            { role: "user", content: userText },
+         ]);
+         const system = renderTicketConversationPrompt({
+            now: new Date(this.now()),
+            parsed,
+            requesterId,
+            isMod,
+            isFlyerOperator: isFlyerOp,
+            flyerStatus: ticketRow?.flyer_status ?? "none",
+            modMention: mentions.notifies ? mentions.text : "",
+            flyer,
+         });
+         const toolSources: ToolSource[] = [
+            this.calendarSource(message, {
+               write: isMod,
+               onCreated: (id) => {
+                  createdEventId = id;
+               },
+               onUpdated: (id) => {
+                  updatedEventId = id;
+               },
+               imageUrls: flyer ? [flyer.url] : [],
+            }),
+         ];
+         if (isFlyerOp) {
+            toolSources.push(this.flyerToolSource(message.channelId, "ticket"));
+         }
+         const tools = composeToolSources(toolSources);
+         log.info(
+            {
+               channelId: message.channelId,
+               user: message.author?.tag,
+               isMod,
+               isFlyerOp,
+            },
+            "event_intake.conversation",
+         );
+         // High tier: this is the turn where a mod's approval runs the real
+         // calendar_create_event tool loop.
+         reply = await ask({ system, messages: turns, tools, effort: "high" });
+         reportSpanishStyle(reply, {
+            capability: EVENT_INTAKE_CAPABILITY_ID,
+            channelId: message.channelId,
+            toolNames: tools.tools.map((t) => t.name),
+         });
+      } finally {
+         clearInterval(heartbeat);
+         if (reaction && this.deps.client.user) {
+            await reaction.users
+               .remove(this.deps.client.user.id)
+               .catch(() => {});
+         }
+      }
+
+      // The model decides WHETHER to call the mods; we decide whether that call
+      // actually rings. A ping is suppressed (chip still renders, silently) when
+      // we already notified this ticket inside the cooldown, so a mention echoed
+      // out of conversation history can't turn into repeat pages for the mods.
+      //
+      // The approval itself is the exception: when THIS turn created the event,
+      // the team is told deterministically and the cooldown does not apply — it's
+      // the outcome everyone in the ticket was waiting for, and it happens at most
+      // once per ticket.
+      let body = sanitizeRoleMentions(reply, mentions.notifyIds);
+      if (createdEventId !== null) {
+         // Close the loop while we're still in the ticket: calendar row → Discord
+         // scheduled event → the link the daily announcement will carry.
+         body += await this.syncDiscordEventFor(message, createdEventId);
+         body = appendModPing(body, mentions, "created");
+      } else if (updatedEventId !== null) {
+         // An edit only REFRESHES a live Discord event — it never creates one. If
+         // the ticket's own event lost its card (the original date passed and
+         // Discord completed it), the confirmation must not claim it "se refleja
+         // solo" while nothing exists: recreate it, deterministically.
+         body += await this.ensureDiscordEventAfterUpdate(
+            message,
+            updatedEventId,
+         );
+      }
+      const wanted = mentionedRoleIds(body, mentions.notifyIds);
+      const notify =
+         wanted.length > 0 &&
+         (createdEventId !== null ||
+            shouldNotifyRoles(
+               this.lastModPingAt.get(message.channelId),
+               this.now(),
+            ));
+      if (wanted.length > 0) {
+         log.info(
+            {
+               channelId: message.channelId,
+               roles: wanted.length,
+               notified: notify,
+               reason: createdEventId !== null ? "created" : "requested",
+            },
+            "event_intake.mod_ping",
+         );
+      }
+      if (notify) this.lastModPingAt.set(message.channelId, this.now());
+
+      const parts = chunkBotReply(body);
+      const roleIds = notify ? wanted : [];
+      let anchor = await message
+         .reply({
+            content: parts[0],
+            allowedMentions: mentionPolicy(roleIds, true),
+         })
+         .catch(() => null);
+      for (let i = 1; anchor && i < parts.length; i++) {
+         anchor = await anchor
+            .reply({
+               content: parts[i],
+               allowedMentions: mentionPolicy(roleIds, false),
+            })
+            .catch(() => null);
+      }
+   }
+
+   /**
+    * The event context for a ticket, or null if this ticket isn't a recognized
+    * event request (→ stay silent). Prefer the stored proposal row; if there's
+    * none (bot added after the form, a missed MessageCreate, a restart) re-scan
+    * recent history for the ticket-bot event form. A ticket that has neither is
+    * some other ticket type and we don't touch it.
+    */
+   private async resolveEventContext(
+      message: GatewayMessage,
+   ): Promise<{
+      parsed: ParsedForm | null;
+      requesterId: string | null;
+   } | null> {
+      const row = this.deps.store.getTicket(message.channelId);
+      if (row) {
+         return {
+            parsed: EventIntakeStore.parseForm(row),
+            requesterId: row.requester_id ?? null,
+         };
+      }
+      return this.findEventFormInHistory(message);
+   }
+
+   /**
+    * Scan the ticket's history for the ticket-bot event form, newest → oldest,
+    * null if none present. Pages backwards so a chatty ticket can't bury the
+    * form; a ticket with no form anywhere is some other ticket type. A form
+    * found here was already missed live exactly once (that's why we're
+    * scanning), so it is persisted on the spot — without the row, recognition
+    * would keep depending on how much people chat.
+    */
+   private async findEventFormInHistory(
+      message: GatewayMessage,
+   ): Promise<{ parsed: ParsedForm; requesterId: string | null } | null> {
+      try {
+         let before: string | undefined;
+         for (let page = 0; page < FORM_SCAN_MAX_PAGES; page++) {
+            const msgs = await message.channel.messages.fetch(
+               before
+                  ? { limit: FORM_SCAN_PAGE_SIZE, before }
+                  : { limit: FORM_SCAN_PAGE_SIZE },
+            );
+            if (msgs.size === 0) return null;
+            let oldest: string | undefined;
+            for (const [id, m] of msgs) {
+               if (oldest === undefined || BigInt(id) < BigInt(oldest))
+                  oldest = id;
+               const ml = toMessageLike(m);
+               if (isEventForm(ml, this.deps.ticketBotId)) {
+                  const ctx = {
+                     parsed: parseTicketForm(ml)!,
+                     requesterId: extractRequesterId(m.content ?? "", [
+                        this.deps.ticketBotId,
+                        this.deps.botUserId,
+                     ]),
+                  };
+                  this.persistRecoveredForm(
+                     message,
+                     ctx.parsed,
+                     ctx.requesterId,
+                  );
+                  return ctx;
+               }
+            }
+            if (msgs.size < FORM_SCAN_PAGE_SIZE || oldest === undefined)
+               return null;
+            before = oldest;
+         }
+      } catch {
+         // fetch failed (perms/deleted) — treat as unrecognized, stay silent.
+      }
+      return null;
+   }
+
+   /**
+    * Persist a form recovered by the history rescan so the ticket is recognized
+    * from the row from now on (and approval bookkeeping — markCreated — has a
+    * row to land on). Best-effort: a store failure must not cost the ticket
+    * its answer.
+    */
+   private persistRecoveredForm(
+      message: GatewayMessage,
+      parsed: ParsedForm,
+      requesterId: string | null,
+   ): void {
+      try {
+         if (this.deps.store.getTicket(message.channelId)) return;
+         this.deps.store.recordProposal({
+            channelId: message.channelId,
+            guildId: message.guildId ?? null,
+            requesterId,
+            parsedForm: parsed,
+            resolvedStartAt: null,
+            proposalMessageId: null,
+         });
+         log.info(
+            { channelId: message.channelId, title: parsed.title },
+            "event_intake.form.recovered_from_history",
+         );
+      } catch (err) {
+         log.warn(
+            { err, channelId: message.channelId },
+            "event_intake.form.recover_persist_failed",
+         );
+      }
+   }
+
+   // ── Tool bundle (gated) ───────────────────────────────────────────────────
+
+   /**
+    * A calendar tool source restricted for the ticket flow: read tools always,
+    * plus the MOD_TOOLS write bundle only when `write` (the author is a mod). A
+    * successful create is tapped to mark the ticket resolved; a successful
+    * update/theme is tapped so the ticket can repair a missing Discord event; a
+    * whole-series delete of the ticket's OWN event is tapped so the row stops
+    * claiming an event that no longer exists.
+    */
+   private calendarSource(
+      message: Message,
+      opts: {
+         write: boolean;
+         onCreated?: (eventId: number) => void;
+         onUpdated?: (eventId: number) => void;
+         imageUrls?: readonly string[];
+      },
+   ): ToolSource {
+      const include = opts.write
+         ? [...READ_TOOLS, ...MOD_TOOLS]
+         : [...READ_TOOLS];
+      const inner = new CalendarToolSource(
+         this.deps.calendarStore,
+         message.author?.id ?? "event_intake",
+         this.now(),
+         opts.write ? this.deps.publisher : undefined,
+         {
+            include,
+            allowWrite: opts.write,
+            syncer: opts.write ? this.makeSyncer(message) : undefined,
+            allowedImageUrls: opts.imageUrls ?? [],
+         },
+      );
+      const store = this.deps.store;
+      const channelId = message.channelId;
+      const flyerService = this.flyerService;
+      return {
+         name: inner.name,
+         systemPromptSection: () => inner.systemPromptSection(),
+         tools: () => inner.tools(),
+         async handle(name, input) {
+            const res = await inner.handle(name, input);
+            if (name === "calendar_create_event" && res.status === "success") {
+               const eventId = (res.payload as { event?: { id?: number } })
+                  ?.event?.id;
+               if (typeof eventId === "number") {
+                  store.markCreated(channelId, eventId);
+                  opts.onCreated?.(eventId);
+                  log.info(
+                     { channelId, eventId },
+                     "event_intake.event_created",
+                  );
+               }
+            }
+            if (
+               (name === "calendar_update_event" ||
+                  name === "calendar_set_session_theme") &&
+               res.status === "success"
+            ) {
+               const eventId = (input as { id?: unknown })?.id;
+               if (
+                  typeof eventId === "number" &&
+                  Number.isInteger(eventId) &&
+                  eventId > 0
+               ) {
+                  opts.onUpdated?.(eventId);
+               }
+            }
+            // A whole-series delete of THIS ticket's own event un-approves it: the
+            // row must not keep pointing at a calendar id that's gone (the Discord
+            // repair path and `recent_tickets` both read it). Occurrence/following
+            // scopes only trim a series that still exists → leave the row alone.
+            if (name === "calendar_delete_event" && res.status === "success") {
+               const scope = (res.payload as { deleted_scope?: string })
+                  ?.deleted_scope;
+               const eventId = (input as { id?: unknown })?.id;
+               if (scope === "series" && typeof eventId === "number") {
+                  const ticket = store.getTicket(channelId);
+                  if (ticket?.created_event_id === eventId) {
+                     store.markEventDeleted(channelId);
+                     log.info(
+                        { channelId, eventId },
+                        "event_intake.event_deleted",
+                     );
+                     if (ticket.flyer_status === "requested") {
+                        await flyerService.cancelFlyerJob(channelId, "ticket");
+                     }
+                  }
+               }
+            }
+            return res;
+         },
+      };
+   }
+
+   /** Exposed for capability.claimed-channel checks. */
+   agitpropChannelId(): string | null {
+      return this.deps.getAgitpropChannelId();
+   }
+
+   /** Discord-scheduled-event access for this ticket's guild (null in a DM). */
+   private makeSyncer(message: Message): DiscordEventSyncer | undefined {
+      if (this.deps.makeEventSyncer) return this.deps.makeEventSyncer(message);
+      if (!message.guildId) return undefined;
+      return createEventSyncer({
+         client: this.deps.client,
+         guildId: message.guildId,
+         store: this.deps.calendarStore,
+         now: this.now,
+         formatLocal: formatInTimezone,
+      });
+   }
+
+   /**
+    * Create the Discord scheduled event for a just-approved request and return
+    * the line to append to the confirmation.
+    *
+    * Done deterministically on approval rather than left to the model, for the
+    * same reason the mod ping is: this is the moment the whole ticket existed
+    * for, and "the event is in the calendar but nobody can RSVP to it" is exactly
+    * the gap the daily announcement then has to apologise for. When the bot lacks
+    * the permission, the line says so and asks the mods — which is strictly
+    * better than silence.
+    *
+    * The newest image posted in the ticket (the flyer requesters attach right
+    * after opening) becomes the event's cover image automatically — before this,
+    * a mod had to open the Discord event and upload it by hand.
+    */
+   private async syncDiscordEventFor(
+      message: GatewayMessage,
+      eventId: number,
+   ): Promise<string> {
+      const syncer = this.makeSyncer(message);
+      if (!syncer) return "";
+      const storedUrl = await this.flyerService.resolveFlyerImageUrl(
+         message.channelId,
+         eventId,
+      );
+      const scanned = storedUrl
+         ? null
+         : await this.findLatestTicketImage(message);
+      const flyerUrl = storedUrl ?? scanned?.url ?? null;
+      const result = await syncer
+         .sync(eventId, { imageUrl: flyerUrl })
+         .catch((err) => {
+            log.warn({ err, eventId }, "event_intake.discord_event.sync_threw");
+            return null;
+         });
+      if (!result) return "";
+      if (result.ok) {
+         log.info(
+            {
+               eventId,
+               discordEventId: result.discordEventId,
+               created: result.created,
+               imageSet: result.imageSet === true,
+            },
+            "event_intake.discord_event.synced",
+         );
+         const withBanner = result.imageSet === true;
+         return result.created
+            ? `\n\n📅 Ya creé también el **evento de Discord**${withBanner ? " (con la portada que compartieron)" : ""} para que la gente se apunte:\n${result.url}`
+            : `\n\n📅 El evento de Discord ya existía${withBanner ? "; le puse la portada que compartieron" : ""}:\n${result.url}`;
+      }
+      log.warn(
+         { eventId, reason: result.reason, message: result.message },
+         "event_intake.discord_event.sync_failed",
+      );
+      if (result.reason === "missing_permission") {
+         return (
+            "\n\n⚠️ No pude crear el **evento de Discord** (me falta el permiso *Gestionar eventos* del servidor, " +
+            "un admin lo activa en Ajustes del servidor → Roles → ChopperBot). ¿Lo crean a mano en **Eventos → Crear evento**? " +
+            "Es lo que enlaza el anuncio del día para que la gente se apunte."
+         );
+      }
+      // A past event neither needs nor accepts a Discord card — stay silent.
+      if (result.reason === "in_past") return "";
+      return "\n\n⚠️ No pude crear el evento de Discord; créenlo a mano en **Eventos → Crear evento** para que la gente se apunte.";
+   }
+
+   /**
+    * After a ticket edit to the ticket's OWN event, guarantee the Discord card
+    * still exists — because an edit only REFRESHES a live link. The card is
+    * legitimately gone when the original date passed and Discord completed the
+    * event (ticket-0006, Calibán rescheduled 2026-08-13: the mod was told "el
+    * evento de Discord se refleja solo" while no event existed). Restricted to
+    * the ticket's own event on purpose: a drive-by edit of some unrelated row
+    * must not spawn Discord cards from a ticket. Returns '' when the row is
+    * linked (the update propagation already refreshed it) or the event isn't
+    * the ticket's own.
+    */
+   private async ensureDiscordEventAfterUpdate(
+      message: GatewayMessage,
+      eventId: number,
+   ): Promise<string> {
+      const ticket = this.deps.store.getTicket(message.channelId);
+      if (ticket?.created_event_id !== eventId) return "";
+      const row = this.deps.calendarStore.get(eventId);
+      if (!row || row.discord_event_id) return "";
       log.info(
-        { eventId, discordEventId: result.discordEventId, created: result.created, imageSet: result.imageSet === true },
-        'event_intake.discord_event.synced',
+         { channelId: message.channelId, eventId },
+         "event_intake.discord_event.recreate_on_update",
       );
-      const withBanner = result.imageSet === true;
-      return result.created
-        ? `\n\n📅 Ya creé también el **evento de Discord**${withBanner ? ' (con la portada que compartieron)' : ''} para que la gente se apunte:\n${result.url}`
-        : `\n\n📅 El evento de Discord ya existía${withBanner ? '; le puse la portada que compartieron' : ''}:\n${result.url}`;
-    }
-    log.warn({ eventId, reason: result.reason, message: result.message }, 'event_intake.discord_event.sync_failed');
-    if (result.reason === 'missing_permission') {
-      return (
-        '\n\n⚠️ No pude crear el **evento de Discord** (me falta el permiso *Gestionar eventos* del servidor, ' +
-        'un admin lo activa en Ajustes del servidor → Roles → ChopperBot). ¿Lo crean a mano en **Eventos → Crear evento**? ' +
-        'Es lo que enlaza el anuncio del día para que la gente se apunte.'
-      );
-    }
-    // A past event neither needs nor accepts a Discord card — stay silent.
-    if (result.reason === 'in_past') return '';
-    return '\n\n⚠️ No pude crear el evento de Discord; créenlo a mano en **Eventos → Crear evento** para que la gente se apunte.';
-  }
+      return this.syncDiscordEventFor(message, eventId);
+   }
 
-  /**
-   * After a ticket edit to the ticket's OWN event, guarantee the Discord card
-   * still exists — because an edit only REFRESHES a live link. The card is
-   * legitimately gone when the original date passed and Discord completed the
-   * event (ticket-0006, Calibán rescheduled 2026-08-13: the mod was told "el
-   * evento de Discord se refleja solo" while no event existed). Restricted to
-   * the ticket's own event on purpose: a drive-by edit of some unrelated row
-   * must not spawn Discord cards from a ticket. Returns '' when the row is
-   * linked (the update propagation already refreshed it) or the event isn't
-   * the ticket's own.
-   */
-  private async ensureDiscordEventAfterUpdate(
-    message: GatewayMessage,
-    eventId: number,
-  ): Promise<string> {
-    const ticket = this.deps.store.getTicket(message.channelId);
-    if (ticket?.created_event_id !== eventId) return '';
-    const row = this.deps.calendarStore.get(eventId);
-    if (!row || row.discord_event_id) return '';
-    log.info(
-      { channelId: message.channelId, eventId },
-      'event_intake.discord_event.recreate_on_update',
-    );
-    return this.syncDiscordEventFor(message, eventId);
-  }
-
-  /**
-   * The newest image attachment anywhere in this ticket's recent history —
-   * almost always the event flyer (requesters attach it right after the
-   * welcome, before any approval). Our own posts and the ticket bot's are
-   * skipped. Null when there's none or the fetch fails (non-fatal everywhere).
-   */
-  private async findLatestTicketImage(
-    message: GatewayMessage,
-  ): Promise<{ url: string; name: string; authorId: string | null } | null> {
-    try {
-      const msgs = await message.channel.messages.fetch({ limit: 25 });
-      const newestFirst = [...msgs.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
-      for (const m of newestFirst) {
-        if (m.author?.id === this.deps.botUserId || m.author?.id === this.deps.ticketBotId) continue;
-        const images = listImageAttachments(m);
-        if (images.length > 0) {
-          return { url: images[0]!.url, name: images[0]!.name, authorId: m.author?.id ?? null };
-        }
+   /**
+    * The newest image attachment anywhere in this ticket's recent history —
+    * almost always the event flyer (requesters attach it right after the
+    * welcome, before any approval). Our own posts and the ticket bot's are
+    * skipped. Null when there's none or the fetch fails (non-fatal everywhere).
+    */
+   private async findLatestTicketImage(
+      message: GatewayMessage,
+   ): Promise<{ url: string; name: string; authorId: string | null } | null> {
+      try {
+         const msgs = await message.channel.messages.fetch({ limit: 25 });
+         const newestFirst = [...msgs.values()].sort(
+            (a, b) => b.createdTimestamp - a.createdTimestamp,
+         );
+         for (const m of newestFirst) {
+            if (
+               m.author?.id === this.deps.botUserId ||
+               m.author?.id === this.deps.ticketBotId
+            )
+               continue;
+            const images = listImageAttachments(m);
+            if (images.length > 0) {
+               return {
+                  url: images[0]!.url,
+                  name: images[0]!.name,
+                  authorId: m.author?.id ?? null,
+               };
+            }
+         }
+      } catch (err) {
+         log.warn(
+            { err, channelId: message.channelId },
+            "event_intake.flyer_scan_failed",
+         );
       }
-    } catch (err) {
-      log.warn({ err, channelId: message.channelId }, 'event_intake.flyer_scan_failed');
-    }
-    return null;
-  }
+      return null;
+   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+   // ── Helpers ───────────────────────────────────────────────────────────────
 
-  /** True when a human message @-mentions the bot or replies to one of its messages. */
-  private addressesBot(message: GatewayMessage): boolean {
-    if (!this.deps.client.user) return false;
-    const botId = this.deps.client.user.id;
-    const mentioned = message.mentions.users.has(botId);
-    const isReplyToBot =
-      message.reference?.messageId != null && message.mentions.repliedUser?.id === botId;
-    return mentioned || isReplyToBot;
-  }
+   /** True when a human message @-mentions the bot or replies to one of its messages. */
+   private addressesBot(message: GatewayMessage): boolean {
+      if (!this.deps.client.user) return false;
+      const botId = this.deps.client.user.id;
+      const mentioned = message.mentions.users.has(botId);
+      const isReplyToBot =
+         message.reference?.messageId != null &&
+         message.mentions.repliedUser?.id === botId;
+      return mentioned || isReplyToBot;
+   }
 
-  /**
-   * Whether the message author may APPROVE (→ create): a member of an approver
-   * role (Moderador / Administrador / Administradora by default, matched by name
-   * or id) or anyone with Discord's Administrator permission. Fails CLOSED when
-   * the member can't be resolved.
-   */
-  private async isModerator(message: GatewayMessage): Promise<boolean> {
-    if (!message.inGuild()) return false;
-    let member: GuildMember | null = message.member;
-    if (!member) {
-      member = await message.guild.members.fetch(message.author.id).catch(() => null);
-    }
-    if (!member) return false;
-    const roles = member.roles.cache.map((r) => ({ id: r.id, name: r.name }));
-    if (isModByRole(roles, this.deps.getModRoles())) return true;
-    return member.permissions.has(PermissionFlagsBits.Administrator);
-  }
-
-  /**
-   * The approver roles as this guild/channel actually allows us to mention them.
-   * Discord only NOTIFIES a role mention when the role is `mentionable` or we
-   * hold MentionEveryone here, so pingability is resolved per channel (a
-   * category override can grant it where the guild default doesn't).
-   */
-  private async resolveMentions(message: GatewayMessage): Promise<ModMentions> {
-    if (!message.inGuild()) return EMPTY_MOD_MENTIONS;
-    try {
-      const guild = message.guild;
-      let roles = guild.roles.cache;
-      if (roles.size === 0) roles = await guild.roles.fetch();
-      const me = guild.members.me;
-      const canMentionAny =
-        me !== null &&
-        (message.channel.permissionsFor(me)?.has(PermissionFlagsBits.MentionEveryone) ?? false);
-      const resolved = resolveModMentions(
-        roles.map((r) => ({ id: r.id, name: r.name, mentionable: r.mentionable })),
-        this.deps.getModRoles(),
-        { canMentionAny },
-      );
-      // An approver role we can't ping is invisible to the operator otherwise —
-      // it just silently never notifies. Say it once per guild per process.
-      if (resolved.silent.length > 0 && !this.warnedUnpingable.has(guild.id)) {
-        this.warnedUnpingable.add(guild.id);
-        log.warn(
-          {
-            guildId: guild.id,
-            roles: resolved.silent.map((r) => r.name),
-            hint: 'marca el rol como mencionable o dale al bot el permiso "Mencionar @everyone, @here y todos los roles"',
-          },
-          'event_intake.mentions.not_pingable',
-        );
+   /**
+    * Whether the message author may APPROVE (→ create): a member of an approver
+    * role (Moderador / Administrador / Administradora by default, matched by name
+    * or id) or anyone with Discord's Administrator permission. Fails CLOSED when
+    * the member can't be resolved.
+    */
+   private async isModerator(message: GatewayMessage): Promise<boolean> {
+      if (!message.inGuild()) return false;
+      let member: GuildMember | null = message.member;
+      if (!member) {
+         member = await message.guild.members
+            .fetch(message.author.id)
+            .catch(() => null);
       }
-      return resolved;
-    } catch (err) {
-      log.warn({ err, channelId: message.channelId }, 'event_intake.mentions.resolve_failed');
-      return EMPTY_MOD_MENTIONS;
-    }
-  }
+      if (!member) return false;
+      const roles = member.roles.cache.map((r) => ({ id: r.id, name: r.name }));
+      if (isModByRole(roles, this.deps.getModRoles())) return true;
+      return member.permissions.has(PermissionFlagsBits.Administrator);
+   }
 
-  /** Whether the bot can post here (thread/forum needs SendMessagesInThreads). */
-  private canPost(message: GatewayMessage): boolean {
-    if (!message.inGuild()) return true;
-    const me = message.guild.members.me;
-    if (!me) return true;
-    const perms = message.channel.permissionsFor(me);
-    if (!perms) return true;
-    const needed = message.channel.isThread()
-      ? PermissionFlagsBits.SendMessagesInThreads
-      : PermissionFlagsBits.SendMessages;
-    return perms.has(needed);
-  }
+   /**
+    * The approver roles as this guild/channel actually allows us to mention them.
+    * Discord only NOTIFIES a role mention when the role is `mentionable` or we
+    * hold MentionEveryone here, so pingability is resolved per channel (a
+    * category override can grant it where the guild default doesn't).
+    */
+   private async resolveMentions(
+      message: GatewayMessage,
+   ): Promise<ModMentions> {
+      if (!message.inGuild()) return EMPTY_MOD_MENTIONS;
+      try {
+         const guild = message.guild;
+         let roles = guild.roles.cache;
+         if (roles.size === 0) roles = await guild.roles.fetch();
+         const me = guild.members.me;
+         const canMentionAny =
+            me !== null &&
+            (message.channel
+               .permissionsFor(me)
+               ?.has(PermissionFlagsBits.MentionEveryone) ??
+               false);
+         const resolved = resolveModMentions(
+            roles.map((r) => ({
+               id: r.id,
+               name: r.name,
+               mentionable: r.mentionable,
+            })),
+            this.deps.getModRoles(),
+            { canMentionAny },
+         );
+         // An approver role we can't ping is invisible to the operator otherwise —
+         // it just silently never notifies. Say it once per guild per process.
+         if (
+            resolved.silent.length > 0 &&
+            !this.warnedUnpingable.has(guild.id)
+         ) {
+            this.warnedUnpingable.add(guild.id);
+            log.warn(
+               {
+                  guildId: guild.id,
+                  roles: resolved.silent.map((r) => r.name),
+                  hint: 'marca el rol como mencionable o dale al bot el permiso "Mencionar @everyone, @here y todos los roles"',
+               },
+               "event_intake.mentions.not_pingable",
+            );
+         }
+         return resolved;
+      } catch (err) {
+         log.warn(
+            { err, channelId: message.channelId },
+            "event_intake.mentions.resolve_failed",
+         );
+         return EMPTY_MOD_MENTIONS;
+      }
+   }
 
-  /** Post text as a reply to the source message, falling back to a plain send. */
-  private async post(
-    message: GatewayMessage,
-    content: string,
-    roleIds: readonly string[] = [],
-  ): Promise<Message | null> {
-    const parts = chunkBotReply(content);
-    // `reply` and `send` return slightly different Message shapes — widen so both assign.
-    let anchor: Message | null = await message
-      .reply({ content: parts[0], allowedMentions: mentionPolicy(roleIds, true) })
-      .catch(() => null);
-    if (!anchor && message.channel.isSendable()) {
-      anchor = await message.channel
-        .send({ content: parts[0], allowedMentions: mentionPolicy(roleIds, true) })
-        .catch(() => null);
-    }
-    let cursor: Message | null = anchor;
-    for (let i = 1; cursor && i < parts.length; i++) {
-      cursor = await cursor
-        .reply({ content: parts[i], allowedMentions: mentionPolicy(roleIds, false) })
-        .catch(() => null);
-    }
-    return anchor;
-  }
+   /** Whether the bot can post here (thread/forum needs SendMessagesInThreads). */
+   private canPost(message: GatewayMessage): boolean {
+      if (!message.inGuild()) return true;
+      const me = message.guild.members.me;
+      if (!me) return true;
+      const perms = message.channel.permissionsFor(me);
+      if (!perms) return true;
+      const needed = message.channel.isThread()
+         ? PermissionFlagsBits.SendMessagesInThreads
+         : PermissionFlagsBits.SendMessages;
+      return perms.has(needed);
+   }
+
+   /** Post text as a reply to the source message, falling back to a plain send. */
+   private async post(
+      message: GatewayMessage,
+      content: string,
+      roleIds: readonly string[] = [],
+   ): Promise<Message | null> {
+      const parts = chunkBotReply(content);
+      // `reply` and `send` return slightly different Message shapes — widen so both assign.
+      let anchor: Message | null = await message
+         .reply({
+            content: parts[0],
+            allowedMentions: mentionPolicy(roleIds, true),
+         })
+         .catch(() => null);
+      if (!anchor && message.channel.isSendable()) {
+         anchor = await message.channel
+            .send({
+               content: parts[0],
+               allowedMentions: mentionPolicy(roleIds, true),
+            })
+            .catch(() => null);
+      }
+      let cursor: Message | null = anchor;
+      for (let i = 1; cursor && i < parts.length; i++) {
+         cursor = await cursor
+            .reply({
+               content: parts[i],
+               allowedMentions: mentionPolicy(roleIds, false),
+            })
+            .catch(() => null);
+      }
+      return anchor;
+   }
 }
 
 function toMessageLike(m: Message) {
-  return {
-    authorId: m.author?.id ?? null,
-    authorBot: m.author?.bot ?? false,
-    content: m.content ?? '',
-    embeds: m.embeds.map((e) => ({
-      description: e.description,
-      fields: e.fields?.map((f) => ({ name: f.name, value: f.value })),
-    })),
-  };
+   return {
+      authorId: m.author?.id ?? null,
+      authorBot: m.author?.bot ?? false,
+      content: m.content ?? "",
+      embeds: m.embeds.map((e) => ({
+         description: e.description,
+         fields: e.fields?.map((f) => ({ name: f.name, value: f.value })),
+      })),
+   };
 }

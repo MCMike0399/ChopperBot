@@ -10,28 +10,28 @@
  * would flood the context. Everything here is distilled, stable knowledge.
  */
 export interface GuildProfile {
-  guildId: string;
-  /** Curated community primer block for the system prompt (Spanish). */
-  primer: string;
-  /** Whether turns in this guild get the read-only calendar tools. */
-  calendarReadTools: boolean;
-  /**
-   * Whether turns in this guild get the live channel-directory tools
-   * (server_list_channels / server_channel_info). Member-visibility-filtered —
-   * see server-tools.ts. Lets the assistant answer about channels created
-   * after the primer's curated list was written.
-   */
-  serverDirectoryTools: boolean;
-  /**
-   * Capability ids whose bound-channel info is HIDDEN from the assistant's
-   * capability snapshot. Use for capabilities living in staff-only channels:
-   * the capability is still described, but the model never sees (and so never
-   * leaks) the staff channel's name or link to regular members.
-   */
-  hiddenBindingCapabilityIds?: readonly string[];
+   guildId: string;
+   /** Curated community primer block for the system prompt (Spanish). */
+   primer: string;
+   /** Whether turns in this guild get the read-only calendar tools. */
+   calendarReadTools: boolean;
+   /**
+    * Whether turns in this guild get the live channel-directory tools
+    * (server_list_channels / server_channel_info). Member-visibility-filtered —
+    * see server-tools.ts. Lets the assistant answer about channels created
+    * after the primer's curated list was written.
+    */
+   serverDirectoryTools: boolean;
+   /**
+    * Capability ids whose bound-channel info is HIDDEN from the assistant's
+    * capability snapshot. Use for capabilities living in staff-only channels:
+    * the capability is still described, but the model never sees (and so never
+    * leaks) the staff channel's name or link to regular members.
+    */
+   hiddenBindingCapabilityIds?: readonly string[];
 }
 
-export const REVZ_GUILD_ID = '1435843683541979248';
+export const REVZ_GUILD_ID = "1435843683541979248";
 
 /**
  * Revolución Z Ⓐ☭ — distilled from the server survey of 2026-08-05
@@ -78,21 +78,21 @@ Para agendar un evento, lxs compas abren un ticket en <#1436255397265670195> y l
 La lista de arriba es la curada de canales clave, no el mapa completo: tienes herramientas (\`server_list_channels\`, \`server_channel_info\`) para consultar EN VIVO cualquier canal del servidor que la persona pueda ver.`;
 
 const PROFILES = new Map<string, GuildProfile>([
-  [
-    REVZ_GUILD_ID,
-    {
-      guildId: REVZ_GUILD_ID,
-      primer: REVZ_PRIMER,
-      calendarReadTools: true,
-      serverDirectoryTools: true,
-      // The calendar capability lives in the Gestión comisión's channel —
-      // staff-only. Members see the PUBLISHED calendar in #calendario and
-      // propose events via ticket; the input channel is never mentioned.
-      hiddenBindingCapabilityIds: ['calendar'],
-    },
-  ],
+   [
+      REVZ_GUILD_ID,
+      {
+         guildId: REVZ_GUILD_ID,
+         primer: REVZ_PRIMER,
+         calendarReadTools: true,
+         serverDirectoryTools: true,
+         // The calendar capability lives in the Gestión comisión's channel —
+         // staff-only. Members see the PUBLISHED calendar in #calendario and
+         // propose events via ticket; the input channel is never mentioned.
+         hiddenBindingCapabilityIds: ["calendar"],
+      },
+   ],
 ]);
 
 export function guildProfileFor(guildId: string | null): GuildProfile | null {
-  return guildId ? (PROFILES.get(guildId) ?? null) : null;
+   return guildId ? (PROFILES.get(guildId) ?? null) : null;
 }

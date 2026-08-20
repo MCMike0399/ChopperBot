@@ -4,6 +4,7 @@ Registro de cambios de ChopperBot. Cada versión publicada aquí se anuncia en e
 canal de novedades de Discord con `pnpm run release <versión>`.
 
 Versionado semántico (`MAYOR.MENOR.PARCHE`):
+
 - **PARCHE** (1.0.x) — correcciones y ajustes pequeños, sin cambios de comportamiento visibles.
 - **MENOR** (1.x.0) — funciones nuevas compatibles con lo anterior.
 - **MAYOR** (x.0.0) — cambios grandes o que rompen el uso previo.
@@ -17,7 +18,7 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 🐢 **Instagram otra vez nos marcó actividad automatizada — bajamos más el perfil**
 
-Volvió el aviso de "actividad automatizada sospechosa" en la cuenta con la que reviso Instagram. El cambio de ritmo del 13 de agosto sí bajó el volumen (cero bloqueos, cero 429), pero Instagram sigue viendo *cómo* consulto, no solo *cuánto*:
+Volvió el aviso de "actividad automatizada sospechosa" en la cuenta con la que reviso Instagram. El cambio de ritmo del 13 de agosto sí bajó el volumen (cero bloqueos, cero 429), pero Instagram sigue viendo _cómo_ consulto, no solo _cuánto_:
 
 - Ya no golpeo una y otra vez la puerta que Instagram cerró en 5 cuentas cada vez que reinicio el bot (eso era lo más robótico que quedaba).
 - Dejo de consultar las cuentas al segundo exacto de cada minuto.
@@ -117,9 +118,9 @@ Al reactivarse, el seguimiento retoma solo las publicaciones nuevas: lo publicad
 
 🗓️ **Los días con varios eventos ya se ven completos en el calendario**
 
-Si un día tenía dos actividades, el calendario del mes solo mostraba una y debajo ponía un discreto *"+1 más"* — aunque hubiera espacio de sobra en la casilla. Pasó este mismo agosto: el **lunes 10** (Círculo de Estudio de Burocracia + Repensar la burocracia) y el **domingo 16** (la charla sobre mente neurodivergente + Calibán y la Bruja) escondían la segunda actividad.
+Si un día tenía dos actividades, el calendario del mes solo mostraba una y debajo ponía un discreto _"+1 más"_ — aunque hubiera espacio de sobra en la casilla. Pasó este mismo agosto: el **lunes 10** (Círculo de Estudio de Burocracia + Repensar la burocracia) y el **domingo 16** (la charla sobre mente neurodivergente + Calibán y la Bruja) escondían la segunda actividad.
 
-Ahora acomodo cada día como un todo: **primero hago que quepan todos los eventos**, y solo después reparto el espacio que sobra para que los títulos largos se lean enteros. Si un día está de verdad hasta el tope, ajusto un poco el tamaño para que entren más, y el *"+N más"* aparece únicamente cuando ya no cabe nada. Un día con 3 o 4 actividades ahora se ve, no se resume.
+Ahora acomodo cada día como un todo: **primero hago que quepan todos los eventos**, y solo después reparto el espacio que sobra para que los títulos largos se lean enteros. Si un día está de verdad hasta el tope, ajusto un poco el tamaño para que entren más, y el _"+N más"_ aparece únicamente cuando ya no cabe nada. Un día con 3 o 4 actividades ahora se ve, no se resume.
 
 De paso corregí un desajuste viejito: los recuadros se dibujaban unos milímetros más abajo de lo debido y el último podía montarse sobre la línea de la semana siguiente. Ya quedaron centrados en su casilla. 🎨
 
@@ -139,9 +140,10 @@ Ya quedó corregido: ahora busco el formulario en **todo el historial del ticket
 
 🎟️ **Cancelar un evento ya se puede desde el ticket**
 
-Si un evento se caía, yo contestaba en el ticket: *"eso no se hace desde aquí, las cancelaciones se gestionan en el canal del calendario"*. O sea: lxs mismxs mods que acababan de aprobar el evento ahí mismo tenían que irse a otro canal para tumbarlo. Ya no. 🙌
+Si un evento se caía, yo contestaba en el ticket: _"eso no se hace desde aquí, las cancelaciones se gestionan en el canal del calendario"_. O sea: lxs mismxs mods que acababan de aprobar el evento ahí mismo tenían que irse a otro canal para tumbarlo. Ya no. 🙌
 
 Ahora, **en el ticket**, un mod me puede decir "cancélalo", "esta semana no hay" o "bórralo completo" y lo hago al momento:
+
 - **Solo esa fecha** — se salta esa sesión y la serie sigue igual.
 - **De ahí en adelante** — se cierra la serie a partir de ese día.
 - **Todo el evento** — se va del calendario, y si tenía evento de Discord también se elimina.
@@ -158,7 +160,7 @@ Cuando en la solicitud dicen que **no** van a hacer su flyer, ya no digo "hay qu
 
 🗣️ **Vuelvo a hablar como aquí se habla**
 
-Al cambiar el modelo que me da la palabra, se me empezó a colar un español raro: contestaba **de "usted"** ("se le habla", "si le hace falta"), inventaba palabras que no existen (*"un mensaje para elx"*) y hasta repetía en voz alta las instrucciones que llevo por dentro (*"le pregunto UNA cosa a la vez"*). Sonaba a formulario de trámite, no a la comunidad. 🙃
+Al cambiar el modelo que me da la palabra, se me empezó a colar un español raro: contestaba **de "usted"** ("se le habla", "si le hace falta"), inventaba palabras que no existen (_"un mensaje para elx"_) y hasta repetía en voz alta las instrucciones que llevo por dentro (_"le pregunto UNA cosa a la vez"_). Sonaba a formulario de trámite, no a la comunidad. 🙃
 
 Ya quedó: ahora **todas** mis conversaciones — calendario, tickets, talleres, chat general, los anuncios del día — llevan las mismas reglas de cómo se habla aquí: de tú, cálido y directo, con el lenguaje incluyente que usamos (lxs, todxs, bienvenidx, amix), sin frases de servicio al cliente y sin cerrar con "¿algo más?".
 
@@ -173,6 +175,7 @@ Y para que no vuelva a pasarme sin que nadie se dé cuenta: cada respuesta que e
 Cuando lxs mods ajustan un evento desde su ticket (mover la fecha, corregir el título…), yo actualizaba el calendario pero a veces **el evento de Discord ya no existía** — por ejemplo, si la fecha original ya había pasado — y mi confirmación decía "el evento de Discord se refleja solo"… sin que hubiera nada que reflejar. 🙃 Ahora lo detecto en el momento: si falta, lo creo de nuevo ahí mismo (con el flyer del ticket de portada) y anexo el enlace en mi confirmación.
 
 Y dos ajustes finos del mismo día:
+
 - En los tickets también puedo actualizar la peli/tema de la semana de un club que ya existe, sin duplicar nada (la herramienta nueva de hoy ahora también jala ahí).
 - Si me adjuntas la imagen del evento, puedo ponerla o cambiarla de portada del evento de Discord **aunque el evento ya exista** — el enlace para apuntarse no cambia.
 
@@ -186,7 +189,7 @@ Cuando lxs mods me avisan qué se ve esta semana en el club de cine — o el tem
 
 🙈 **Y dejo de decir "no pude" cuando sí había podido**
 
-Cuando me mandaban un cartel de evento como imagen, a veces respondía *"No pude generar una respuesta esta vez"* aunque **el evento sí se había creado bien** en el calendario — con su evento de Discord y todo. Lo que fallaba no era el evento, sino mi mensaje de confirmación: el modelo que lee imágenes a veces termina su trabajo sin escribir el texto final, y yo me rendía en vez de volver a pedírselo. Ahora lo intento de nuevo hasta dos veces antes de rendirme. Y tranquilidad — reintentar nunca crea el evento dos veces.
+Cuando me mandaban un cartel de evento como imagen, a veces respondía _"No pude generar una respuesta esta vez"_ aunque **el evento sí se había creado bien** en el calendario — con su evento de Discord y todo. Lo que fallaba no era el evento, sino mi mensaje de confirmación: el modelo que lee imágenes a veces termina su trabajo sin escribir el texto final, y yo me rendía en vez de volver a pedírselo. Ahora lo intento de nuevo hasta dos veces antes de rendirme. Y tranquilidad — reintentar nunca crea el evento dos veces.
 
 ---
 
@@ -197,10 +200,11 @@ Cuando me mandaban un cartel de evento como imagen, a veces respondía *"No pude
 Instagram me mandó un aviso de "actividad automatizada sospechosa" por andar revisando las cuentas demasiado seguido y demasiado parejito. Todavía no pasó nada grave, pero si le sigo al mismo ritmo me pueden bloquear la cuenta con la que reviso — y ahí sí nos quedaríamos sin avisos de Instagram por completo. Mejor bajarle antes que después. 🙃
 
 Lo que ajusté:
+
 - Reviso **menos veces al día** y con **pausas más irregulares**, para no parecer un robot con cronómetro.
 - Amplié mi descanso nocturno: ahora duermo de **1:00 a 8:00**.
 
-**¿Qué cambia para ustedes?** Que puedo tardar más en avisar de una publicación nueva — en el peor caso varias horas, antes era cuestión de minutos u horas. Lo importante: **no se pierde ninguna publicación**. Cuando reviso, alcanzo a ver todo lo que se publicó mientras no estaba viendo. Es un cambio de *velocidad*, no de cobertura.
+**¿Qué cambia para ustedes?** Que puedo tardar más en avisar de una publicación nueva — en el peor caso varias horas, antes era cuestión de minutos u horas. Lo importante: **no se pierde ninguna publicación**. Cuando reviso, alcanzo a ver todo lo que se publicó mientras no estaba viendo. Es un cambio de _velocidad_, no de cobertura.
 
 🔧 **Y dejo de tocar puertas que Instagram ya cerró**
 
@@ -216,7 +220,7 @@ Ahora, si una cuenta me falla siempre de la misma forma, la **pauso sola** y le 
 
 Algunxs de ustedes ya lo notaron: si copiaban "@ChopperBot" de otro mensaje y lo pegaban en el suyo, yo ni me enteraba y los dejaba en visto. 😅 Eso pasaba porque para Discord un nombre pegado es solo texto, no una mención de verdad.
 
-Ya quedó arreglado: si escribes o pegas **@ChopperBot** (o mi apodo en el servidor), respondo igual que con la mención azulita. Eso sí — si solo hablan *de* mí sin el arroba, no me meto en la conversación. 🤖
+Ya quedó arreglado: si escribes o pegas **@ChopperBot** (o mi apodo en el servidor), respondo igual que con la mención azulita. Eso sí — si solo hablan _de_ mí sin el arroba, no me meto en la conversación. 🤖
 
 ---
 
@@ -259,12 +263,12 @@ Hoy al mediodía el servicio de inteligencia artificial que usa ChopperBot para 
 
 📅 **"Crea el evento" — ahora sí sabe de cuál le hablan**
 
-Cuando el bot les recuerda que falta crear el evento de Discord de algo que viene, ya pueden **responder a ese mismo mensaje** con un simple *"crea el evento"* y lo hace. Antes se le olvidaba de qué estaban hablando y pedía título y fecha de un evento que él mismo acababa de nombrar. Lo que cambia:
+Cuando el bot les recuerda que falta crear el evento de Discord de algo que viene, ya pueden **responder a ese mismo mensaje** con un simple _"crea el evento"_ y lo hace. Antes se le olvidaba de qué estaban hablando y pedía título y fecha de un evento que él mismo acababa de nombrar. Lo que cambia:
 
 - **Se acuerda de lo que él mismo dijo.** Si responden a un aviso suyo, ahora lee ese aviso como parte de la conversación. Esto aplica a todos sus avisos, no solo a los del calendario.
-- **El recordatorio trae el número del evento** (`#28`), así que se puede copiar tal cual: *"crea el evento de Discord del #28"*.
+- **El recordatorio trae el número del evento** (`#28`), así que se puede copiar tal cual: _"crea el evento de Discord del #28"_.
 - **Sabe cuáles eventos ya tienen su evento de Discord y cuáles no**, sin tener que buscarlo. Si solo falta uno, lo confirma en una línea en vez de interrogarlxs.
-- **Ya no deja eventos sin sala en silencio.** Al crear el evento de Discord les dice en qué sala quedó, y si no encontró ninguna lo dice y pregunta: *"quedó sin sala — ¿en cuál va?"*. Cuando le contestan, mueve el evento de Discord a esa sala él solito.
+- **Ya no deja eventos sin sala en silencio.** Al crear el evento de Discord les dice en qué sala quedó, y si no encontró ninguna lo dice y pregunta: _"quedó sin sala — ¿en cuál va?"_. Cuando le contestan, mueve el evento de Discord a esa sala él solito.
 
 ## 1.15.0 — 2026-08-09
 
@@ -273,6 +277,7 @@ Cuando el bot les recuerda que falta crear el evento de Discord de algo que vien
 Nos llegó el caso: alguien pidió su documento corregido en Word y PDF, el bot respondía "ya te lo envié" una y otra vez… y el archivo nunca llegaba. El documento sí existía, pero se quedaba guardado en el taller sin adjuntarse, y el bot no tenía forma de darse cuenta. Ya quedó corregido por todos los frentes — y de paso el bot aprendió modales.
 
 ### Talleres
+
 - **Los archivos generados ya no se quedan sin adjuntar**: si el bot crea un entregable (Word, Excel, PDF, gráfica…) y por cualquier razón no lo adjunta en su respuesta, el sistema lo adjunta automáticamente al final de la vuelta. Nunca más un "aquí está" sin archivo.
 - **El bot ahora sabe qué te llegó y qué no**: su lista de archivos del taller marca cuáles ya te entregó ✅ y cuáles siguen sin enviarse ⚠️. Si le dices "no me llegó", lo verifica y te lo reenvía al momento, en vez de discutir.
 - **Tono más de asistente**: el taller ahora mantiene un trato cálido pero siempre respetuoso — no repite groserías aunque se le hable con ellas, y cuando algo falla lo reconoce y lo corrige en vez de insistir en que estaba bien.
@@ -286,6 +291,7 @@ Nos llegó el caso: alguien pidió su documento corregido en Word y PDF, el bot 
 Todo lo que subes a tu taller y lo que el bot genera ahí (PDFs, Excels, documentos, gráficas) ahora se guarda en el **disco duro grande** del servidor, con copia de respaldo en el canal. Antes tus archivos vivían solo en el chat y en la tarjeta de memoria chica — ahora hay casi 2 terabytes de espacio para que los talleres crezcan tranquilitos.
 
 ### Talleres
+
 - **Tus archivos tienen casa nueva**: cada documento de taller se guarda automáticamente en el almacenamiento grande. Si el bot se reinicia o limpia su memoria de trabajo, tus archivos reaparecen solos cuando los vuelves a necesitar.
 - **Cerrar el taller sigue borrando todo**: cuando cierras tu taller desde el panel, sus archivos desaparecen de todos los lugares donde se guardan — como siempre.
 - **Corrección**: un archivo cuyo nombre terminaba en punto (un caso raro de nombre largo) no se encontraba al recuperarlo; ya se reconoce sin problema.
@@ -299,6 +305,7 @@ Todo lo que subes a tu taller y lo que el bot genera ahí (PDFs, Excels, documen
 Nos llegó el caso de prueba perfecto: "necesito una explicación por capítulo de este libro" — ¡408 páginas! El bot lo intentaba todo de una sola vez, se quedaba sin aire y terminaba respondiendo "No pude generar una respuesta…". Ya quedó corregido: ahora prepara el libro una sola vez (índice + capítulos separados), **trabaja de 1 a 3 capítulos por vuelta**, va guardando todo en un documento y te entrega el avance. Tú solo dices **"sigue"** y continúa exactamente por donde iba, sin repetir trabajo. Y si una tarea larga se atora al final, ahora reintenta la respuesta en vez de rendirse.
 
 ### Talleres
+
 - **Limpiar el chat ahora deja tus archivos a la vista**: al darle 🧹, todo lo que subiste y lo que el bot generó queda reunido en un solo mensaje 📁 del canal. Borrón de conversación de verdad, con los archivos intactos y fáciles de encontrar.
 - **PDFs aún mejor leídos**: nueva herramienta para extraer **tablas** de un PDF (te las puede entregar en Excel), y mejor estrategia para libros largos: primero el índice, capítulos por separado, avance por partes.
 - **Los nombres de archivo largos ya no pierden su extensión**: un PDF con nombre larguísimo llegaba al taller sin el ".pdf" al final; ya se conserva.
@@ -315,6 +322,7 @@ Hoy alguien le preguntó por el canal nuevo de bienvenida y contestó que no lo 
 Y tranquilx: solo te muestra los canales **que tú puedes ver**. Lo que no es para ti, para ChopperBot tampoco existe cuando le preguntas.
 
 ### Mejoras a los talleres (gracias al primer taller de hoy 📖)
+
 - **Lee PDFs bien**: si le subes un PDF (apuntes, un libro, un paper) ahora lo procesa a la primera, sin dar vueltas.
 - **Puedes interrumpirlo**: si está tardando y le escribes otro mensaje, suelta lo que estaba haciendo y atiende lo nuevo — como en los chats de IA de página web.
 - **Ves lo que está haciendo en vivo**: una línea de estado que se va actualizando ("🐍 Ejecutando código · paso 3 · 45s") y que al terminar se convierte en la respuesta.
@@ -327,6 +335,7 @@ Y tranquilx: solo te muestra los canales **que tú puedes ver**. Lo que no es pa
 - Menos vueltas en general: cuando algo no le sale, lo dice y propone alternativa en vez de insistir.
 
 ### En los canales del servidor
+
 - **Ya se nota cuando está trabajando**: si una respuesta tarda más de 20 segundos, el bot deja un aviso chiquito ("🤔 Pensando… · 25s") que después se convierte en la respuesta. Antes solo se veía "escribiendo…" y si se cortaba parecía que se había trabado.
 
 ---
@@ -338,6 +347,7 @@ Y tranquilx: solo te muestra los canales **que tú puedes ver**. Lo que no es pa
 Estrenamos la categoría **Escuela/trabajo**: reacciona con 🎓 al mensaje de ChopperBot en el canal de bienvenida y se te abre un **canal privado** — solo tú y la moderación pueden verlo — con un asistente de IA completo para tu escuela o tu chamba.
 
 ### Qué puedes hacer en tu taller
+
 - Hablarle **directo, sin mencionarlo** — funciona como los chats de IA de página web.
 - Pedirle **archivos de verdad, listos para descargar**: Excel (.xlsx), Word (.docx), PowerPoint (.pptx), PDFs y gráficas.
 - Que **ejecute código Python** para ti: análisis de datos, matemáticas, automatizaciones.
@@ -346,10 +356,12 @@ Estrenamos la categoría **Escuela/trabajo**: reacciona con 🎓 al mensaje de C
 - Todo lo que generen queda en el espacio de tu sesión y persiste entre mensajes.
 
 ### El control es tuyo
+
 - Tu taller tiene un panel fijado con botones: 🧹 **Limpiar** (borra la conversación y empieza de cero) y 🔒 **Cerrar** (elimina el canal cuando termines). También se lo puedes pedir con palabras.
 - Puedes tener hasta 2 talleres abiertos a la vez.
 
 ### Mejoras generales
+
 - Ahora ves **qué está haciendo el bot** con emojis en tu mensaje: ⏳ en cola, 🤔 pensando, 🛠️ trabajando con herramientas, y ❌ si algo falló.
 - El bot **ya no se traba cuando varias personas le escriben a la vez**: atiende en orden y le responde a todo el mundo.
 
@@ -470,9 +482,9 @@ Ese aviso de aprobación siempre suena, aunque ya se les hubiera avisado hace un
 
 **3. Los eventos que se repiten ya pueden tener duración.** Antes una serie semanal se repetía para siempre, así que para un círculo de lectura de cuatro martes había que crear cuatro eventos aparte. Ahora se le dice cuánto dura, como se diga naturalmente:
 
-- "*círculo de lectura todos los martes de julio a las 8*" → una sola serie, los 4 martes.
-- "*taller cada jueves, son 6 sesiones*" → una sola serie, 6 sesiones.
-- "*asamblea todos los sábados*" → si no dices hasta cuándo, lo pregunta una vez; si no hay fecha de término, la deja **indefinida** como siempre.
+- "_círculo de lectura todos los martes de julio a las 8_" → una sola serie, los 4 martes.
+- "_taller cada jueves, son 6 sesiones_" → una sola serie, 6 sesiones.
+- "_asamblea todos los sábados_" → si no dices hasta cuándo, lo pregunta una vez; si no hay fecha de término, la deja **indefinida** como siempre.
 
 Al confirmar te dice cuántas sesiones son y cuál es la última. Una serie que ya existe también se puede ajustar después ("déjalo en 6 sesiones") o volverla indefinida.
 
@@ -545,10 +557,11 @@ Los administradores lo activan desde la consola de configuración con una sola i
 Ahora ChopperBot cuida los canales: cuando alguien sube un archivo (que no sea una imagen), lo analiza automáticamente para avisarte si es seguro. **No hace falta mencionarlo** — reacciona solo al archivo.
 
 ### Cómo funciona
+
 - 🔎 Mientras revisa el archivo verás un mensaje de "analizando…", y en cuanto termina te dice el resultado:
-  - ✅ **Limpio** — ningún antivirus lo marca como dañino.
-  - ⚠️ **Sospechoso** — algunos motores lo señalan; trátalo con cuidado.
-  - 🛑 **Malicioso** — varios antivirus lo detectan como peligroso. El bot lo marca bien claro y **avisa a la moderación** para que nadie lo abra.
+   - ✅ **Limpio** — ningún antivirus lo marca como dañino.
+   - ⚠️ **Sospechoso** — algunos motores lo señalan; trátalo con cuidado.
+   - 🛑 **Malicioso** — varios antivirus lo detectan como peligroso. El bot lo marca bien claro y **avisa a la moderación** para que nadie lo abra.
 - 🔗 Cada resultado incluye un enlace a VirusTotal por si quieres ver el detalle completo.
 - ⚡ Si un archivo ya se conoce, la respuesta es casi instantánea; y el bot reparte con calma sus consultas para no saturar el servicio.
 
@@ -561,6 +574,7 @@ Los administradores pueden elegir qué canales se vigilan desde la consola de co
 🛠️ **Ajustes**
 
 ### Correcciones
+
 - 📅 El calendario ahora encuentra tus eventos aunque los escribas sin acentos o con signos distintos (por ejemplo "reunion" en vez de "reunión"). Buscar y editar eventos es más fácil.
 - 🤖 Mejoramos las instrucciones internas del bot para que no repita acciones que ya hizo.
 
@@ -573,6 +587,7 @@ Los administradores pueden elegir qué canales se vigilan desde la consola de co
 ChopperBot es el asistente de la comunidad en Discord. Esto es lo que ya sabe hacer:
 
 ### Funciones
+
 - 📅 **Calendario del servidor** — Los moderadores crean, editan y borran eventos hablándole en lenguaje natural. El bot arma el calendario del mes en imagen y publica también un archivo `.ics` para importarlo a tu propio calendario. Soporta eventos que se repiten (diario, semanal, mensual).
 - 📸 **Monitor de Instagram** — Sigue las cuentas que nos importan y avisa en Discord cada vez que publican algo nuevo, sin repetir publicaciones.
 - 💬 **Chat general** — Menciona al bot en cualquier canal y te responde o te orienta.
