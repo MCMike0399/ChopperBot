@@ -367,6 +367,7 @@ export function collectHealth(deps: HealthDeps): HealthReport {
       return {
          enabled: true,
          watched_channels: store.getWatchedChannels(),
+         media_native_channels: store.getMediaChannels(),
          requests_24h: used,
          daily_budget: budget,
          budget_remaining: Math.max(0, budget - used),

@@ -6,9 +6,8 @@ const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp"]);
 const IMAGE_MIME_PREFIX = "image/";
 
 /**
- * Video formats — never sent to VirusTotal. They're large media (usually over
- * the 32 MB VT limit anyway), essentially never malicious, and would just burn
- * the tight free-tier quota. Skipped just like images.
+ * Video formats — skipped only in media-native channels (multimedia, momos,
+ * arte, cine…). Conversation channels scan them: a .mov in #general is odd.
  */
 const VIDEO_EXTENSIONS = new Set([
    "mp4",
@@ -28,6 +27,26 @@ const VIDEO_EXTENSIONS = new Set([
    "ts",
 ]);
 const VIDEO_MIME_PREFIX = "video/";
+
+/**
+ * Audio formats — scanned in every watched channel (a .mp3 in #general is as
+ * odd as a .mov). Media-native channels still skip *video*, not audio.
+ */
+const AUDIO_EXTENSIONS = new Set([
+   "mp3",
+   "wav",
+   "ogg",
+   "oga",
+   "m4a",
+   "flac",
+   "aac",
+   "opus",
+   "wma",
+   "weba",
+   "mid",
+   "midi",
+]);
+const AUDIO_MIME_PREFIX = "audio/";
 
 /** Per-file line state as the scan progresses (edited in place). */
 export type LineStatus =
@@ -55,9 +74,8 @@ export function isImageAttachment(
 
 /**
  * True if an attachment is a video (by content-type or extension). Videos are
- * skipped for the same reasons as images: they're large media that rarely
- * carry malware and would waste the limited VirusTotal quota (and usually
- * exceed its 32 MB file limit anyway).
+ * skipped in media-native channels to protect quota; conversation channels
+ * scan them.
  */
 export function isVideoAttachment(
    name: string,
@@ -67,6 +85,17 @@ export function isVideoAttachment(
    if (ct.startsWith(VIDEO_MIME_PREFIX)) return true;
    const ext = name.split(".").pop()?.toLowerCase() ?? "";
    return VIDEO_EXTENSIONS.has(ext);
+}
+
+/** True if an attachment is audio (by content-type or extension). */
+export function isAudioAttachment(
+   name: string,
+   contentType: string | null,
+): boolean {
+   const ct = (contentType ?? "").split(";")[0].trim().toLowerCase();
+   if (ct.startsWith(AUDIO_MIME_PREFIX)) return true;
+   const ext = name.split(".").pop()?.toLowerCase() ?? "";
+   return AUDIO_EXTENSIONS.has(ext);
 }
 
 const VT_LINK = (sha256: string) =>
@@ -115,6 +144,11 @@ export function renderLine({ fileName, status }: FileLine): string {
          return `😴 ${code(fileName)} — alcancé el límite diario de análisis de VirusTotal. Intenta de nuevo más tarde.`;
       case "queue_full":
          return `🕒 ${code(fileName)} — hay muchos archivos en cola ahora mismo. Vuelve a subirlo en un rato.`;
+      case "too_large":
+         return (
+            `📦 ${code(fileName)} — pesa de más para mandarlo completo a analizar. ` +
+            `Huella: \`${status.sha256}\`.\n   🔗 ${VT_LINK(status.sha256)}`
+         );
       case "error":
          return `⚠️ ${code(fileName)} — no pude analizarlo (error técnico). Intenta de nuevo más tarde.`;
    }
@@ -140,6 +174,7 @@ export function renderScanMessage(lines: FileLine[]): string {
 export function formatScannerStatus(input: {
    enabled: boolean;
    watchedChannels: string[];
+   mediaNativeChannels: string[];
    used24h: number;
    budget: number;
    minIntervalMs: number;
@@ -155,6 +190,7 @@ export function formatScannerStatus(input: {
    const {
       enabled,
       watchedChannels,
+      mediaNativeChannels,
       used24h,
       budget,
       minIntervalMs,
@@ -173,6 +209,11 @@ export function formatScannerStatus(input: {
       watchedChannels.length > 0
          ? `Canales vigilados: ${watchedChannels.map(renderWatchTarget).join(", ")}`
          : "Canales vigilados: _ninguno_ (usa `set_channels`)",
+   );
+   lines.push(
+      mediaNativeChannels.length > 0
+         ? `Canales de media (videos se saltan): ${mediaNativeChannels.map((id) => `<#${id}>`).join(", ")}`
+         : "Canales de media: _ninguno_ (los videos se analizan en todos los canales vigilados)",
    );
    lines.push(
       `Presupuesto 24 h: ${used24h}/${budget} peticiones · espaciado ${Math.round(minIntervalMs / 1000)}s`,

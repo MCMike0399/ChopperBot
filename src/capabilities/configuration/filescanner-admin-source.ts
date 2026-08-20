@@ -43,9 +43,11 @@ export class ConfigFileScannerAdminSource implements ToolSource {
             name: "config_filescanner",
             description:
                "Admin the VirusTotal file scanner (works from the config channel). `action`:\n" +
-               '• "status" — whether scanning is enabled, the channels being watched, the 24h VirusTotal request budget used/remaining, and cache verdict counts.\n' +
+               '• "status" — whether scanning is enabled, the channels being watched, the media-native channels (videos skipped there), the 24h VirusTotal request budget used/remaining, and cache verdict counts.\n' +
                '• "list_channels" — the channel ids currently watched.\n' +
                '• "set_channels" {channels} — REPLACE the watched-channel set. `channels` may be: a comma/space-separated list of channel ids (or a JSON array); the keyword "este servidor"/"server"/"guild" to watch EVERY channel the bot can see in THIS server; "todos"/"all" to watch every channel in every server the bot is in; or an empty string to stop watching. You can also pass explicit `guild:<serverId>` tokens. Takes effect within ~10s (no restart).\n' +
+               '• "list_media_channels" — channels treated as media-native (genuine videos are skipped).\n' +
+               '• "set_media_channels" {channels} — REPLACE the media-native denylist. Comma/space-separated channel ids or a JSON array. Empty string = scan videos in every watched channel. Takes effect within ~10s (no restart).\n' +
                '• "scan_stats" — recent scans and totals by verdict.',
             inputSchema: {
                type: "object",
@@ -56,6 +58,8 @@ export class ConfigFileScannerAdminSource implements ToolSource {
                         "status",
                         "list_channels",
                         "set_channels",
+                        "list_media_channels",
+                        "set_media_channels",
                         "scan_stats",
                      ],
                   },
@@ -93,6 +97,7 @@ export class ConfigFileScannerAdminSource implements ToolSource {
                const lines = formatScannerStatus({
                   enabled: !!config.VIRUSTOTAL_API_KEY,
                   watchedChannels: this.store.getWatchedChannels(),
+                  mediaNativeChannels: this.store.getMediaChannels(),
                   used24h: this.store.requestsInWindow(nowMs, WINDOW_MS),
                   budget: config.VIRUSTOTAL_DAILY_REQUEST_BUDGET,
                   minIntervalMs: config.VIRUSTOTAL_MIN_REQUEST_INTERVAL_MS,
@@ -170,6 +175,43 @@ export class ConfigFileScannerAdminSource implements ToolSource {
                          ? "Ahora vigilo todos los canales visibles del/los servidor(es) indicado(s). Toma efecto en ~10s."
                          : `Ahora vigilo ${ids.length} canal(es). Toma efecto en ~10s.`;
                return { status: "success", payload: { watched: ids, note } };
+            }
+            case "list_media_channels":
+               return {
+                  status: "success",
+                  payload: { channels: this.store.getMediaChannels() },
+               };
+            case "set_media_channels": {
+               const raw = (
+                  typeof obj.channels === "string" ? obj.channels : ""
+               ).trim();
+               const ids = parseChannelIdEnv(raw);
+               const invalid = ids.filter((t) => !/^\d{17,20}$/.test(t));
+               if (invalid.length > 0) {
+                  return {
+                     status: "error",
+                     payload: {
+                        error: `No reconozco estos valores: ${invalid.join(", ")} (usa ids de canal; vacío = analizar videos en todos los canales vigilados).`,
+                     },
+                  };
+               }
+               this.store.setMediaChannels(ids);
+               log.info(
+                  {
+                     tool: toolName,
+                     mediaChannels: ids,
+                     by: this.deps.callerUserId,
+                  },
+                  "file_scanner.set_media_channels",
+               );
+               const note =
+                  ids.length === 0
+                     ? "Lista de canales de media vacía: ahora analizo videos en todos los canales vigilados. Toma efecto en ~10s."
+                     : `Ahora salto videos genuinos en ${ids.length} canal(es) de media. En el resto (general, fuera de tema, etc.) sí los analizo. Toma efecto en ~10s.`;
+               return {
+                  status: "success",
+                  payload: { media_channels: ids, note },
+               };
             }
             case "scan_stats": {
                const counts = this.store.verdictCounts();

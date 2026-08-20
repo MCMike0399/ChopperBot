@@ -39,6 +39,26 @@ describe("FileScannerStore watched channels", () => {
    });
 });
 
+describe("FileScannerStore media-native channels", () => {
+   test("seed only writes when empty; later edits survive re-seed", async () => {
+      const { store, mem } = await newStore();
+      store.seedMediaChannels(["111", "222"]);
+      expect(store.getMediaChannels()).toEqual(["111", "222"]);
+      store.setMediaChannels(["999"]);
+      store.seedMediaChannels(["111", "222"]);
+      expect(store.getMediaChannels()).toEqual(["999"]);
+      mem.close();
+   });
+
+   test("empty list means scan videos everywhere", async () => {
+      const { store, mem } = await newStore();
+      store.setMediaChannels(["1"]);
+      store.setMediaChannels([]);
+      expect(store.getMediaChannels()).toEqual([]);
+      mem.close();
+   });
+});
+
 describe("FileScannerStore rolling budget", () => {
    test("tryConsumeBudget grants until budget, then rejects, then frees as window drains", async () => {
       const { store, mem } = await newStore();
