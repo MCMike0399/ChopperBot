@@ -168,7 +168,6 @@ async function main(): Promise<void> {
    console.log(
       `enlace del evento : ${p.has_event_link ? "sí" : "NO (saldría sin botón de apuntarse)"}`,
    );
-   console.log(`portada adjunta   : ${p.attaches_flyer ? "sí" : "no"}`);
    console.log(`token             : ${p.token}`);
    console.log("");
    box("mensaje que se publicaría", String(p.draft));

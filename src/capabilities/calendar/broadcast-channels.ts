@@ -63,6 +63,11 @@ export interface CalendarBroadcaster {
     target: BroadcastChannel;
     content: string;
     mentions: BroadcastMentions;
+    /**
+     * Unused at send time. Kept so drafts that still store a cover URL stay
+     * compatible; the event-URL embed already shows the flyer, so we never
+     * attach it (attaching duplicated the image — live 2026-08-19).
+     */
     imageUrl: string | null;
     /** Title for the forum post; required when the target is a forum. */
     threadTitle: string | null;
@@ -116,21 +121,20 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
       return queries.map((query) => resolveOne(all, query));
     },
 
-    async post({ target, content, mentions, imageUrl, threadTitle, token }) {
+    async post({ target, content, mentions, threadTitle, token }) {
       const allowedMentions = {
         // Explicit, like the daily announcement: @everyone can only fire
         // when it was actually resolved, and an invented role id can't ping.
         parse: mentions.everyone ? ['everyone'] : [],
         roles: mentions.roleIds,
       };
-      const files = imageUrl ? [imageUrl] : undefined;
 
       try {
         const channel = await client.channels.fetch(target.id);
         if (!channel) return { ok: false, error: 'channel_not_found' };
 
         if (target.kind === 'forum') {
-          return await postForum({ channel, content, allowedMentions, files, threadTitle, target });
+          return await postForum({ channel, content, allowedMentions, threadTitle, target });
         }
 
         if (!channel.isTextBased() || !('send' in channel)) {
@@ -141,7 +145,6 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
             send(o: {
               content: string;
               allowedMentions: { parse: string[]; roles: string[] };
-              files?: string[];
               nonce?: string;
               enforceNonce?: boolean;
             }): Promise<{ id: string }>;
@@ -149,7 +152,6 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
         ).send({
           content,
           allowedMentions,
-          files,
           nonce: broadcastNonce(token, target.id),
           enforceNonce: true,
         });
@@ -177,11 +179,10 @@ async function postForum(input: {
   channel: unknown;
   content: string;
   allowedMentions: { parse: string[]; roles: string[] };
-  files: string[] | undefined;
   threadTitle: string | null;
   target: BroadcastChannel;
 }): Promise<{ ok: true; messageId: string } | { ok: false; error: string }> {
-  const { channel, content, allowedMentions, files, threadTitle, target } = input;
+  const { channel, content, allowedMentions, threadTitle, target } = input;
   const forum = channel as {
     threads?: {
       create(o: {
@@ -189,7 +190,6 @@ async function postForum(input: {
         message: {
           content: string;
           allowedMentions: { parse: string[]; roles: string[] };
-          files?: string[];
         };
       }): Promise<{ id: string }>;
       fetchActive?(): Promise<{ threads: Map<string, { id: string; name: string }> }>;
@@ -211,7 +211,7 @@ async function postForum(input: {
 
   const thread = await forum.threads.create({
     name,
-    message: { content, allowedMentions, files },
+    message: { content, allowedMentions },
   });
   return { ok: true, messageId: thread.id };
 }

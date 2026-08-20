@@ -1,7 +1,7 @@
 /**
- * The daily announcement carries the event's flyer: when the linked Discord
- * event has a cover image, the announcement attaches it (like the admins'
- * manual posts, which always paste the flyer) — in addition to the event URL.
+ * Announcements do not attach the Discord event cover. Discord's own event-URL
+ * embed already shows that image, and attaching it duplicated the flyer
+ * (live 2026-08-19: poetry-club post with the banner twice).
  */
 import { describe, test, expect, beforeEach, afterEach, vi } from 'vitest';
 
@@ -104,24 +104,26 @@ function discordEvent(imageUrl: string | null) {
   };
 }
 
-test('attaches the Discord event cover image when there is one', async () => {
-  fetchScheduledEvents.mockResolvedValue([discordEvent(COVER)]);
-  const channel = new FakeChannel();
-  const report = await makeAnnouncer(channel).run();
+describe('announcement payload', () => {
+  test('posts the event URL and does not attach the cover, even when there is one', async () => {
+    fetchScheduledEvents.mockResolvedValue([discordEvent(COVER)]);
+    const channel = new FakeChannel();
+    const report = await makeAnnouncer(channel).run();
 
-  expect(channel.sentPayloads).toHaveLength(1);
-  expect(channel.sentPayloads[0]!.files).toEqual([COVER]);
-  expect(report.announced[0]!.imageUrl).toBe(COVER);
-  // …and the event URL still rides in the text as before.
-  expect(report.announced[0]!.text).toContain('https://discord.com/events/G1/DE1');
-});
+    expect(channel.sentPayloads).toHaveLength(1);
+    expect(channel.sentPayloads[0]!.files).toBeUndefined();
+    // Reported for logs/dry-run — Discord's embed is what actually shows it.
+    expect(report.announced[0]!.imageUrl).toBe(COVER);
+    expect(report.announced[0]!.text).toContain('https://discord.com/events/G1/DE1');
+  });
 
-test('posts text-only when the Discord event has no banner', async () => {
-  fetchScheduledEvents.mockResolvedValue([discordEvent(null)]);
-  const channel = new FakeChannel();
-  const report = await makeAnnouncer(channel).run();
+  test('posts text-only when the Discord event has no banner', async () => {
+    fetchScheduledEvents.mockResolvedValue([discordEvent(null)]);
+    const channel = new FakeChannel();
+    const report = await makeAnnouncer(channel).run();
 
-  expect(channel.sentPayloads).toHaveLength(1);
-  expect(channel.sentPayloads[0]!.files).toBeUndefined();
-  expect(report.announced[0]!.imageUrl).toBeNull();
+    expect(channel.sentPayloads).toHaveLength(1);
+    expect(channel.sentPayloads[0]!.files).toBeUndefined();
+    expect(report.announced[0]!.imageUrl).toBeNull();
+  });
 });

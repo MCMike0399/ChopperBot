@@ -189,10 +189,6 @@ async function main(): Promise<void> {
          .map((l) => `  │ ${l}`)
          .join("\n"),
    );
-   if (target.discordEvent?.imageUrl)
-      console.log(
-         `  │ [adjunta la portada del evento: ${target.discordEvent.imageUrl}]`,
-      );
 
    if (POST) {
       const sent = await (
@@ -200,7 +196,6 @@ async function main(): Promise<void> {
             send(o: {
                content: string;
                allowedMentions: { parse: string[]; roles: string[] };
-               files?: string[];
                nonce?: string;
                enforceNonce?: boolean;
             }): Promise<{ id: string }>;
@@ -211,9 +206,6 @@ async function main(): Promise<void> {
             parse: mentions.everyone ? ["everyone"] : [],
             roles: mentions.roleIds,
          },
-         files: target.discordEvent?.imageUrl
-            ? [target.discordEvent.imageUrl]
-            : undefined,
          // Idempotent within Discord's dedup window: a retried run can't double-post.
          nonce: `manual:${eventId}@${picked.start_at}`,
          enforceNonce: true,

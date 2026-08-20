@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.25.2 — 2026-08-20
+
+📣 **Los anuncios ya no pegan el flyer dos veces**
+
+Cuando anuncio un evento (el aviso de la mañana o uno que me pidan publicar), pongo el texto y el enlace para apuntarse. Discord ya muestra la portada en esa tarjeta del evento, así que **ya no adjunto la misma imagen otra vez**.
+
+---
+
 ## 1.25.1 — 2026-08-19
 
 🐢 **Instagram otra vez nos marcó actividad automatizada — bajamos más el perfil**

@@ -864,9 +864,9 @@ export class CalendarToolSource implements ToolSource {
    * only then does {@link handleSendAnnouncement} spend the token.
    *
    * Everything that could differ between the preview and the post is decided
-   * HERE and stored — the text, the channel ids, the mention policy, the flyer.
-   * Re-deriving any of it on confirmation would re-roll the model and make the
-   * thing the mod approved a different message from the thing that lands.
+   * HERE and stored — the text, the channel ids, the mention policy. Re-deriving
+   * any of it on confirmation would re-roll the model and make the thing the mod
+   * approved a different message from the thing that lands.
    */
   private async handleDraftAnnouncement(
     obj: Record<string, unknown>,
@@ -945,7 +945,8 @@ export class CalendarToolSource implements ToolSource {
       this.options.allowedMentionRoles ?? [],
     );
 
-    // The Discord event: its URL is the RSVP card, its cover is the flyer. Only
+    // The Discord event: its URL is the RSVP card (Discord's own embed shows
+    // the cover — we do not attach the flyer, that duplicated the image). Only
     // a stored, verified link — never a guess (a wrong link sends the community
     // to somebody else's event).
     const discordEvent = master.discord_event_id
@@ -1012,7 +1013,7 @@ export class CalendarToolSource implements ToolSource {
       threadTitle,
       roleIds: mentions.roleIds,
       everyone: mentions.everyone,
-      imageUrl: discordEvent?.imageUrl ?? null,
+      imageUrl: null,
       discordEventId: discordEvent?.id ?? null,
       requestedBy: this.callerUserId,
       sourceChannelId: this.options.sourceChannelId ?? 'unknown',
@@ -1057,7 +1058,7 @@ export class CalendarToolSource implements ToolSource {
         })),
         pings_everyone: mentions.everyone,
         has_event_link: target.discordEventUrl !== null,
-        attaches_flyer: discordEvent?.imageUrl != null,
+        attaches_flyer: false,
         next_step:
           'Muestra el texto tal cual, di en qué canales va, y pide confirmación. Solo si dicen que sí, llama calendar_send_announcement con el token.',
       },
@@ -1138,7 +1139,7 @@ export class CalendarToolSource implements ToolSource {
         target,
         content: draft.content,
         mentions,
-        imageUrl: draft.imageUrl,
+        imageUrl: null,
         threadTitle: draft.threadTitle,
         token: draft.token,
       });
