@@ -83,7 +83,7 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 - `configuration` — admin console, hardcoded to one channel → [doc](docs/capabilities/configuration.md)
 - `calendar` — **global** server calendar: mods talk in the INPUT channel; month PDF/PNG + ICS publish to OUTPUT; daily event announcements to ANNOUNCE → [doc](docs/capabilities/calendar.md)
 - `instagram_monitor` — global account list + fan-out to every bound channel, per-channel dedup → [doc](docs/capabilities/instagram-monitor.md)
-- `file_scanner` — **passive, NOT channel-bound**: own `MessageCreate` listener scans non-image/video uploads with VirusTotal → [doc](docs/capabilities/file-scanner.md)
+- `file_scanner` — **passive, NOT channel-bound**: own `MessageCreate` listener scans uploads with VirusTotal (images skipped; videos skipped only in media-native channels) → [doc](docs/capabilities/file-scanner.md)
 - `event_intake` — **passive, NOT channel-bound**: watches the ticket category, proposes normalized events, a MOD approves → calendar create → [doc](docs/capabilities/event-intake.md)
 - `workshop` — **passive, NOT channel-bound**: react 🎓 in `#bienvenidx` → private channel with a web-LLM-style assistant (sandboxed Python, document skills, MinIO-backed files) → [doc](docs/capabilities/workshop.md)
 - `minutas` — **passive, NOT channel-bound**: `/chopperbot-join` in a voice/stage channel (calendar-approver roles only) records per-speaker audio + the channel chat; `/chopperbot-leave` (or empty channel / ended event) → local whisper.cpp transcription → AI minutes posted to `#minutas-de-asambleas`, drafts archived to MinIO → [doc](docs/capabilities/minutas.md)

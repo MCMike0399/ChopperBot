@@ -4,14 +4,21 @@ import type { FileScannerStore } from "./store.js";
 import {
    FileScanner,
    downloadAttachment,
+   peekMagicBytes,
    type ScanOutcome,
 } from "./scanner.js";
 import {
-   isImageAttachment,
    isVideoAttachment,
    renderScanMessage,
    type FileLine,
 } from "./format.js";
+import {
+   claimedKind,
+   isMediaDisguise,
+   isTrustedImage,
+   sniffKind,
+} from "./classify.js";
+import { policyChannelId, type VideoPolicy } from "./media-channels.js";
 
 /** Minimal shape of a Discord attachment we care about (also what tests pass). */
 export interface AttachmentLike {
@@ -28,11 +35,17 @@ export interface FileScanWatcherDeps {
    scanner: FileScanner;
    store: FileScannerStore;
    client: Client;
-   maxFileBytes: number;
+   /** Hard skip above this (Discord download ceiling). */
+   maxDownloadBytes: number;
+   /** VirusTotal simple-upload cap; larger files are hash-lookup only. */
+   maxUploadBytes: number;
    maxFiles: number;
+   /** `skip` = media-native channel (don't scan genuine videos). */
+   videoPolicyFor: (channelId: string) => VideoPolicy;
    /** Sends operator alerts (budget exhausted / VT auth). Errors swallowed by caller. */
    alert: (lines: string[]) => Promise<void>;
    now?: () => number;
+   peekMagic?: (url: string) => Promise<Uint8Array | null>;
 }
 
 /**
@@ -58,10 +71,36 @@ export class FileScanWatcher {
          url: a.url,
          contentType: a.contentType,
       }));
-      const toScan = selectScannable(attachments, {
-         maxFileBytes: this.deps.maxFileBytes,
-         maxFiles: this.deps.maxFiles,
+      const ch = message.channel;
+      const policyId = policyChannelId({
+         id: message.channelId,
+         isThread: () =>
+            "isThread" in ch &&
+            typeof ch.isThread === "function" &&
+            ch.isThread(),
+         parentId: "parentId" in ch ? (ch.parentId ?? null) : null,
       });
+      const videoPolicy = this.deps.videoPolicyFor(policyId);
+      const { toScan, skipped } = await planScans(attachments, {
+         maxDownloadBytes: this.deps.maxDownloadBytes,
+         maxFiles: this.deps.maxFiles,
+         videoPolicy,
+         peekMagic: this.deps.peekMagic ?? peekMagicBytes,
+      });
+      for (const s of skipped) {
+         if (s.reason === "image") continue;
+         log.info(
+            {
+               channelId: message.channelId,
+               policyChannelId: policyId,
+               videoPolicy,
+               fileName: s.name,
+               reason: s.reason,
+               size: s.size,
+            },
+            "file_scanner.watcher.skipped",
+         );
+      }
       if (toScan.length === 0) return;
 
       // If we can't post the verdict, don't burn a VirusTotal budget call or leave
@@ -181,10 +220,11 @@ export class FileScanWatcher {
    ): Promise<ScanOutcome> {
       try {
          const bytes = await downloadAttachment(att.url);
-         return await this.deps.scanner.scanBytes(bytes, {
-            fileName: att.name,
-            uploader,
-         });
+         return await this.deps.scanner.scanBytes(
+            bytes,
+            { fileName: att.name, uploader },
+            { allowUpload: att.size <= this.deps.maxUploadBytes },
+         );
       } catch (err) {
          log.error(
             { err, fileName: att.name },
@@ -229,21 +269,112 @@ export class FileScanWatcher {
    }
 }
 
+export interface SkipRecord {
+   name: string;
+   reason: "image" | "video" | "empty" | "oversized" | "cap";
+   size: number;
+}
+
+export interface PlanScansOpts {
+   maxDownloadBytes: number;
+   maxFiles: number;
+   videoPolicy: VideoPolicy;
+   peekMagic?: (url: string) => Promise<Uint8Array | null>;
+}
+
 /**
- * Pick the attachments worth scanning: skip images and videos (quota
- * protection), skip empty or oversized files, and cap the count per message.
- * Pure — unit-tested without Discord.
+ * Pick the attachments worth scanning. Images are skipped everywhere. Videos
+ * are skipped only when `videoPolicy` is `"skip"` (media-native channels), and
+ * even then a magic-byte mismatch (disguise) forces a scan. Audio and documents
+ * are always scanned (within size/count caps). Pure enough for tests — peek is
+ * injectable.
+ */
+export async function planScans(
+   attachments: AttachmentLike[],
+   opts: PlanScansOpts,
+): Promise<{ toScan: AttachmentLike[]; skipped: SkipRecord[] }> {
+   const toScan: AttachmentLike[] = [];
+   const skipped: SkipRecord[] = [];
+   const maybeVideo: AttachmentLike[] = [];
+
+   for (const a of attachments) {
+      if (toScan.length + maybeVideo.length >= opts.maxFiles) {
+         skipped.push({ name: a.name, reason: "cap", size: a.size });
+         continue;
+      }
+      if (a.size <= 0) {
+         skipped.push({ name: a.name, reason: "empty", size: a.size });
+         continue;
+      }
+      if (a.size > opts.maxDownloadBytes) {
+         skipped.push({ name: a.name, reason: "oversized", size: a.size });
+         continue;
+      }
+      if (isTrustedImage(a.name, a.contentType)) {
+         skipped.push({ name: a.name, reason: "image", size: a.size });
+         continue;
+      }
+      if (
+         opts.videoPolicy === "skip" &&
+         isVideoAttachment(a.name, a.contentType)
+      ) {
+         maybeVideo.push(a);
+         continue;
+      }
+      toScan.push(a);
+   }
+
+   for (const a of maybeVideo) {
+      if (toScan.length >= opts.maxFiles) {
+         skipped.push({ name: a.name, reason: "cap", size: a.size });
+         continue;
+      }
+      let disguise = false;
+      if (opts.peekMagic) {
+         const magic = await opts.peekMagic(a.url);
+         if (magic) {
+            disguise = isMediaDisguise(
+               claimedKind(a.name, a.contentType),
+               sniffKind(magic),
+            );
+         }
+      }
+      if (disguise) {
+         log.info(
+            { fileName: a.name, size: a.size },
+            "file_scanner.watcher.disguise",
+         );
+         toScan.push(a);
+      } else {
+         skipped.push({ name: a.name, reason: "video", size: a.size });
+      }
+   }
+
+   return { toScan, skipped };
+}
+
+/**
+ * Sync subset used by older tests: skip images + (optionally) videos, no peek.
+ * Prefer {@link planScans} for new coverage.
  */
 export function selectScannable(
    attachments: AttachmentLike[],
-   opts: { maxFileBytes: number; maxFiles: number },
+   opts: {
+      maxFileBytes: number;
+      maxFiles: number;
+      videoPolicy?: VideoPolicy;
+   },
 ): AttachmentLike[] {
    const out: AttachmentLike[] = [];
    for (const a of attachments) {
       if (out.length >= opts.maxFiles) break;
       if (a.size <= 0 || a.size > opts.maxFileBytes) continue;
-      if (isImageAttachment(a.name, a.contentType)) continue;
-      if (isVideoAttachment(a.name, a.contentType)) continue;
+      if (isTrustedImage(a.name, a.contentType)) continue;
+      if (
+         (opts.videoPolicy ?? "skip") === "skip" &&
+         isVideoAttachment(a.name, a.contentType)
+      )
+         continue;
       out.push(a);
    }
    return out;

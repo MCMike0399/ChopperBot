@@ -146,4 +146,23 @@ describe("FileScanner", () => {
       expect(lookupByHash).not.toHaveBeenCalled();
       mem.close();
    });
+
+   test("unknown file over the upload cap → too_large, no upload", async () => {
+      const lookupByHash = vi.fn().mockResolvedValue(null);
+      const uploadFile = vi.fn();
+      const { scanner, mem } = await harness({
+         client: { lookupByHash, uploadFile },
+      });
+      const out = await scanner.scanBytes(
+         BYTES,
+         { fileName: "huge.mov", uploader: null },
+         { allowUpload: false },
+      );
+      expect(out).toEqual({
+         kind: "too_large",
+         sha256: FileScanner.sha256(BYTES),
+      });
+      expect(uploadFile).not.toHaveBeenCalled();
+      mem.close();
+   });
 });

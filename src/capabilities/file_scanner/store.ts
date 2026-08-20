@@ -81,6 +81,17 @@ export const FILE_SCANNER_MIGRATIONS: Migration[] = [
         ON file_scanner_scans (verdict, last_seen_at DESC);
     `,
    },
+   {
+      version: 2,
+      up: `
+      -- Channels whose purpose is media: skip genuine videos there. Conversation
+      -- channels (everything else that's watched) scan videos. Empty list = scan
+      -- videos everywhere. Seeded from DEFAULT_MEDIA_NATIVE_CHANNEL_IDS on first
+      -- boot after this migration; operator edits via config_filescanner win.
+      ALTER TABLE file_scanner_settings
+        ADD COLUMN media_channels_json TEXT NOT NULL DEFAULT '[]';
+    `,
+   },
 ];
 
 /**
@@ -124,6 +135,36 @@ export class FileScannerStore {
       if (ids.length === 0) return;
       if (this.getWatchedChannels().length > 0) return;
       this.setWatchedChannels(ids);
+   }
+
+   // ── Media-native channels (skip genuine videos) ───────────────────────────
+
+   getMediaChannels(): string[] {
+      const row = this.db
+         .prepare(
+            "SELECT media_channels_json FROM file_scanner_settings WHERE id = 1",
+         )
+         .get() as { media_channels_json: string } | undefined;
+      return parseIdArray(row?.media_channels_json);
+   }
+
+   setMediaChannels(ids: string[]): void {
+      const clean = dedupeIds(ids);
+      this.db
+         .prepare(
+            "UPDATE file_scanner_settings SET media_channels_json = ?, updated_at = ? WHERE id = 1",
+         )
+         .run(JSON.stringify(clean), Date.now());
+   }
+
+   /**
+    * One-time seed of the media-native denylist. Same rule as watched channels:
+    * only writes when the list is still empty, so operator edits survive restarts.
+    */
+   seedMediaChannels(ids: string[]): void {
+      if (ids.length === 0) return;
+      if (this.getMediaChannels().length > 0) return;
+      this.setMediaChannels(ids);
    }
 
    // ── Rolling request budget (persistent) ─────────────────────────────────────

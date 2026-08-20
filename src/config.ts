@@ -289,10 +289,11 @@ const ConfigSchema = z
 
       // ── VirusTotal file scanner (file_scanner capability) ──────────────────────
       // Optional. When VIRUSTOTAL_API_KEY is set, the file_scanner capability
-      // registers a passive listener that scans non-image uploads in the watched
-      // channels and posts a friendly verdict. Unset → the capability self-disables
-      // at boot (logs a warning; nothing else changes), so the code can ship and be
-      // tested against a mocked client before a key exists.
+      // registers a passive listener that scans uploads in the watched
+      // channels (images skipped; videos skipped only in media-native
+      // channels) and posts a friendly verdict. Unset → the capability
+      // self-disables at boot (logs a warning; nothing else changes), so the
+      // code can ship and be tested against a mocked client before a key exists.
       VIRUSTOTAL_API_KEY: z.preprocess(
          emptyToUndefined,
          z.string().min(1).optional(),
@@ -305,6 +306,15 @@ const ConfigSchema = z
       // first boot; after that the DB value wins (manage it live from the config
       // channel via `config_filescanner action:set_channels`).
       FILE_SCANNER_CHANNEL_IDS: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
+      // Channels whose purpose is media (clips, memes, art). Videos there are
+      // skipped; conversation channels scan them. JSON array or comma list of
+      // channel snowflakes. Seeds the DB on first boot; DB wins after
+      // (`config_filescanner action:set_media_channels`). Unset → the Revolución Z
+      // default denylist (multimedia-general, momos, arte, cine, música, …).
+      FILE_SCANNER_MEDIA_CHANNEL_IDS: z.preprocess(
          emptyToUndefined,
          z.string().min(1).optional(),
       ),
@@ -325,13 +335,20 @@ const ConfigSchema = z
       // Max analysis polls before giving up on a fresh upload (each poll is one
       // budgeted, spaced call; ~8 polls ≈ a couple of minutes of VT queue time).
       VIRUSTOTAL_MAX_POLLS: z.coerce.number().int().positive().default(8),
-      // Files larger than this are skipped (VT's simple /files upload endpoint caps
-      // around 32 MB on the public API).
+      // Files larger than this are not uploaded to VirusTotal (simple /files
+      // endpoint caps around 32 MB). They can still be hashed and looked up.
       VIRUSTOTAL_MAX_FILE_BYTES: z.coerce
          .number()
          .int()
          .positive()
          .default(32 * 1024 * 1024),
+      // Hard skip above this — we won't even download. Default 50 MB covers
+      // typical Discord Nitro uploads while staying well under Pi RAM.
+      VIRUSTOTAL_MAX_DOWNLOAD_BYTES: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(50 * 1024 * 1024),
       // Number of engines flagging "malicious" required to render 🛑 malicioso. A
       // single detection below this (or any suspicious hit) renders ⚠️ sospechoso.
       VIRUSTOTAL_MALICIOUS_THRESHOLD: z.coerce

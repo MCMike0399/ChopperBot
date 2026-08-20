@@ -12,7 +12,9 @@ import {
    ScanRateLimiter,
 } from "./rate-limiter.js";
 
-const DOWNLOAD_TIMEOUT_MS = 30_000;
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+const PEEK_TIMEOUT_MS = 10_000;
+const PEEK_BYTES = 256;
 
 /** How the verdict was obtained (for logging + friendly wording). */
 export type VerdictSource = "cache" | "hash" | "analysis";
@@ -27,6 +29,8 @@ export type ScanOutcome =
      }
    /** Fresh upload didn't finish analyzing within the poll budget. */
    | { kind: "pending"; sha256: string }
+   /** Hash lookup missed and the file is over VirusTotal's upload cap. */
+   | { kind: "too_large"; sha256: string }
    | { kind: "budget_exhausted" }
    | { kind: "queue_full" }
    | { kind: "error"; message: string; authError?: boolean };
@@ -71,7 +75,9 @@ export class FileScanner {
    async scanBytes(
       bytes: Uint8Array,
       meta: { fileName: string; uploader: string | null },
+      opts: { allowUpload?: boolean } = {},
    ): Promise<ScanOutcome> {
+      const allowUpload = opts.allowUpload !== false;
       const sha256 = FileScanner.sha256(bytes);
       const { store, client, limiter, maliciousThreshold, maxPolls } =
          this.deps;
@@ -125,6 +131,14 @@ export class FileScanner {
                bytes.byteLength,
                "hash",
             );
+         }
+
+         if (!allowUpload) {
+            log.info(
+               { sha256, bytes: bytes.byteLength },
+               "file_scanner.scan.too_large",
+            );
+            return { kind: "too_large", sha256 };
          }
 
          // 4. Unknown file → upload + poll.
@@ -198,6 +212,42 @@ export async function downloadAttachment(url: string): Promise<Uint8Array> {
          );
       }
       return new Uint8Array(await res.arrayBuffer());
+   } finally {
+      clearTimeout(timer);
+   }
+}
+
+/**
+ * Read only the first bytes of an attachment (Range request). Returns null if
+ * the CDN ignores Range (we refuse to slurp a 40 MB video just to sniff magic)
+ * or if the request fails.
+ */
+export async function peekMagicBytes(
+   url: string,
+   n = PEEK_BYTES,
+): Promise<Uint8Array | null> {
+   const controller = new AbortController();
+   const timer = setTimeout(() => controller.abort(), PEEK_TIMEOUT_MS);
+   try {
+      const res = await fetch(url, {
+         headers: { Range: `bytes=0-${n - 1}` },
+         signal: controller.signal,
+      });
+      if (res.status === 206) {
+         return new Uint8Array(await res.arrayBuffer());
+      }
+      if (res.status === 200) {
+         const len = Number(res.headers.get("content-length") ?? "");
+         if (!Number.isFinite(len) || len > n * 4) {
+            controller.abort();
+            return null;
+         }
+         const buf = new Uint8Array(await res.arrayBuffer());
+         return buf.subarray(0, n);
+      }
+      return null;
+   } catch {
+      return null;
    } finally {
       clearTimeout(timer);
    }

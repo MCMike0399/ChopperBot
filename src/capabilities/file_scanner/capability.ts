@@ -19,6 +19,7 @@ import { ScanRateLimiter } from "./rate-limiter.js";
 import { FileScanner } from "./scanner.js";
 import { FileScanWatcher } from "./watcher.js";
 import { renderFileScannerPrompt } from "./preamble.js";
+import { DEFAULT_MEDIA_NATIVE_CHANNEL_IDS } from "./media-channels.js";
 
 export const FILE_SCANNER_CAPABILITY_ID = "file_scanner";
 
@@ -38,14 +39,18 @@ const WATCHED_CACHE_TTL_MS = 10_000;
 export class FileScannerCapability implements Capability {
    readonly id = FILE_SCANNER_CAPABILITY_ID;
    readonly description =
-      "Analiza automáticamente los archivos (no imágenes) subidos a los canales vigilados con VirusTotal y publica un veredicto (limpio/sospechoso/malicioso). Pasivo: no requiere menciones.";
+      "Analiza automáticamente los archivos subidos a los canales vigilados con VirusTotal (imágenes no; videos sí en canales de conversación) y publica un veredicto (limpio/sospechoso/malicioso). Pasivo: no requiere menciones.";
 
    private store: FileScannerStore | null = null;
    private scanner: FileScanner | null = null;
    private watcher: FileScanWatcher | null = null;
    private listener: ((message: Message) => void) | null = null;
    private boundClient: Client | null = null;
-   private watchedCache: { ids: Set<string>; at: number } | null = null;
+   private watchedCache: {
+      watched: Set<string>;
+      media: Set<string>;
+      at: number;
+   } | null = null;
 
    async init({ memory }: CapabilityInitDeps): Promise<void> {
       if (!config.VIRUSTOTAL_API_KEY) {
@@ -60,6 +65,16 @@ export class FileScannerCapability implements Capability {
       this.store = new FileScannerStore(memory.db());
       this.store.seedWatchedChannels(
          parseChannelIdEnv(config.FILE_SCANNER_CHANNEL_IDS),
+      );
+      this.store.seedMediaChannels(
+         (() => {
+            const fromEnv = parseChannelIdEnv(
+               config.FILE_SCANNER_MEDIA_CHANNEL_IDS,
+            );
+            return fromEnv.length > 0
+               ? fromEnv
+               : [...DEFAULT_MEDIA_NATIVE_CHANNEL_IDS];
+         })(),
       );
 
       const client = new VirusTotalClient(config.VIRUSTOTAL_API_KEY);
@@ -93,8 +108,11 @@ export class FileScannerCapability implements Capability {
          scanner: this.scanner,
          store: this.store,
          client,
-         maxFileBytes: config.VIRUSTOTAL_MAX_FILE_BYTES,
+         maxDownloadBytes: config.VIRUSTOTAL_MAX_DOWNLOAD_BYTES,
+         maxUploadBytes: config.VIRUSTOTAL_MAX_FILE_BYTES,
          maxFiles: config.MAX_ATTACHMENT_COUNT,
+         videoPolicyFor: (channelId) =>
+            this.isMediaNative(channelId) ? "skip" : "scan",
          alert: (lines) => sendAdminAlert(client, lines, "file_scanner.alert"),
       });
 
@@ -114,7 +132,11 @@ export class FileScannerCapability implements Capability {
       };
       client.on(Events.MessageCreate, this.listener);
       log.info(
-         { capability: this.id, watched: this.store.getWatchedChannels() },
+         {
+            capability: this.id,
+            watched: this.store.getWatchedChannels(),
+            mediaNative: this.store.getMediaChannels().length,
+         },
          "FileScannerCapability listener registered",
       );
    }
@@ -133,6 +155,21 @@ export class FileScannerCapability implements Capability {
       }
    }
 
+   private settings(): { watched: Set<string>; media: Set<string> } {
+      const now = Date.now();
+      if (
+         !this.watchedCache ||
+         now - this.watchedCache.at > WATCHED_CACHE_TTL_MS
+      ) {
+         this.watchedCache = {
+            watched: new Set(this.store!.getWatchedChannels()),
+            media: new Set(this.store!.getMediaChannels()),
+            at: now,
+         };
+      }
+      return this.watchedCache;
+   }
+
    /**
     * Whether a message's channel should be scanned, with a short TTL cache
     * (avoids a DB read per message). The watched set may contain, besides plain
@@ -142,20 +179,15 @@ export class FileScannerCapability implements Capability {
     * wildcards naturally scope to "everywhere ChopperBot can read".
     */
    private isWatched(channelId: string, guildId: string | null): boolean {
-      const now = Date.now();
-      if (
-         !this.watchedCache ||
-         now - this.watchedCache.at > WATCHED_CACHE_TTL_MS
-      ) {
-         this.watchedCache = {
-            ids: new Set(this.store!.getWatchedChannels()),
-            at: now,
-         };
-      }
-      const set = this.watchedCache.ids;
+      const set = this.settings().watched;
       if (set.has("all")) return true;
       if (set.has(channelId)) return true;
       if (guildId && set.has(`guild:${guildId}`)) return true;
       return false;
+   }
+
+   /** Media-native channel → skip genuine videos. Threads inherit the parent. */
+   private isMediaNative(channelId: string): boolean {
+      return this.settings().media.has(channelId);
    }
 }

@@ -14,6 +14,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.26.0 — 2026-08-20
+
+🛡️ **En el chat general ahora sí reviso los videos**
+
+Si alguien sube un `.mov` o un `.mp4` en canales de conversación (general, fuera de tema, cuidados y el resto que no son de media), **lo analizo** igual que un documento o un mp3. En canales que sí son para clips y memes (multimedia, momos, arte, cine, música…) sigo sin gastar revisiones en cada video, para no llenar el cupo diario.
+
+Los audios (mp3 y compañía) se revisan en todos lados, como ya pasaba. Si un archivo se hace pasar por video pero por dentro no lo es, lo reviso igual. Y si pesa de más para mandarlo completo, igual dejo la huella para que se pueda consultar.
+
+---
+
 ## 1.25.2 — 2026-08-20
 
 📣 **Los anuncios ya no pegan el flyer dos veces**
