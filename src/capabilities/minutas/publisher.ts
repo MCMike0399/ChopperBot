@@ -1,9 +1,9 @@
-import { AttachmentBuilder, type Client } from 'discord.js';
-import { chunkBotReply } from '../../discord/chunk.js';
+import { AttachmentBuilder, type Client } from "discord.js";
+import { chunkBotReply } from "../../discord/chunk.js";
 
 export interface PublishedMinutes {
-  messageId: string;
-  url: string;
+   messageId: string;
+   url: string;
 }
 
 /**
@@ -22,34 +22,36 @@ export interface PublishedMinutes {
  * is told the same in the prompt; this is the gate, not the promise).
  */
 export async function publishMinutes(deps: {
-  client: Client;
-  channelId: string;
-  docText: string;
-  minutesMd: string;
-  fileBaseName: string;
+   client: Client;
+   channelId: string;
+   docText: string;
+   minutesMd: string;
+   fileBaseName: string;
 }): Promise<PublishedMinutes> {
-  const channel = await deps.client.channels.fetch(deps.channelId);
-  if (!channel || !channel.isSendable()) {
-    throw new Error(`Minutas output channel ${deps.channelId} is not sendable`);
-  }
-  const files = [
-    new AttachmentBuilder(Buffer.from(deps.minutesMd, 'utf8'), {
-      name: `minuta-${deps.fileBaseName}.md`,
-    }),
-  ];
-  const chunks = chunkBotReply(deps.docText);
-  let firstId = '';
-  let firstUrl = '';
-  for (let i = 0; i < chunks.length; i++) {
-    const sent = await channel.send({
-      content: chunks[i]!,
-      files: i === 0 ? files : undefined,
-      allowedMentions: { parse: [] },
-    });
-    if (i === 0) {
-      firstId = sent.id;
-      firstUrl = sent.url;
-    }
-  }
-  return { messageId: firstId, url: firstUrl };
+   const channel = await deps.client.channels.fetch(deps.channelId);
+   if (!channel || !channel.isSendable()) {
+      throw new Error(
+         `Minutas output channel ${deps.channelId} is not sendable`,
+      );
+   }
+   const files = [
+      new AttachmentBuilder(Buffer.from(deps.minutesMd, "utf8"), {
+         name: `minuta-${deps.fileBaseName}.md`,
+      }),
+   ];
+   const chunks = chunkBotReply(deps.docText);
+   let firstId = "";
+   let firstUrl = "";
+   for (let i = 0; i < chunks.length; i++) {
+      const sent = await channel.send({
+         content: chunks[i]!,
+         files: i === 0 ? files : undefined,
+         allowedMentions: { parse: [] },
+      });
+      if (i === 0) {
+         firstId = sent.id;
+         firstUrl = sent.url;
+      }
+   }
+   return { messageId: firstId, url: firstUrl };
 }

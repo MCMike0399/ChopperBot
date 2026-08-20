@@ -1,6 +1,6 @@
-import { statSync } from 'node:fs';
-import { runPython, sandboxAvailable } from './sandbox.js';
-import type { SessionWorkspace } from './workspace.js';
+import { statSync } from "node:fs";
+import { runPython, sandboxAvailable } from "./sandbox.js";
+import type { SessionWorkspace } from "./workspace.js";
 
 /**
  * Document index for big texts (the "RAG" of the workshop): a canned,
@@ -20,56 +20,59 @@ import type { SessionWorkspace } from './workspace.js';
  */
 
 /** Workspace dir that holds every document index (hidden prefix). */
-export const DOCINDEX_DIR = '.docindex';
+export const DOCINDEX_DIR = ".docindex";
 
 /** Source extensions the indexer can extract. */
-export const INDEXABLE_EXTS = new Set(['.pdf', '.docx', '.txt', '.md']);
+export const INDEXABLE_EXTS = new Set([".pdf", ".docx", ".txt", ".md"]);
 
 /** Target characters per chunk (page-aware, split on paragraph boundaries). */
 const CHUNK_CHARS = 1800;
 
 export interface DocChunk {
-  id: number;
-  page_start: number;
-  page_end: number;
-  heading: string | null;
-  text: string;
+   id: number;
+   page_start: number;
+   page_end: number;
+   heading: string | null;
+   text: string;
 }
 
 export interface DocOutlineEntry {
-  heading: string;
-  page: number;
-  chunk: number;
+   heading: string;
+   page: number;
+   chunk: number;
 }
 
 export interface DocMeta {
-  source: string;
-  /** `${bytes}:${mtimeMs}` of the source at index time — freshness check. */
-  source_key: string;
-  pages: number;
-  chars: number;
-  chunks: number;
-  outline: DocOutlineEntry[];
+   source: string;
+   /** `${bytes}:${mtimeMs}` of the source at index time — freshness check. */
+   source_key: string;
+   pages: number;
+   chars: number;
+   chunks: number;
+   outline: DocOutlineEntry[];
 }
 
 /** Deterministic, filesystem-safe index dir for a source path. */
 export function docIndexDirFor(sourceRel: string): string {
-  let hash = 5381;
-  for (let i = 0; i < sourceRel.length; i++) {
-    hash = ((hash << 5) + hash + sourceRel.charCodeAt(i)) >>> 0;
-  }
-  const slug = sourceRel
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '')
-    .slice(0, 48);
-  return `${DOCINDEX_DIR}/${slug || 'doc'}-${hash.toString(16)}`;
+   let hash = 5381;
+   for (let i = 0; i < sourceRel.length; i++) {
+      hash = ((hash << 5) + hash + sourceRel.charCodeAt(i)) >>> 0;
+   }
+   const slug = sourceRel
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 48);
+   return `${DOCINDEX_DIR}/${slug || "doc"}-${hash.toString(16)}`;
 }
 
 /** Identity of the source file right now (freshness key). */
-export function sourceKeyFor(workspace: SessionWorkspace, sourceRel: string): string {
-  const st = statSync(workspace.absolute(sourceRel));
-  return `${st.size}:${Math.floor(st.mtimeMs)}`;
+export function sourceKeyFor(
+   workspace: SessionWorkspace,
+   sourceRel: string,
+): string {
+   const st = statSync(workspace.absolute(sourceRel));
+   return `${st.size}:${Math.floor(st.mtimeMs)}`;
 }
 
 /**
@@ -78,17 +81,17 @@ export function sourceKeyFor(workspace: SessionWorkspace, sourceRel: string): st
  * sandbox where bwrap exists.
  */
 export function buildIndexerScript(input: {
-  sourceRel: string;
-  outDirRel: string;
-  sourceKey: string;
+   sourceRel: string;
+   outDirRel: string;
+   sourceKey: string;
 }): string {
-  const params = JSON.stringify({
-    src: input.sourceRel,
-    out: input.outDirRel,
-    source_key: input.sourceKey,
-    chunk_chars: CHUNK_CHARS,
-  });
-  return `
+   const params = JSON.stringify({
+      src: input.sourceRel,
+      out: input.outDirRel,
+      source_key: input.sourceKey,
+      chunk_chars: CHUNK_CHARS,
+   });
+   return `
 import json, os, re, subprocess, sys, unicodedata
 
 P = json.loads(${JSON.stringify(params)})
@@ -208,57 +211,64 @@ emit({"ok": True, "pages": len(pages), "chars": total_chars, "chunks": len(chunk
 
 /** Parsed result line of an indexer run. */
 export interface IndexerRunResult {
-  ok: boolean;
-  reason?: string;
-  pages?: number;
-  chars?: number;
-  chunks?: number;
-  outline_entries?: number;
+   ok: boolean;
+   reason?: string;
+   pages?: number;
+   chars?: number;
+   chunks?: number;
+   outline_entries?: number;
 }
 
 /** Extract the DOCINDEX_RESULT line from the script's stdout. */
 export function parseIndexerOutput(stdout: string): IndexerRunResult | null {
-  const line = stdout
-    .split('\n')
-    .reverse()
-    .find((l) => l.startsWith('DOCINDEX_RESULT '));
-  if (!line) return null;
-  try {
-    return JSON.parse(line.slice('DOCINDEX_RESULT '.length)) as IndexerRunResult;
-  } catch {
-    return null;
-  }
+   const line = stdout
+      .split("\n")
+      .reverse()
+      .find((l) => l.startsWith("DOCINDEX_RESULT "));
+   if (!line) return null;
+   try {
+      return JSON.parse(
+         line.slice("DOCINDEX_RESULT ".length),
+      ) as IndexerRunResult;
+   } catch {
+      return null;
+   }
 }
 
 /** Read a built index; null when absent or unreadable. */
 export function readDocIndex(
-  workspace: SessionWorkspace,
-  sourceRel: string,
+   workspace: SessionWorkspace,
+   sourceRel: string,
 ): { meta: DocMeta; dir: string } | null {
-  const dir = docIndexDirFor(sourceRel);
-  try {
-    const meta = JSON.parse(
-      Buffer.from(workspace.readBytes(`${dir}/meta.json`)).toString('utf-8'),
-    ) as DocMeta;
-    return { meta, dir };
-  } catch {
-    return null;
-  }
+   const dir = docIndexDirFor(sourceRel);
+   try {
+      const meta = JSON.parse(
+         Buffer.from(workspace.readBytes(`${dir}/meta.json`)).toString("utf-8"),
+      ) as DocMeta;
+      return { meta, dir };
+   } catch {
+      return null;
+   }
 }
 
 /** Load the chunk list of a built index (a few MB at most — fine per call). */
-export function readDocChunks(workspace: SessionWorkspace, dir: string): DocChunk[] {
-  const raw = Buffer.from(workspace.readBytes(`${dir}/chunks.jsonl`)).toString('utf-8');
-  const out: DocChunk[] = [];
-  for (const line of raw.split('\n')) {
-    if (!line.trim()) continue;
-    try {
-      out.push(JSON.parse(line) as DocChunk);
-    } catch {
-      /* skip a corrupt line rather than fail the whole read */
-    }
-  }
-  return out;
+export function readDocChunks(
+   workspace: SessionWorkspace,
+   dir: string,
+): DocChunk[] {
+   const raw = Buffer.from(workspace.readBytes(`${dir}/chunks.jsonl`)).toString(
+      "utf-8",
+   );
+   const out: DocChunk[] = [];
+   for (const line of raw.split("\n")) {
+      if (!line.trim()) continue;
+      try {
+         out.push(JSON.parse(line) as DocChunk);
+      } catch {
+         /* skip a corrupt line rather than fail the whole read */
+      }
+   }
+   return out;
 }
 
 /**
@@ -266,116 +276,141 @@ export function readDocChunks(workspace: SessionWorkspace, dir: string): DocChun
  * Returns the parsed result, or an { ok:false } with a Spanish reason.
  */
 export async function ensureDocIndex(input: {
-  workspace: SessionWorkspace;
-  sourceRel: string;
-  venvDir: string | null;
-  timeoutMs: number;
+   workspace: SessionWorkspace;
+   sourceRel: string;
+   venvDir: string | null;
+   timeoutMs: number;
 }): Promise<{ meta: DocMeta; dir: string } | { error: string }> {
-  const { workspace, sourceRel } = input;
-  if (!workspace.exists(sourceRel)) {
-    return { error: `No existe: ${sourceRel}. Usa workshop_list_files.` };
-  }
-  const ext = /\.[a-z0-9]{1,10}$/i.exec(sourceRel)?.[0]?.toLowerCase() ?? '';
-  if (!INDEXABLE_EXTS.has(ext)) {
-    return {
-      error: `Formato no indexable (${ext || 'sin extensión'}). Soportados: PDF, DOCX, TXT, MD.`,
-    };
-  }
-  const sourceKey = sourceKeyFor(workspace, sourceRel);
-  const existing = readDocIndex(workspace, sourceRel);
-  if (existing && existing.meta.source_key === sourceKey) return existing;
+   const { workspace, sourceRel } = input;
+   if (!workspace.exists(sourceRel)) {
+      return { error: `No existe: ${sourceRel}. Usa workshop_list_files.` };
+   }
+   const ext = /\.[a-z0-9]{1,10}$/i.exec(sourceRel)?.[0]?.toLowerCase() ?? "";
+   if (!INDEXABLE_EXTS.has(ext)) {
+      return {
+         error: `Formato no indexable (${ext || "sin extensión"}). Soportados: PDF, DOCX, TXT, MD.`,
+      };
+   }
+   const sourceKey = sourceKeyFor(workspace, sourceRel);
+   const existing = readDocIndex(workspace, sourceRel);
+   if (existing && existing.meta.source_key === sourceKey) return existing;
 
-  if (!sandboxAvailable()) {
-    return { error: 'La indexación no está disponible en este host (falta bubblewrap).' };
-  }
-  const dir = docIndexDirFor(sourceRel);
-  const script = buildIndexerScript({ sourceRel, outDirRel: dir, sourceKey });
-  const run = await runPython(script, {
-    workspaceDir: workspace.root,
-    venvDir: input.venvDir,
-    timeoutMs: input.timeoutMs,
-  });
-  const result = parseIndexerOutput(run.stdout);
-  if (!result) {
-    return {
-      error: `La indexación falló (${run.timedOut ? 'timeout' : `exit ${run.exitCode}`}): ${run.stderr.slice(0, 300)}`,
-    };
-  }
-  if (!result.ok) {
-    return { error: `No pude indexar el documento: ${result.reason ?? 'razón desconocida'}` };
-  }
-  const built = readDocIndex(workspace, sourceRel);
-  if (!built) return { error: 'La indexación no dejó un índice legible — reinténtalo.' };
-  return built;
+   if (!sandboxAvailable()) {
+      return {
+         error: "La indexación no está disponible en este host (falta bubblewrap).",
+      };
+   }
+   const dir = docIndexDirFor(sourceRel);
+   const script = buildIndexerScript({ sourceRel, outDirRel: dir, sourceKey });
+   const run = await runPython(script, {
+      workspaceDir: workspace.root,
+      venvDir: input.venvDir,
+      timeoutMs: input.timeoutMs,
+   });
+   const result = parseIndexerOutput(run.stdout);
+   if (!result) {
+      return {
+         error: `La indexación falló (${run.timedOut ? "timeout" : `exit ${run.exitCode}`}): ${run.stderr.slice(0, 300)}`,
+      };
+   }
+   if (!result.ok) {
+      return {
+         error: `No pude indexar el documento: ${result.reason ?? "razón desconocida"}`,
+      };
+   }
+   const built = readDocIndex(workspace, sourceRel);
+   if (!built)
+      return {
+         error: "La indexación no dejó un índice legible — reinténtalo.",
+      };
+   return built;
 }
 
 // ── Lexical search over chunks ───────────────────────────────────────────────
 
 const normalize = (s: string): string =>
-  s
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '');
+   s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 
-const tokenize = (s: string): string[] => normalize(s).match(/[a-z0-9]{2,}/g) ?? [];
+const tokenize = (s: string): string[] =>
+   normalize(s).match(/[a-z0-9]{2,}/g) ?? [];
 
 /** Spanish/English stopwords that would otherwise dominate idf-less overlap. */
 const STOPWORDS = new Set(
-  ('de la el en y a los del las un una que es por con para su al lo como mas o ' +
-    'the of and to in a is that for on as with it this').split(' '),
+   (
+      "de la el en y a los del las un una que es por con para su al lo como mas o " +
+      "the of and to in a is that for on as with it this"
+   ).split(" "),
 );
 
 export interface DocSearchHit {
-  chunk: DocChunk;
-  score: number;
+   chunk: DocChunk;
+   score: number;
 }
 
 /**
  * Rank chunks against a query: idf-weighted token overlap plus a bonus when
  * the full normalized query appears as a phrase. Pure and unit-tested.
  */
-export function searchChunks(chunks: DocChunk[], query: string, k: number): DocSearchHit[] {
-  const queryTokens = [...new Set(tokenize(query).filter((t) => !STOPWORDS.has(t)))];
-  if (queryTokens.length === 0 || chunks.length === 0) return [];
+export function searchChunks(
+   chunks: DocChunk[],
+   query: string,
+   k: number,
+): DocSearchHit[] {
+   const queryTokens = [
+      ...new Set(tokenize(query).filter((t) => !STOPWORDS.has(t))),
+   ];
+   if (queryTokens.length === 0 || chunks.length === 0) return [];
 
-  const df = new Map<string, number>();
-  const chunkTokens: Array<Map<string, number>> = chunks.map((c) => {
-    const tf = new Map<string, number>();
-    for (const t of tokenize(c.text)) tf.set(t, (tf.get(t) ?? 0) + 1);
-    for (const t of queryTokens) if (tf.has(t)) df.set(t, (df.get(t) ?? 0) + 1);
-    return tf;
-  });
-  const idf = (t: string): number => Math.log(1 + chunks.length / (1 + (df.get(t) ?? 0)));
+   const df = new Map<string, number>();
+   const chunkTokens: Array<Map<string, number>> = chunks.map((c) => {
+      const tf = new Map<string, number>();
+      for (const t of tokenize(c.text)) tf.set(t, (tf.get(t) ?? 0) + 1);
+      for (const t of queryTokens)
+         if (tf.has(t)) df.set(t, (df.get(t) ?? 0) + 1);
+      return tf;
+   });
+   const idf = (t: string): number =>
+      Math.log(1 + chunks.length / (1 + (df.get(t) ?? 0)));
 
-  const phrase = normalize(query).trim();
-  const hits: DocSearchHit[] = chunks.map((chunk, i) => {
-    let score = 0;
-    for (const t of queryTokens) {
-      const tf = chunkTokens[i].get(t) ?? 0;
-      if (tf > 0) score += idf(t) * Math.sqrt(tf);
-    }
-    if (phrase.length >= 8 && normalize(chunk.text).includes(phrase)) {
-      score += 2 * queryTokens.reduce((acc, t) => acc + idf(t), 0);
-    }
-    return { chunk, score };
-  });
-  return hits
-    .filter((h) => h.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k);
+   const phrase = normalize(query).trim();
+   const hits: DocSearchHit[] = chunks.map((chunk, i) => {
+      let score = 0;
+      for (const t of queryTokens) {
+         const tf = chunkTokens[i].get(t) ?? 0;
+         if (tf > 0) score += idf(t) * Math.sqrt(tf);
+      }
+      if (phrase.length >= 8 && normalize(chunk.text).includes(phrase)) {
+         score += 2 * queryTokens.reduce((acc, t) => acc + idf(t), 0);
+      }
+      return { chunk, score };
+   });
+   return hits
+      .filter((h) => h.score > 0)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, k);
 }
 
 /** Trim a chunk to `maxChars`, centered on the first query-token hit. */
-export function excerptAround(text: string, query: string, maxChars: number): string {
-  if (text.length <= maxChars) return text;
-  const tokens = tokenize(query).filter((t) => !STOPWORDS.has(t));
-  const hay = normalize(text);
-  let at = -1;
-  for (const t of tokens) {
-    const i = hay.indexOf(t);
-    if (i >= 0 && (at < 0 || i < at)) at = i;
-  }
-  const start = Math.max(0, Math.min(at < 0 ? 0 : at - Math.floor(maxChars / 3), text.length - maxChars));
-  const slice = text.slice(start, start + maxChars);
-  return `${start > 0 ? '…' : ''}${slice}${start + maxChars < text.length ? '…' : ''}`;
+export function excerptAround(
+   text: string,
+   query: string,
+   maxChars: number,
+): string {
+   if (text.length <= maxChars) return text;
+   const tokens = tokenize(query).filter((t) => !STOPWORDS.has(t));
+   const hay = normalize(text);
+   let at = -1;
+   for (const t of tokens) {
+      const i = hay.indexOf(t);
+      if (i >= 0 && (at < 0 || i < at)) at = i;
+   }
+   const start = Math.max(
+      0,
+      Math.min(
+         at < 0 ? 0 : at - Math.floor(maxChars / 3),
+         text.length - maxChars,
+      ),
+   );
+   const slice = text.slice(start, start + maxChars);
+   return `${start > 0 ? "…" : ""}${slice}${start + maxChars < text.length ? "…" : ""}`;
 }

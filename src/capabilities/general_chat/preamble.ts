@@ -1,26 +1,30 @@
-import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
-import type { GuildProfile } from './profile.js';
+import { SPANISH_VOICE_RULES } from "../../lang/voice.js";
+import type { GuildProfile } from "./profile.js";
 
 export interface CapabilityBindingSnapshot {
-  channelId: string;
-  channelName: string | null;
-  guildId: string | null;
-  guildName: string | null;
-  url: string | null;
+   channelId: string;
+   channelName: string | null;
+   guildId: string | null;
+   guildName: string | null;
+   url: string | null;
 }
 
 export interface CapabilitySnapshotEntry {
-  id: string;
-  description: string;
-  bindings: CapabilityBindingSnapshot[];
+   id: string;
+   description: string;
+   bindings: CapabilityBindingSnapshot[];
 }
 
-export function renderGeneralChatPrompt(now: Date, snapshot: CapabilitySnapshotEntry[]): string {
-  const capabilitiesBlock = snapshot.length === 0
-    ? '- (No hay otras capacidades registradas todavía.)'
-    : snapshot.map(renderCapabilityEntry).join('\n');
+export function renderGeneralChatPrompt(
+   now: Date,
+   snapshot: CapabilitySnapshotEntry[],
+): string {
+   const capabilitiesBlock =
+      snapshot.length === 0
+         ? "- (No hay otras capacidades registradas todavía.)"
+         : snapshot.map(renderCapabilityEntry).join("\n");
 
-  return `Eres **ChopperBot** en **modo chat general** — la conversación base del bot. Aquí no ejecutas acciones especializadas; te presentas, orientas, y rediriges al usuario al canal correcto cuando pide algo que vive en otra capacidad.
+   return `Eres **ChopperBot** en **modo chat general** — la conversación base del bot. Aquí no ejecutas acciones especializadas; te presentas, orientas, y rediriges al usuario al canal correcto cuando pide algo que vive en otra capacidad.
 
 # Hora actual
 - UTC: ${now.toISOString()}
@@ -40,23 +44,23 @@ ${SPANISH_VOICE_RULES}`;
 }
 
 function renderCapabilityEntry(entry: CapabilitySnapshotEntry): string {
-  if (entry.bindings.length === 0) {
-    return `- **${entry.id}** — ${entry.description}. (sin canal asignado todavía — un admin debe bindearlo desde el canal de configuración)`;
-  }
-  if (entry.bindings.length === 1) {
-    return `- **${entry.id}** — ${entry.description}. ${renderBinding(entry.bindings[0])}`;
-  }
-  const head = `- **${entry.id}** — ${entry.description}.`;
-  const lines = entry.bindings.map((b) => `  - ${renderBinding(b)}`);
-  return [head, ...lines].join('\n');
+   if (entry.bindings.length === 0) {
+      return `- **${entry.id}** — ${entry.description}. (sin canal asignado todavía — un admin debe bindearlo desde el canal de configuración)`;
+   }
+   if (entry.bindings.length === 1) {
+      return `- **${entry.id}** — ${entry.description}. ${renderBinding(entry.bindings[0])}`;
+   }
+   const head = `- **${entry.id}** — ${entry.description}.`;
+   const lines = entry.bindings.map((b) => `  - ${renderBinding(b)}`);
+   return [head, ...lines].join("\n");
 }
 
 function renderBinding(b: CapabilityBindingSnapshot): string {
-  if (b.url && b.channelName) {
-    const guildLabel = b.guildName ? ` (${b.guildName})` : '';
-    return `Vive en #${b.channelName}${guildLabel}: ${b.url}`;
-  }
-  return `(canal no accesible, id: ${b.channelId})`;
+   if (b.url && b.channelName) {
+      const guildLabel = b.guildName ? ` (${b.guildName})` : "";
+      return `Vive en #${b.channelName}${guildLabel}: ${b.url}`;
+   }
+   return `(canal no accesible, id: ${b.channelId})`;
 }
 
 /**
@@ -68,23 +72,26 @@ function renderBinding(b: CapabilityBindingSnapshot): string {
  * every token here rides every fallback turn in that guild.
  */
 export function renderAssistantPrompt(
-  profile: GuildProfile,
-  now: Date,
-  snapshot: CapabilitySnapshotEntry[],
-  channelName: string | null,
+   profile: GuildProfile,
+   now: Date,
+   snapshot: CapabilitySnapshotEntry[],
+   channelName: string | null,
 ): string {
-  const hidden = new Set(profile.hiddenBindingCapabilityIds ?? []);
-  const capabilitiesBlock = snapshot.length === 0
-    ? '- (No hay otras capacidades registradas todavía.)'
-    : snapshot.map((e) => renderAssistantCapabilityEntry(e, hidden)).join('\n');
+   const hidden = new Set(profile.hiddenBindingCapabilityIds ?? []);
+   const capabilitiesBlock =
+      snapshot.length === 0
+         ? "- (No hay otras capacidades registradas todavía.)"
+         : snapshot
+              .map((e) => renderAssistantCapabilityEntry(e, hidden))
+              .join("\n");
 
-  return `Eres **ChopperBot**, el bot DE esta comunidad: te mantiene la propia gente del servidor y compartes sus principios. No eres un asistente corporativo de visita ni un observador neutral — eres parte del servidor, con criterio propio, y además eres su asistente: orientas, respondes y echas cotorreo.
+   return `Eres **ChopperBot**, el bot DE esta comunidad: te mantiene la propia gente del servidor y compartes sus principios. No eres un asistente corporativo de visita ni un observador neutral — eres parte del servidor, con criterio propio, y además eres su asistente: orientas, respondes y echas cotorreo.
 
 ${profile.primer}
 
 # Hora actual
 - UTC: ${now.toISOString()} (el servidor vive en hora CDMX, UTC-6)
-${channelName ? `- Estás hablando en #${channelName}: adapta el tono al canal (en #cuidados se responde con cuidado; en #momos se shitpostea; en #general, de todo).` : ''}
+${channelName ? `- Estás hablando en #${channelName}: adapta el tono al canal (en #cuidados se responde con cuidado; en #momos se shitpostea; en #general, de todo).` : ""}
 
 ${SPANISH_VOICE_RULES}
 
@@ -123,11 +130,11 @@ ${capabilitiesBlock}
  * regular member.
  */
 function renderAssistantCapabilityEntry(
-  entry: CapabilitySnapshotEntry,
-  hidden: ReadonlySet<string>,
+   entry: CapabilitySnapshotEntry,
+   hidden: ReadonlySet<string>,
 ): string {
-  if (hidden.has(entry.id) || entry.bindings.length === 0) {
-    return `- **${entry.id}** — ${entry.description}.`;
-  }
-  return renderCapabilityEntry(entry);
+   if (hidden.has(entry.id) || entry.bindings.length === 0) {
+      return `- **${entry.id}** — ${entry.description}.`;
+   }
+   return renderCapabilityEntry(entry);
 }

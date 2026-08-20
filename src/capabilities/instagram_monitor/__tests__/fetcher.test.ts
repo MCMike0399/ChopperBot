@@ -1,812 +1,972 @@
-import { describe, test, expect, vi, afterEach } from 'vitest';
+import { describe, test, expect, vi, afterEach } from "vitest";
 import {
-  DirectInstagramFetcher,
-  parseUserFeedBody,
-  parseWebProfileBody,
-  InstagramAuthError,
-  InstagramHardAccountError,
-  InstagramRateLimitError,
-  detectAuthBlock,
-  detectHardAccountBlock,
-  detectRateLimit,
-  DEFAULT_IG_USER_AGENT,
-  clientHintsFromUserAgent,
-  memoryFetchHints,
-  type InstagramAuth,
-} from '../fetcher.js';
+   DirectInstagramFetcher,
+   parseUserFeedBody,
+   parseWebProfileBody,
+   InstagramAuthError,
+   InstagramHardAccountError,
+   InstagramRateLimitError,
+   detectAuthBlock,
+   detectHardAccountBlock,
+   detectRateLimit,
+   DEFAULT_IG_USER_AGENT,
+   clientHintsFromUserAgent,
+   memoryFetchHints,
+   type InstagramAuth,
+} from "../fetcher.js";
 
-function buildIgResponse(items: Array<Partial<Record<string, unknown>>>): string {
-  return JSON.stringify({
-    data: {
-      user: {
-        edge_owner_to_timeline_media: {
-          edges: items.map((node) => ({ node })),
-        },
+function buildIgResponse(
+   items: Array<Partial<Record<string, unknown>>>,
+): string {
+   return JSON.stringify({
+      data: {
+         user: {
+            edge_owner_to_timeline_media: {
+               edges: items.map((node) => ({ node })),
+            },
+         },
       },
-    },
-  });
+   });
 }
 
 const SAMPLE_NODE = {
-  id: '3001',
-  shortcode: 'AAA',
-  display_url: 'https://cdn.example/image.jpg',
-  is_video: false,
-  taken_at_timestamp: 1_700_000_000,
-  __typename: 'GraphImage',
-  edge_media_to_caption: { edges: [{ node: { text: 'caption text' } }] },
+   id: "3001",
+   shortcode: "AAA",
+   display_url: "https://cdn.example/image.jpg",
+   is_video: false,
+   taken_at_timestamp: 1_700_000_000,
+   __typename: "GraphImage",
+   edge_media_to_caption: { edges: [{ node: { text: "caption text" } }] },
 };
 
 // The public/anonymous direct path parses the `web_profile_info` GraphQL shape
 // via parseWebProfileBody. These exercise that parser (image/video/carousel/
 // malformed/non-JSON) directly — they used to run through the now-removed
 // LambdaInstagramFetcher.
-describe('parseWebProfileBody (web_profile_info GraphQL shape)', () => {
-  test('parses a normalized RecentPost from a single-image node', () => {
-    const posts = parseWebProfileBody(buildIgResponse([SAMPLE_NODE]));
-    expect(posts).toHaveLength(1);
-    expect(posts[0]).toMatchObject({
-      igPostId: '3001',
-      shortcode: 'AAA',
-      caption: 'caption text',
-      mediaType: 'image',
-      takenAtMs: 1_700_000_000_000,
-      displayUrl: 'https://cdn.example/image.jpg',
-    });
-  });
+describe("parseWebProfileBody (web_profile_info GraphQL shape)", () => {
+   test("parses a normalized RecentPost from a single-image node", () => {
+      const posts = parseWebProfileBody(buildIgResponse([SAMPLE_NODE]));
+      expect(posts).toHaveLength(1);
+      expect(posts[0]).toMatchObject({
+         igPostId: "3001",
+         shortcode: "AAA",
+         caption: "caption text",
+         mediaType: "image",
+         takenAtMs: 1_700_000_000_000,
+         displayUrl: "https://cdn.example/image.jpg",
+      });
+   });
 
-  test('parses a video node with video_url', () => {
-    const [p] = parseWebProfileBody(
-      buildIgResponse([
-        {
-          ...SAMPLE_NODE,
-          id: 'v1',
-          shortcode: 'VVV',
-          is_video: true,
-          video_url: 'https://cdn.example/v.mp4',
-          __typename: 'GraphVideo',
-        },
-      ]),
-    );
-    expect(p.mediaType).toBe('video');
-    expect(p.videoUrl).toBe('https://cdn.example/v.mp4');
-  });
+   test("parses a video node with video_url", () => {
+      const [p] = parseWebProfileBody(
+         buildIgResponse([
+            {
+               ...SAMPLE_NODE,
+               id: "v1",
+               shortcode: "VVV",
+               is_video: true,
+               video_url: "https://cdn.example/v.mp4",
+               __typename: "GraphVideo",
+            },
+         ]),
+      );
+      expect(p.mediaType).toBe("video");
+      expect(p.videoUrl).toBe("https://cdn.example/v.mp4");
+   });
 
-  test('parses a carousel with multiple image children', () => {
-    const carouselNode = {
-      ...SAMPLE_NODE,
-      id: 'c1',
-      shortcode: 'CCC',
-      __typename: 'GraphSidecar',
-      edge_sidecar_to_children: {
-        edges: [
-          { node: { display_url: 'https://cdn.example/c1.jpg', is_video: false } },
-          { node: { display_url: 'https://cdn.example/c2.jpg', is_video: false } },
-        ],
-      },
-    };
-    const [p] = parseWebProfileBody(buildIgResponse([carouselNode]));
-    expect(p.mediaType).toBe('carousel');
-    expect(p.carouselUrls).toEqual([
-      'https://cdn.example/c1.jpg',
-      'https://cdn.example/c2.jpg',
-    ]);
-  });
+   test("parses a carousel with multiple image children", () => {
+      const carouselNode = {
+         ...SAMPLE_NODE,
+         id: "c1",
+         shortcode: "CCC",
+         __typename: "GraphSidecar",
+         edge_sidecar_to_children: {
+            edges: [
+               {
+                  node: {
+                     display_url: "https://cdn.example/c1.jpg",
+                     is_video: false,
+                  },
+               },
+               {
+                  node: {
+                     display_url: "https://cdn.example/c2.jpg",
+                     is_video: false,
+                  },
+               },
+            ],
+         },
+      };
+      const [p] = parseWebProfileBody(buildIgResponse([carouselNode]));
+      expect(p.mediaType).toBe("carousel");
+      expect(p.carouselUrls).toEqual([
+         "https://cdn.example/c1.jpg",
+         "https://cdn.example/c2.jpg",
+      ]);
+   });
 
-  test('skips malformed nodes but returns the rest', () => {
-    const posts = parseWebProfileBody(buildIgResponse([SAMPLE_NODE, { id: 'broken' }]));
-    expect(posts).toHaveLength(1);
-    expect(posts[0].igPostId).toBe('3001');
-  });
+   test("skips malformed nodes but returns the rest", () => {
+      const posts = parseWebProfileBody(
+         buildIgResponse([SAMPLE_NODE, { id: "broken" }]),
+      );
+      expect(posts).toHaveLength(1);
+      expect(posts[0].igPostId).toBe("3001");
+   });
 
-  test('throws on a non-JSON body', () => {
-    expect(() => parseWebProfileBody('<html>blocked</html>')).toThrow(/non-JSON/);
-  });
+   test("throws on a non-JSON body", () => {
+      expect(() => parseWebProfileBody("<html>blocked</html>")).toThrow(
+         /non-JSON/,
+      );
+   });
 });
 
-describe('DirectInstagramFetcher', () => {
-  const realFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
+describe("DirectInstagramFetcher", () => {
+   const realFetch = globalThis.fetch;
+   afterEach(() => {
+      globalThis.fetch = realFetch;
+   });
 
-  test('uses global fetch and parses body', async () => {
-    globalThis.fetch = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      async text() {
-        return buildIgResponse([SAMPLE_NODE]);
-      },
-    })) as unknown as typeof fetch;
-    const f = new DirectInstagramFetcher();
-    const posts = await f.fetchRecentPosts('foo');
-    expect(posts).toHaveLength(1);
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
-  });
+   test("uses global fetch and parses body", async () => {
+      globalThis.fetch = vi.fn(async () => ({
+         ok: true,
+         status: 200,
+         async text() {
+            return buildIgResponse([SAMPLE_NODE]);
+         },
+      })) as unknown as typeof fetch;
+      const f = new DirectInstagramFetcher();
+      const posts = await f.fetchRecentPosts("foo");
+      expect(posts).toHaveLength(1);
+      expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+   });
 
-  test('throws on non-200 from direct fetch', async () => {
-    globalThis.fetch = vi.fn(async () => ({
-      ok: false,
-      status: 429,
-      async text() {
-        return 'rate limited';
-      },
-    })) as unknown as typeof fetch;
-    await expect(new DirectInstagramFetcher().fetchRecentPosts('foo')).rejects.toThrow(
-      /HTTP 429/,
-    );
-  });
+   test("throws on non-200 from direct fetch", async () => {
+      globalThis.fetch = vi.fn(async () => ({
+         ok: false,
+         status: 429,
+         async text() {
+            return "rate limited";
+         },
+      })) as unknown as typeof fetch;
+      await expect(
+         new DirectInstagramFetcher().fetchRecentPosts("foo"),
+      ).rejects.toThrow(/HTTP 429/);
+   });
 });
 
 const AUTH: InstagramAuth = {
-  sessionid: 'sid',
-  csrftoken: 'csrf',
-  dsUserId: '999',
+   sessionid: "sid",
+   csrftoken: "csrf",
+   dsUserId: "999",
 };
 
 function feedItem(id: string, code: string): Record<string, unknown> {
-  return {
-    id: `${id}_999`,
-    pk: Number(id),
-    code,
-    taken_at: 1_700_000_000,
-    media_type: 1,
-    caption: { text: 'hi' },
-    image_versions2: { candidates: [{ url: `https://cdn/${code}.jpg` }] },
-  };
+   return {
+      id: `${id}_999`,
+      pk: Number(id),
+      code,
+      taken_at: 1_700_000_000,
+      media_type: 1,
+      caption: { text: "hi" },
+      image_versions2: { candidates: [{ url: `https://cdn/${code}.jpg` }] },
+   };
 }
 
-describe('DirectInstagramFetcher (authenticated)', () => {
-  const realFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
+describe("DirectInstagramFetcher (authenticated)", () => {
+   const realFetch = globalThis.fetch;
+   afterEach(() => {
+      globalThis.fetch = realFetch;
+   });
 
-  test('resolves pk via web_profile_info then reads feed/user, caching the pk', async () => {
-    const fetchMock = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) {
-        return {
-          ok: true,
-          status: 200,
-          async text() {
-            return JSON.stringify({ data: { user: { id: '5005' } } });
-          },
-        };
-      }
-      // feed/user
-      expect(url).toContain('/feed/user/5005/');
-      return {
-        ok: true,
-        status: 200,
-        async text() {
-          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-        },
-      };
-    });
-    globalThis.fetch = fetchMock as unknown as typeof fetch;
+   test("resolves pk via web_profile_info then reads feed/user, caching the pk", async () => {
+      const fetchMock = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         // feed/user
+         expect(url).toContain("/feed/user/5005/");
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-    // warmupProbability=0 keeps the request count deterministic — the prod
-    // default (0.5) would non-deterministically add an extra HTML fetch.
-    const f = new DirectInstagramFetcher(AUTH, 0);
-    expect(f.authenticated()).toBe(true);
+      // warmupProbability=0 keeps the request count deterministic — the prod
+      // default (0.5) would non-deterministically add an extra HTML fetch.
+      const f = new DirectInstagramFetcher(AUTH, 0);
+      expect(f.authenticated()).toBe(true);
 
-    const posts = await f.fetchRecentPosts('foo');
-    expect(posts).toHaveLength(1);
-    expect(posts[0].igPostId).toBe('3001');
-    // First call: resolve pk + feed = 2 requests.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+      const posts = await f.fetchRecentPosts("foo");
+      expect(posts).toHaveLength(1);
+      expect(posts[0].igPostId).toBe("3001");
+      // First call: resolve pk + feed = 2 requests.
+      expect(fetchMock).toHaveBeenCalledTimes(2);
 
-    // Second call reuses the cached pk: only the feed request fires.
-    await f.fetchRecentPosts('foo');
-    expect(fetchMock).toHaveBeenCalledTimes(3);
-  });
+      // Second call reuses the cached pk: only the feed request fires.
+      await f.fetchRecentPosts("foo");
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+   });
 
-  test('401 on the authed feed surfaces InstagramAuthError', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) {
-        return { ok: true, status: 200, async text() {
-          return JSON.stringify({ data: { user: { id: '5005' } } });
-        } };
-      }
-      return { ok: false, status: 401, async text() { return 'login_required'; } };
-    }) as unknown as typeof fetch;
+   test("401 on the authed feed surfaces InstagramAuthError", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: false,
+            status: 401,
+            async text() {
+               return "login_required";
+            },
+         };
+      }) as unknown as typeof fetch;
 
-    await expect(new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo')).rejects.toBeInstanceOf(
-      InstagramAuthError,
-    );
-  });
+      await expect(
+         new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts("foo"),
+      ).rejects.toBeInstanceOf(InstagramAuthError);
+   });
 
-  test('require_login during pk resolution surfaces InstagramAuthError', async () => {
-    globalThis.fetch = vi.fn(async () => ({
+   test("require_login during pk resolution surfaces InstagramAuthError", async () => {
+      globalThis.fetch = vi.fn(async () => ({
+         ok: true,
+         status: 200,
+         async text() {
+            return JSON.stringify({ require_login: true, status: "fail" });
+         },
+      })) as unknown as typeof fetch;
+
+      await expect(
+         new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts("foo"),
+      ).rejects.toBeInstanceOf(InstagramAuthError);
+   });
+
+   // Regression: on 2026-05-29 IG flagged the throwaway session and started
+   // returning HTTP 400 with `{"message":"checkpoint_required",...}`. The prior
+   // code only matched 401/403 + `require_login`, so this fell through to a
+   // generic warning and the bot kept hammering the dead session for hours.
+   test("HTTP 400 + checkpoint_required body surfaces InstagramAuthError", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: false,
+               status: 400,
+               async text() {
+                  return JSON.stringify({
+                     message: "checkpoint_required",
+                     checkpoint_url:
+                        "https://www.instagram.com/challenge/?next=/api/v1/...",
+                     lock: true,
+                     status: "fail",
+                  });
+               },
+            };
+         }
+         throw new Error("feed should not be reached");
+      }) as unknown as typeof fetch;
+
+      await expect(
+         new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts("foo"),
+      ).rejects.toBeInstanceOf(InstagramAuthError);
+   });
+
+   test("HTTP 400 + challenge_required body on feed/user surfaces InstagramAuthError", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: false,
+            status: 400,
+            async text() {
+               return JSON.stringify({
+                  message: "challenge_required",
+                  status: "fail",
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      await expect(
+         new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts("foo"),
+      ).rejects.toBeInstanceOf(InstagramAuthError);
+   });
+
+   test("HTTP 400 with unrelated body is NOT classified as auth (stays a plain error)", async () => {
+      globalThis.fetch = vi.fn(async () => ({
+         ok: false,
+         status: 400,
+         async text() {
+            return JSON.stringify({
+               message: "something_else",
+               status: "fail",
+            });
+         },
+      })) as unknown as typeof fetch;
+
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect(err).not.toBeInstanceOf(InstagramAuthError);
+   });
+
+   test('HTTP 400 laser.provider "deleted schema" body on web_profile_info surfaces InstagramHardAccountError', async () => {
+      // The exact 2026-07-18 incident response: deterministic, account-specific,
+      // non-retryable — must NOT be classified as auth (session is fine) nor as a
+      // plain transient error (it fails the same way 100% of the time).
+      globalThis.fetch = vi.fn(async () => ({
+         ok: false,
+         status: 400,
+         async text() {
+            return JSON.stringify({
+               message:
+                  "Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema",
+               status: "fail",
+            });
+         },
+      })) as unknown as typeof fetch;
+
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramHardAccountError);
+      expect(err).not.toBeInstanceOf(InstagramAuthError);
+      expect(err.reason).toBe("laser.provider");
+   });
+
+   test("the same laser.provider body on feed/user also surfaces InstagramHardAccountError", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: false,
+            status: 400,
+            async text() {
+               return JSON.stringify({
+                  message:
+                     "Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema",
+                  status: "fail",
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramHardAccountError);
+      expect(err).not.toBeInstanceOf(InstagramAuthError);
+   });
+});
+
+describe("DirectInstagramFetcher — feed-by-username fallback (laser.provider)", () => {
+   const realFetch = globalThis.fetch;
+   afterEach(() => {
+      globalThis.fetch = realFetch;
+   });
+
+   const LASER_400 = {
+      ok: false,
+      status: 400,
+      async text() {
+         return JSON.stringify({
+            message:
+               "Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema",
+            status: "fail",
+         });
+      },
+   };
+
+   const FEED_OK = {
       ok: true,
       status: 200,
       async text() {
-        return JSON.stringify({ require_login: true, status: 'fail' });
+         return JSON.stringify({
+            status: "ok",
+            items: [feedItem("3001", "AAA")],
+         });
       },
-    })) as unknown as typeof fetch;
+   };
 
-    await expect(new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo')).rejects.toBeInstanceOf(
-      InstagramAuthError,
-    );
-  });
+   test("hard failure on pk resolve falls back to feed/user/<username>/username/", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         if (url.includes("web_profile_info")) return LASER_400;
+         expect(url).toContain("/feed/user/foo/username/");
+         return FEED_OK;
+      }) as unknown as typeof fetch;
 
-  // Regression: on 2026-05-29 IG flagged the throwaway session and started
-  // returning HTTP 400 with `{"message":"checkpoint_required",...}`. The prior
-  // code only matched 401/403 + `require_login`, so this fell through to a
-  // generic warning and the bot kept hammering the dead session for hours.
-  test('HTTP 400 + checkpoint_required body surfaces InstagramAuthError', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) {
-        return {
-          ok: false,
-          status: 400,
-          async text() {
-            return JSON.stringify({
-              message: 'checkpoint_required',
-              checkpoint_url: 'https://www.instagram.com/challenge/?next=/api/v1/...',
-              lock: true,
-              status: 'fail',
-            });
-          },
-        };
-      }
-      throw new Error('feed should not be reached');
-    }) as unknown as typeof fetch;
+      const f = new DirectInstagramFetcher(AUTH, 0);
+      const posts = await f.fetchRecentPosts("foo");
+      expect(posts).toHaveLength(1);
+      expect(posts[0].igPostId).toBe("3001");
+      expect(urls).toHaveLength(2); // doomed resolve + fallback feed
+   });
 
-    await expect(
-      new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo'),
-    ).rejects.toBeInstanceOf(InstagramAuthError);
-  });
+   test("the fallback decision is sticky: later polls skip web_profile_info entirely", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         if (url.includes("web_profile_info")) return LASER_400;
+         return FEED_OK;
+      }) as unknown as typeof fetch;
 
-  test('HTTP 400 + challenge_required body on feed/user surfaces InstagramAuthError', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) {
-        return {
-          ok: true,
-          status: 200,
-          async text() {
-            return JSON.stringify({ data: { user: { id: '5005' } } });
-          },
-        };
-      }
-      return {
-        ok: false,
-        status: 400,
-        async text() {
-          return JSON.stringify({ message: 'challenge_required', status: 'fail' });
-        },
-      };
-    }) as unknown as typeof fetch;
+      const f = new DirectInstagramFetcher(AUTH, 0);
+      await f.fetchRecentPosts("foo");
+      await f.fetchRecentPosts("foo");
+      expect(urls).toHaveLength(3); // resolve + feed, then feed only
+      expect(urls.filter((u) => u.includes("web_profile_info"))).toHaveLength(
+         1,
+      );
+      expect(
+         urls.slice(1).every((u) => u.includes("/feed/user/foo/username/")),
+      ).toBe(true);
+   });
 
-    await expect(
-      new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo'),
-    ).rejects.toBeInstanceOf(InstagramAuthError);
-  });
+   test("a hard failure on BOTH paths still surfaces InstagramHardAccountError", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return LASER_400;
+      }) as unknown as typeof fetch;
 
-  test('HTTP 400 with unrelated body is NOT classified as auth (stays a plain error)', async () => {
-    globalThis.fetch = vi.fn(async () => ({
-      ok: false,
-      status: 400,
-      async text() {
-        return JSON.stringify({ message: 'something_else', status: 'fail' });
-      },
-    })) as unknown as typeof fetch;
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramHardAccountError);
+      expect(err.reason).toBe("laser.provider");
+      expect(urls).toHaveLength(2); // fallback was attempted before giving up
+   });
 
-    const err = await new DirectInstagramFetcher(AUTH, 0)
-      .fetchRecentPosts('foo')
-      .catch((e) => e);
-    expect(err).toBeInstanceOf(Error);
-    expect(err).not.toBeInstanceOf(InstagramAuthError);
-  });
-
-  test('HTTP 400 laser.provider "deleted schema" body on web_profile_info surfaces InstagramHardAccountError', async () => {
-    // The exact 2026-07-18 incident response: deterministic, account-specific,
-    // non-retryable — must NOT be classified as auth (session is fine) nor as a
-    // plain transient error (it fails the same way 100% of the time).
-    globalThis.fetch = vi.fn(async () => ({
-      ok: false,
-      status: 400,
-      async text() {
-        return JSON.stringify({
-          message:
-            'Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema',
-          status: 'fail',
-        });
-      },
-    })) as unknown as typeof fetch;
-
-    const err = await new DirectInstagramFetcher(AUTH, 0)
-      .fetchRecentPosts('foo')
-      .catch((e) => e);
-    expect(err).toBeInstanceOf(InstagramHardAccountError);
-    expect(err).not.toBeInstanceOf(InstagramAuthError);
-    expect(err.reason).toBe('laser.provider');
-  });
-
-  test('the same laser.provider body on feed/user also surfaces InstagramHardAccountError', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) {
-        return {
-          ok: true,
-          status: 200,
-          async text() {
-            return JSON.stringify({ data: { user: { id: '5005' } } });
-          },
-        };
-      }
-      return {
-        ok: false,
-        status: 400,
-        async text() {
-          return JSON.stringify({
-            message:
-              'Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema',
-            status: 'fail',
-          });
-        },
-      };
-    }) as unknown as typeof fetch;
-
-    const err = await new DirectInstagramFetcher(AUTH, 0)
-      .fetchRecentPosts('foo')
-      .catch((e) => e);
-    expect(err).toBeInstanceOf(InstagramHardAccountError);
-    expect(err).not.toBeInstanceOf(InstagramAuthError);
-  });
-});
-
-describe('DirectInstagramFetcher — feed-by-username fallback (laser.provider)', () => {
-  const realFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  const LASER_400 = {
-    ok: false,
-    status: 400,
-    async text() {
-      return JSON.stringify({
-        message:
-          'Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema',
-        status: 'fail',
-      });
-    },
-  };
-
-  const FEED_OK = {
-    ok: true,
-    status: 200,
-    async text() {
-      return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-    },
-  };
-
-  test('hard failure on pk resolve falls back to feed/user/<username>/username/', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string) => {
-      urls.push(url);
-      if (url.includes('web_profile_info')) return LASER_400;
-      expect(url).toContain('/feed/user/foo/username/');
-      return FEED_OK;
-    }) as unknown as typeof fetch;
-
-    const f = new DirectInstagramFetcher(AUTH, 0);
-    const posts = await f.fetchRecentPosts('foo');
-    expect(posts).toHaveLength(1);
-    expect(posts[0].igPostId).toBe('3001');
-    expect(urls).toHaveLength(2); // doomed resolve + fallback feed
-  });
-
-  test('the fallback decision is sticky: later polls skip web_profile_info entirely', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string) => {
-      urls.push(url);
-      if (url.includes('web_profile_info')) return LASER_400;
-      return FEED_OK;
-    }) as unknown as typeof fetch;
-
-    const f = new DirectInstagramFetcher(AUTH, 0);
-    await f.fetchRecentPosts('foo');
-    await f.fetchRecentPosts('foo');
-    expect(urls).toHaveLength(3); // resolve + feed, then feed only
-    expect(urls.filter((u) => u.includes('web_profile_info'))).toHaveLength(1);
-    expect(urls.slice(1).every((u) => u.includes('/feed/user/foo/username/'))).toBe(true);
-  });
-
-  test('a hard failure on BOTH paths still surfaces InstagramHardAccountError', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string) => {
-      urls.push(url);
-      return LASER_400;
-    }) as unknown as typeof fetch;
-
-    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
-    expect(err).toBeInstanceOf(InstagramHardAccountError);
-    expect(err.reason).toBe('laser.provider');
-    expect(urls).toHaveLength(2); // fallback was attempted before giving up
-  });
-
-  test('a TRANSIENT fallback failure re-throws the original hard error (no downgrade to infinite retry)', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) return LASER_400;
-      return { ok: false, status: 500, async text() { return 'oops'; } };
-    }) as unknown as typeof fetch;
-
-    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
-    expect(err).toBeInstanceOf(InstagramHardAccountError);
-    expect(err.reason).toBe('laser.provider');
-  });
-
-  test('auth blocks on pk resolve do NOT trigger the fallback (session signal wins)', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string) => {
-      urls.push(url);
-      return {
-        ok: false,
-        status: 400,
-        async text() {
-          return JSON.stringify({ message: 'checkpoint_required', status: 'fail' });
-        },
-      };
-    }) as unknown as typeof fetch;
-
-    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
-    expect(err).toBeInstanceOf(InstagramAuthError);
-    expect(urls).toHaveLength(1); // feed never requested
-  });
-
-  test('throttling on pk resolve does NOT trigger the fallback', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string) => {
-      urls.push(url);
-      return { ok: false, status: 429, async text() { return 'Please wait a few minutes'; } };
-    }) as unknown as typeof fetch;
-
-    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
-    expect(err).toBeInstanceOf(InstagramRateLimitError);
-    expect(urls).toHaveLength(1);
-  });
-});
-
-describe('DirectInstagramFetcher — fingerprint headers + durable hints', () => {
-  const realFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  test('Chrome UA sends Client Hints and x-requested-with on API calls', async () => {
-    const seen: Record<string, string>[] = [];
-    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
-      seen.push(init.headers as Record<string, string>);
-      if (url.includes('web_profile_info')) {
-        return {
-          ok: true,
-          status: 200,
-          async text() {
-            return JSON.stringify({ data: { user: { id: '5005' } } });
-          },
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        async text() {
-          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-        },
-      };
-    }) as unknown as typeof fetch;
-
-    const ua =
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36';
-    await new DirectInstagramFetcher(AUTH, 0, ua).fetchRecentPosts('foo');
-    expect(seen.length).toBe(2);
-    for (const h of seen) {
-      expect(h['sec-ch-ua']).toContain('Chrome";v="148"');
-      expect(h['sec-ch-ua-platform']).toBe('"macOS"');
-      expect(h['sec-ch-ua-mobile']).toBe('?0');
-      expect(h['x-requested-with']).toBe('XMLHttpRequest');
-    }
-  });
-
-  test('forwards x-ig-www-claim captured from x-ig-set-www-claim', async () => {
-    const seen: Record<string, string>[] = [];
-    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
-      seen.push(init.headers as Record<string, string>);
-      if (url.includes('web_profile_info')) {
-        return {
-          ok: true,
-          status: 200,
-          headers: {
-            get: (k: string) =>
-              k.toLowerCase() === 'x-ig-set-www-claim' ? 'hmac.TESTCLAIM' : null,
-          },
-          async text() {
-            return JSON.stringify({ data: { user: { id: '5005' } } });
-          },
-        };
-      }
-      return {
-        ok: true,
-        status: 200,
-        async text() {
-          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-        },
-      };
-    }) as unknown as typeof fetch;
-
-    await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo');
-    expect(seen[0]['x-ig-www-claim']).toBeUndefined();
-    expect(seen[1]['x-ig-www-claim']).toBe('hmac.TESTCLAIM');
-  });
-
-  test('hints.prefersUsernameFeed skips web_profile_info on a fresh fetcher', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string) => {
-      urls.push(url);
-      return {
-        ok: true,
-        status: 200,
-        async text() {
-          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-        },
-      };
-    }) as unknown as typeof fetch;
-
-    const hints = memoryFetchHints();
-    hints.rememberUsernameFeed('foo');
-    const f = new DirectInstagramFetcher(AUTH, 0, DEFAULT_IG_USER_AGENT, hints);
-    await f.fetchRecentPosts('foo');
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain('/feed/user/foo/username/');
-  });
-
-  test('hints.getPk skips web_profile_info on a fresh fetcher', async () => {
-    const urls: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string) => {
-      urls.push(url);
-      return {
-        ok: true,
-        status: 200,
-        async text() {
-          return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-        },
-      };
-    }) as unknown as typeof fetch;
-
-    const hints = memoryFetchHints();
-    hints.rememberPk('foo', '5005');
-    const f = new DirectInstagramFetcher(AUTH, 0, DEFAULT_IG_USER_AGENT, hints);
-    await f.fetchRecentPosts('foo');
-    expect(urls).toHaveLength(1);
-    expect(urls[0]).toContain('/feed/user/5005/');
-  });
-});
-
-describe('clientHintsFromUserAgent', () => {
-  test('emits Chrome hints for a desktop Chrome UA and nothing otherwise', () => {
-    const chrome = clientHintsFromUserAgent(DEFAULT_IG_USER_AGENT);
-    expect(chrome['sec-ch-ua']).toContain('v="124"');
-    expect(chrome['sec-ch-ua-platform']).toBe('"macOS"');
-    expect(clientHintsFromUserAgent('Mozilla/5.0 (My Personal Browser) Custom/1.0')).toEqual(
-      {},
-    );
-  });
-});
-
-describe('detectHardAccountBlock', () => {
-  test('matches only HTTP 400 carrying a deterministic-failure marker', () => {
-    expect(
-      detectHardAccountBlock(
-        400,
-        '{"message":"Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema","status":"fail"}',
-      ),
-    ).toBe('laser.provider');
-    expect(detectHardAccountBlock(400, 'YOU CANNOT USE THIS SCHEMA')).toBe(
-      'you cannot use this schema',
-    );
-    expect(detectHardAccountBlock(400, 'something_else')).toBeNull();
-    // Other statuses never count — 4xx/5xx stay on auth/rate-limit/transient paths.
-    expect(detectHardAccountBlock(401, 'laser.provider')).toBeNull();
-    expect(detectHardAccountBlock(500, 'laser.provider')).toBeNull();
-  });
-});
-
-describe('detectRateLimit', () => {
-  test('429 always counts', () => {
-    expect(detectRateLimit(429, '')).toBe(true);
-    expect(detectRateLimit(429, 'anything')).toBe(true);
-  });
-  test('non-429 status counts only on a throttle marker in the body', () => {
-    expect(detectRateLimit(200, 'Please wait a few minutes before you try again.')).toBe(true);
-    expect(detectRateLimit(400, 'rate limited')).toBe(true);
-    expect(detectRateLimit(200, 'ok')).toBe(false);
-    expect(detectRateLimit(403, 'login_required')).toBe(false);
-  });
-});
-
-describe('DirectInstagramFetcher — rate limit + UA + request observer', () => {
-  const realFetch = globalThis.fetch;
-  afterEach(() => {
-    globalThis.fetch = realFetch;
-  });
-
-  test('429 on the authed feed surfaces InstagramRateLimitError (not auth)', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) {
-        return { ok: true, status: 200, async text() {
-          return JSON.stringify({ data: { user: { id: '5005' } } });
-        } };
-      }
-      return {
-        ok: false,
-        status: 429,
-        headers: { get: (k: string) => (k.toLowerCase() === 'retry-after' ? '120' : null) },
-        async text() { return 'Please wait a few minutes'; },
-      };
-    }) as unknown as typeof fetch;
-
-    const err = await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts('foo').catch((e) => e);
-    expect(err).toBeInstanceOf(InstagramRateLimitError);
-    expect(err).not.toBeInstanceOf(InstagramAuthError);
-    expect(err.retryAfterMs).toBe(120_000);
-  });
-
-  test('anonymous 429 surfaces InstagramRateLimitError', async () => {
-    globalThis.fetch = vi.fn(async () => ({
-      ok: false,
-      status: 429,
-      async text() { return 'rate limited'; },
-    })) as unknown as typeof fetch;
-    await expect(new DirectInstagramFetcher().fetchRecentPosts('foo')).rejects.toBeInstanceOf(
-      InstagramRateLimitError,
-    );
-  });
-
-  test('sends the constructor User-Agent on every request', async () => {
-    const seenUAs: string[] = [];
-    globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
-      const ua = (init.headers as Record<string, string>)['User-Agent'];
-      seenUAs.push(ua);
-      if (url.includes('web_profile_info')) {
-        return { ok: true, status: 200, async text() {
-          return JSON.stringify({ data: { user: { id: '5005' } } });
-        } };
-      }
-      return { ok: true, status: 200, async text() {
-        return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-      } };
-    }) as unknown as typeof fetch;
-
-    const CUSTOM_UA = 'Mozilla/5.0 (My Personal Browser) Custom/1.0';
-    await new DirectInstagramFetcher(AUTH, 0, CUSTOM_UA).fetchRecentPosts('foo');
-    expect(seenUAs.length).toBeGreaterThan(0);
-    expect(seenUAs.every((ua) => ua === CUSTOM_UA)).toBe(true);
-  });
-
-  test('defaults to DEFAULT_IG_USER_AGENT when no UA is supplied', async () => {
-    let seenUA = '';
-    globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) => {
-      seenUA = (init.headers as Record<string, string>)['User-Agent'];
-      return { ok: true, status: 200, async text() {
-        return buildIgResponse([SAMPLE_NODE]);
-      } };
-    }) as unknown as typeof fetch;
-    await new DirectInstagramFetcher().fetchRecentPosts('foo'); // anonymous
-    expect(seenUA).toBe(DEFAULT_IG_USER_AGENT);
-  });
-
-  test('observeRequests fires once per outbound IG HTTP request', async () => {
-    globalThis.fetch = vi.fn(async (url: string) => {
-      if (url.includes('web_profile_info')) {
-        return { ok: true, status: 200, async text() {
-          return JSON.stringify({ data: { user: { id: '5005' } } });
-        } };
-      }
-      return { ok: true, status: 200, async text() {
-        return JSON.stringify({ status: 'ok', items: [feedItem('3001', 'AAA')] });
-      } };
-    }) as unknown as typeof fetch;
-
-    let count = 0;
-    // warmupProbability=0 → no warmup, no inter-request delay: pk + feed = 2.
-    const f = new DirectInstagramFetcher(AUTH, 0);
-    f.observeRequests(() => { count++; });
-    await f.fetchRecentPosts('foo');
-    expect(count).toBe(2);
-  });
-});
-
-describe('detectAuthBlock', () => {
-  test('401 and 403 always count, regardless of body', () => {
-    expect(detectAuthBlock(401, '')).toMatch(/HTTP 401/);
-    expect(detectAuthBlock(403, 'anything')).toMatch(/HTTP 403/);
-  });
-
-  test('400 + checkpoint/challenge/require_login body counts', () => {
-    expect(detectAuthBlock(400, '"message":"checkpoint_required"')).toMatch(
-      /checkpoint_required/,
-    );
-    expect(detectAuthBlock(400, '"challenge_required"')).toMatch(/challenge_required/);
-    expect(detectAuthBlock(400, '{"require_login":true}')).toMatch(/require_login/);
-  });
-
-  test('400 with unrelated body returns null (real 400 != auth-block)', () => {
-    expect(detectAuthBlock(400, '{"error":"bad_request"}')).toBeNull();
-    expect(detectAuthBlock(400, '')).toBeNull();
-  });
-
-  test('200/404/500 always return null even if body contains the markers', () => {
-    expect(detectAuthBlock(200, 'checkpoint_required')).toBeNull();
-    expect(detectAuthBlock(404, 'login_required')).toBeNull();
-    expect(detectAuthBlock(500, 'challenge_required')).toBeNull();
-  });
-});
-
-describe('parseUserFeedBody (private feed/user shape)', () => {
-  test('recovers the exact bare pk from the string id (numeric pk is lossy)', () => {
-    const body = JSON.stringify({
-      status: 'ok',
-      items: [
-        {
-          id: '3905752326674602653_62427593254',
-          pk: 3905752326674602653,
-          code: 'DY0BQwsGFqd',
-          taken_at: 1779821981,
-          media_type: 8,
-          caption: { text: 'carrusel' },
-          image_versions2: { candidates: [{ url: 'https://cdn/cover.jpg' }] },
-          carousel_media: [
-            { media_type: 1, image_versions2: { candidates: [{ url: 'https://cdn/c1.jpg' }] } },
-            {
-              media_type: 2,
-              image_versions2: { candidates: [{ url: 'https://cdn/c2.jpg' }] },
-              video_versions: [{ url: 'https://cdn/c2.mp4' }],
+   test("a TRANSIENT fallback failure re-throws the original hard error (no downgrade to infinite retry)", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) return LASER_400;
+         return {
+            ok: false,
+            status: 500,
+            async text() {
+               return "oops";
             },
-          ],
-        },
-        {
-          id: '3904328634825703202_45758433140',
-          pk: 3904328634825703202,
-          code: 'DYu9jUVK_8i',
-          taken_at: 1779652311,
-          media_type: 2,
-          caption: { text: 'video' },
-          image_versions2: { candidates: [{ url: 'https://cdn/vcover.jpg' }] },
-          video_versions: [{ url: 'https://cdn/v.mp4' }],
-        },
-        {
-          id: '3897145926033003902_62427593254',
-          code: 'DYVcZJfDtV-',
-          taken_at: 1778796018,
-          media_type: 1,
-          caption: null,
-          image_versions2: { candidates: [{ url: 'https://cdn/img.jpg' }] },
-        },
-      ],
-    });
-    const [carousel, video, image] = parseUserFeedBody(body);
+         };
+      }) as unknown as typeof fetch;
 
-    expect(carousel.igPostId).toBe('3905752326674602653');
-    expect(carousel.mediaType).toBe('carousel');
-    expect(carousel.takenAtMs).toBe(1779821981 * 1000);
-    expect(carousel.carouselUrls).toEqual(['https://cdn/c1.jpg', 'https://cdn/c2.jpg']);
-    expect(carousel.carouselVideoUrls).toEqual([null, 'https://cdn/c2.mp4']);
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramHardAccountError);
+      expect(err.reason).toBe("laser.provider");
+   });
 
-    expect(video.igPostId).toBe('3904328634825703202');
-    expect(video.mediaType).toBe('video');
-    expect(video.videoUrl).toBe('https://cdn/v.mp4');
+   test("auth blocks on pk resolve do NOT trigger the fallback (session signal wins)", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return {
+            ok: false,
+            status: 400,
+            async text() {
+               return JSON.stringify({
+                  message: "checkpoint_required",
+                  status: "fail",
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
 
-    expect(image.igPostId).toBe('3897145926033003902');
-    expect(image.mediaType).toBe('image');
-    expect(image.caption).toBe('');
-  });
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramAuthError);
+      expect(urls).toHaveLength(1); // feed never requested
+   });
 
-  test('missing/empty items yields no posts; require_login throws', () => {
-    expect(parseUserFeedBody(JSON.stringify({ status: 'ok' }))).toEqual([]);
-    expect(parseUserFeedBody(JSON.stringify({ items: [] }))).toEqual([]);
-    expect(() => parseUserFeedBody(JSON.stringify({ require_login: true }))).toThrow(
-      InstagramAuthError,
-    );
-    expect(() => parseUserFeedBody('<html>')).toThrow(/non-JSON/);
-  });
+   test("throttling on pk resolve does NOT trigger the fallback", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return {
+            ok: false,
+            status: 429,
+            async text() {
+               return "Please wait a few minutes";
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramRateLimitError);
+      expect(urls).toHaveLength(1);
+   });
+});
+
+describe("DirectInstagramFetcher — fingerprint headers + durable hints", () => {
+   const realFetch = globalThis.fetch;
+   afterEach(() => {
+      globalThis.fetch = realFetch;
+   });
+
+   test("Chrome UA sends Client Hints and x-requested-with on API calls", async () => {
+      const seen: Record<string, string>[] = [];
+      globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+         seen.push(init.headers as Record<string, string>);
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const ua =
+         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36";
+      await new DirectInstagramFetcher(AUTH, 0, ua).fetchRecentPosts("foo");
+      expect(seen.length).toBe(2);
+      for (const h of seen) {
+         expect(h["sec-ch-ua"]).toContain('Chrome";v="148"');
+         expect(h["sec-ch-ua-platform"]).toBe('"macOS"');
+         expect(h["sec-ch-ua-mobile"]).toBe("?0");
+         expect(h["x-requested-with"]).toBe("XMLHttpRequest");
+      }
+   });
+
+   test("forwards x-ig-www-claim captured from x-ig-set-www-claim", async () => {
+      const seen: Record<string, string>[] = [];
+      globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+         seen.push(init.headers as Record<string, string>);
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               headers: {
+                  get: (k: string) =>
+                     k.toLowerCase() === "x-ig-set-www-claim"
+                        ? "hmac.TESTCLAIM"
+                        : null,
+               },
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts("foo");
+      expect(seen[0]["x-ig-www-claim"]).toBeUndefined();
+      expect(seen[1]["x-ig-www-claim"]).toBe("hmac.TESTCLAIM");
+   });
+
+   test("hints.prefersUsernameFeed skips web_profile_info on a fresh fetcher", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const hints = memoryFetchHints();
+      hints.rememberUsernameFeed("foo");
+      const f = new DirectInstagramFetcher(
+         AUTH,
+         0,
+         DEFAULT_IG_USER_AGENT,
+         hints,
+      );
+      await f.fetchRecentPosts("foo");
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain("/feed/user/foo/username/");
+   });
+
+   test("hints.getPk skips web_profile_info on a fresh fetcher", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const hints = memoryFetchHints();
+      hints.rememberPk("foo", "5005");
+      const f = new DirectInstagramFetcher(
+         AUTH,
+         0,
+         DEFAULT_IG_USER_AGENT,
+         hints,
+      );
+      await f.fetchRecentPosts("foo");
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain("/feed/user/5005/");
+   });
+});
+
+describe("clientHintsFromUserAgent", () => {
+   test("emits Chrome hints for a desktop Chrome UA and nothing otherwise", () => {
+      const chrome = clientHintsFromUserAgent(DEFAULT_IG_USER_AGENT);
+      expect(chrome["sec-ch-ua"]).toContain('v="124"');
+      expect(chrome["sec-ch-ua-platform"]).toBe('"macOS"');
+      expect(
+         clientHintsFromUserAgent(
+            "Mozilla/5.0 (My Personal Browser) Custom/1.0",
+         ),
+      ).toEqual({});
+   });
+});
+
+describe("detectHardAccountBlock", () => {
+   test("matches only HTTP 400 carrying a deterministic-failure marker", () => {
+      expect(
+         detectHardAccountBlock(
+            400,
+            '{"message":"Asset asset://laser.provider/ig_business_category_subvertical has been deleted. You cannot use this schema","status":"fail"}',
+         ),
+      ).toBe("laser.provider");
+      expect(detectHardAccountBlock(400, "YOU CANNOT USE THIS SCHEMA")).toBe(
+         "you cannot use this schema",
+      );
+      expect(detectHardAccountBlock(400, "something_else")).toBeNull();
+      // Other statuses never count — 4xx/5xx stay on auth/rate-limit/transient paths.
+      expect(detectHardAccountBlock(401, "laser.provider")).toBeNull();
+      expect(detectHardAccountBlock(500, "laser.provider")).toBeNull();
+   });
+});
+
+describe("detectRateLimit", () => {
+   test("429 always counts", () => {
+      expect(detectRateLimit(429, "")).toBe(true);
+      expect(detectRateLimit(429, "anything")).toBe(true);
+   });
+   test("non-429 status counts only on a throttle marker in the body", () => {
+      expect(
+         detectRateLimit(
+            200,
+            "Please wait a few minutes before you try again.",
+         ),
+      ).toBe(true);
+      expect(detectRateLimit(400, "rate limited")).toBe(true);
+      expect(detectRateLimit(200, "ok")).toBe(false);
+      expect(detectRateLimit(403, "login_required")).toBe(false);
+   });
+});
+
+describe("DirectInstagramFetcher — rate limit + UA + request observer", () => {
+   const realFetch = globalThis.fetch;
+   afterEach(() => {
+      globalThis.fetch = realFetch;
+   });
+
+   test("429 on the authed feed surfaces InstagramRateLimitError (not auth)", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: false,
+            status: 429,
+            headers: {
+               get: (k: string) =>
+                  k.toLowerCase() === "retry-after" ? "120" : null,
+            },
+            async text() {
+               return "Please wait a few minutes";
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramRateLimitError);
+      expect(err).not.toBeInstanceOf(InstagramAuthError);
+      expect(err.retryAfterMs).toBe(120_000);
+   });
+
+   test("anonymous 429 surfaces InstagramRateLimitError", async () => {
+      globalThis.fetch = vi.fn(async () => ({
+         ok: false,
+         status: 429,
+         async text() {
+            return "rate limited";
+         },
+      })) as unknown as typeof fetch;
+      await expect(
+         new DirectInstagramFetcher().fetchRecentPosts("foo"),
+      ).rejects.toBeInstanceOf(InstagramRateLimitError);
+   });
+
+   test("sends the constructor User-Agent on every request", async () => {
+      const seenUAs: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+         const ua = (init.headers as Record<string, string>)["User-Agent"];
+         seenUAs.push(ua);
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const CUSTOM_UA = "Mozilla/5.0 (My Personal Browser) Custom/1.0";
+      await new DirectInstagramFetcher(AUTH, 0, CUSTOM_UA).fetchRecentPosts(
+         "foo",
+      );
+      expect(seenUAs.length).toBeGreaterThan(0);
+      expect(seenUAs.every((ua) => ua === CUSTOM_UA)).toBe(true);
+   });
+
+   test("defaults to DEFAULT_IG_USER_AGENT when no UA is supplied", async () => {
+      let seenUA = "";
+      globalThis.fetch = vi.fn(async (_url: string, init: RequestInit) => {
+         seenUA = (init.headers as Record<string, string>)["User-Agent"];
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return buildIgResponse([SAMPLE_NODE]);
+            },
+         };
+      }) as unknown as typeof fetch;
+      await new DirectInstagramFetcher().fetchRecentPosts("foo"); // anonymous
+      expect(seenUA).toBe(DEFAULT_IG_USER_AGENT);
+   });
+
+   test("observeRequests fires once per outbound IG HTTP request", async () => {
+      globalThis.fetch = vi.fn(async (url: string) => {
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      let count = 0;
+      // warmupProbability=0 → no warmup, no inter-request delay: pk + feed = 2.
+      const f = new DirectInstagramFetcher(AUTH, 0);
+      f.observeRequests(() => {
+         count++;
+      });
+      await f.fetchRecentPosts("foo");
+      expect(count).toBe(2);
+   });
+});
+
+describe("detectAuthBlock", () => {
+   test("401 and 403 always count, regardless of body", () => {
+      expect(detectAuthBlock(401, "")).toMatch(/HTTP 401/);
+      expect(detectAuthBlock(403, "anything")).toMatch(/HTTP 403/);
+   });
+
+   test("400 + checkpoint/challenge/require_login body counts", () => {
+      expect(detectAuthBlock(400, '"message":"checkpoint_required"')).toMatch(
+         /checkpoint_required/,
+      );
+      expect(detectAuthBlock(400, '"challenge_required"')).toMatch(
+         /challenge_required/,
+      );
+      expect(detectAuthBlock(400, '{"require_login":true}')).toMatch(
+         /require_login/,
+      );
+   });
+
+   test("400 with unrelated body returns null (real 400 != auth-block)", () => {
+      expect(detectAuthBlock(400, '{"error":"bad_request"}')).toBeNull();
+      expect(detectAuthBlock(400, "")).toBeNull();
+   });
+
+   test("200/404/500 always return null even if body contains the markers", () => {
+      expect(detectAuthBlock(200, "checkpoint_required")).toBeNull();
+      expect(detectAuthBlock(404, "login_required")).toBeNull();
+      expect(detectAuthBlock(500, "challenge_required")).toBeNull();
+   });
+});
+
+describe("parseUserFeedBody (private feed/user shape)", () => {
+   test("recovers the exact bare pk from the string id (numeric pk is lossy)", () => {
+      const body = JSON.stringify({
+         status: "ok",
+         items: [
+            {
+               id: "3905752326674602653_62427593254",
+               pk: 3905752326674602653,
+               code: "DY0BQwsGFqd",
+               taken_at: 1779821981,
+               media_type: 8,
+               caption: { text: "carrusel" },
+               image_versions2: {
+                  candidates: [{ url: "https://cdn/cover.jpg" }],
+               },
+               carousel_media: [
+                  {
+                     media_type: 1,
+                     image_versions2: {
+                        candidates: [{ url: "https://cdn/c1.jpg" }],
+                     },
+                  },
+                  {
+                     media_type: 2,
+                     image_versions2: {
+                        candidates: [{ url: "https://cdn/c2.jpg" }],
+                     },
+                     video_versions: [{ url: "https://cdn/c2.mp4" }],
+                  },
+               ],
+            },
+            {
+               id: "3904328634825703202_45758433140",
+               pk: 3904328634825703202,
+               code: "DYu9jUVK_8i",
+               taken_at: 1779652311,
+               media_type: 2,
+               caption: { text: "video" },
+               image_versions2: {
+                  candidates: [{ url: "https://cdn/vcover.jpg" }],
+               },
+               video_versions: [{ url: "https://cdn/v.mp4" }],
+            },
+            {
+               id: "3897145926033003902_62427593254",
+               code: "DYVcZJfDtV-",
+               taken_at: 1778796018,
+               media_type: 1,
+               caption: null,
+               image_versions2: {
+                  candidates: [{ url: "https://cdn/img.jpg" }],
+               },
+            },
+         ],
+      });
+      const [carousel, video, image] = parseUserFeedBody(body);
+
+      expect(carousel.igPostId).toBe("3905752326674602653");
+      expect(carousel.mediaType).toBe("carousel");
+      expect(carousel.takenAtMs).toBe(1779821981 * 1000);
+      expect(carousel.carouselUrls).toEqual([
+         "https://cdn/c1.jpg",
+         "https://cdn/c2.jpg",
+      ]);
+      expect(carousel.carouselVideoUrls).toEqual([null, "https://cdn/c2.mp4"]);
+
+      expect(video.igPostId).toBe("3904328634825703202");
+      expect(video.mediaType).toBe("video");
+      expect(video.videoUrl).toBe("https://cdn/v.mp4");
+
+      expect(image.igPostId).toBe("3897145926033003902");
+      expect(image.mediaType).toBe("image");
+      expect(image.caption).toBe("");
+   });
+
+   test("missing/empty items yields no posts; require_login throws", () => {
+      expect(parseUserFeedBody(JSON.stringify({ status: "ok" }))).toEqual([]);
+      expect(parseUserFeedBody(JSON.stringify({ items: [] }))).toEqual([]);
+      expect(() =>
+         parseUserFeedBody(JSON.stringify({ require_login: true })),
+      ).toThrow(InstagramAuthError);
+      expect(() => parseUserFeedBody("<html>")).toThrow(/non-JSON/);
+   });
 });

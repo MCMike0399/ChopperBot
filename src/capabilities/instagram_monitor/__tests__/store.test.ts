@@ -1,744 +1,838 @@
-import { describe, test, expect } from 'vitest';
-import { SqliteMemoryStore, NamespacedMemory } from '../../../memory/store.js';
+import { describe, test, expect } from "vitest";
+import { SqliteMemoryStore, NamespacedMemory } from "../../../memory/store.js";
 import {
-  InstagramMonitorStore,
-  INSTAGRAM_MONITOR_MIGRATIONS,
-  pollJitterMs,
-  computeCadenceInterval,
-  computeGovernorStretch,
-  expectedPollsPerDay,
-  effectiveBaseIntervalMs,
-  nextDueAtMs,
-  CADENCE_MIN_INTERVAL_MS,
-  CADENCE_MAX_INTERVAL_MS,
-  CADENCE_INTERVAL_FACTOR,
-  HARD_PAUSE_THRESHOLD,
-  POLL_JITTER_FRACTION,
-  USERNAME_FEED_REPROBE_MS,
-  type MonitoredAccount,
-} from '../store.js';
+   InstagramMonitorStore,
+   INSTAGRAM_MONITOR_MIGRATIONS,
+   pollJitterMs,
+   computeCadenceInterval,
+   computeGovernorStretch,
+   expectedPollsPerDay,
+   effectiveBaseIntervalMs,
+   nextDueAtMs,
+   CADENCE_MIN_INTERVAL_MS,
+   CADENCE_MAX_INTERVAL_MS,
+   CADENCE_INTERVAL_FACTOR,
+   HARD_PAUSE_THRESHOLD,
+   POLL_JITTER_FRACTION,
+   USERNAME_FEED_REPROBE_MS,
+   type MonitoredAccount,
+} from "../store.js";
 
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
 
 async function newStore() {
-  const mem = new SqliteMemoryStore({ path: ':memory:' });
-  await new NamespacedMemory(mem, 'instagram_monitor').migrate(
-    'instagram_monitor',
-    INSTAGRAM_MONITOR_MIGRATIONS,
-  );
-  return { store: new InstagramMonitorStore(mem.db()), mem };
+   const mem = new SqliteMemoryStore({ path: ":memory:" });
+   await new NamespacedMemory(mem, "instagram_monitor").migrate(
+      "instagram_monitor",
+      INSTAGRAM_MONITOR_MIGRATIONS,
+   );
+   return { store: new InstagramMonitorStore(mem.db()), mem };
 }
 
-describe('InstagramMonitorStore', () => {
-  test('upsertAccount is idempotent on username', async () => {
-    const { store, mem } = await newStore();
-    const a = store.upsertAccount({ username: 'foo', added_by: 'U1' });
-    const b = store.upsertAccount({ username: 'foo', added_by: 'U2' });
-    expect(a.created).toBe(true);
-    expect(b.created).toBe(false);
-    expect(a.account.id).toBe(b.account.id);
-    expect(b.account.added_by).toBe('U1');
-    mem.close();
-  });
+describe("InstagramMonitorStore", () => {
+   test("upsertAccount is idempotent on username", async () => {
+      const { store, mem } = await newStore();
+      const a = store.upsertAccount({ username: "foo", added_by: "U1" });
+      const b = store.upsertAccount({ username: "foo", added_by: "U2" });
+      expect(a.created).toBe(true);
+      expect(b.created).toBe(false);
+      expect(a.account.id).toBe(b.account.id);
+      expect(b.account.added_by).toBe("U1");
+      mem.close();
+   });
 
-  test('accounts are global: usernames are unique across the table', async () => {
-    const { store, mem } = await newStore();
-    store.upsertAccount({ username: 'foo', added_by: 'U1' });
-    store.upsertAccount({ username: 'bar', added_by: 'U1' });
-    expect(store.listAccounts()).toHaveLength(2);
-    expect(store.listAccounts().map((a) => a.username).sort()).toEqual(['bar', 'foo']);
-    mem.close();
-  });
+   test("accounts are global: usernames are unique across the table", async () => {
+      const { store, mem } = await newStore();
+      store.upsertAccount({ username: "foo", added_by: "U1" });
+      store.upsertAccount({ username: "bar", added_by: "U1" });
+      expect(store.listAccounts()).toHaveLength(2);
+      expect(
+         store
+            .listAccounts()
+            .map((a) => a.username)
+            .sort(),
+      ).toEqual(["bar", "foo"]);
+      mem.close();
+   });
 
-  test('dueAccounts respects paused, last_polled_at, backoff', async () => {
-    const { store, mem } = await newStore();
-    store.upsertAccount({ username: 'never_polled', added_by: 'U' });
-    const a = store.upsertAccount({ username: 'fresh', added_by: 'U' });
-    const b = store.upsertAccount({ username: 'stale', added_by: 'U' });
-    const p = store.upsertAccount({ username: 'paused', added_by: 'U' });
-    store.setPaused('paused', true);
+   test("dueAccounts respects paused, last_polled_at, backoff", async () => {
+      const { store, mem } = await newStore();
+      store.upsertAccount({ username: "never_polled", added_by: "U" });
+      const a = store.upsertAccount({ username: "fresh", added_by: "U" });
+      const b = store.upsertAccount({ username: "stale", added_by: "U" });
+      const p = store.upsertAccount({ username: "paused", added_by: "U" });
+      store.setPaused("paused", true);
 
-    const now = 100_000_000;
-    const interval = 20 * 60_000;
-    // dueAt = last_polled + interval + jitter, jitter ∈ [0, POLL_JITTER_FRACTION
-    // × interval). Both bounds are derived from the constant rather than
-    // hardcoded: at the old 0.5 fraction a flat "30 min ago" sat safely past the
-    // ceiling (30 max), but the 2026-08-13 bump to 0.75 raised the ceiling to 35
-    // and turned this assertion into a ~2-in-3 coin flip. Deriving it keeps the
-    // test deterministic through any future jitter change.
-    const clearlyDue = interval * (1 + POLL_JITTER_FRACTION) + 5 * 60_000;
-    store.markPollSuccess(a.account.id, now - 5 * 60_000, 'A1'); // 5 min ago — under interval, never due
-    store.markPollSuccess(b.account.id, now - clearlyDue, 'B1'); // past interval+max jitter — always due
-    store.markPollSuccess(p.account.id, now - clearlyDue, 'P1'); // due, but paused
+      const now = 100_000_000;
+      const interval = 20 * 60_000;
+      // dueAt = last_polled + interval + jitter, jitter ∈ [0, POLL_JITTER_FRACTION
+      // × interval). Both bounds are derived from the constant rather than
+      // hardcoded: at the old 0.5 fraction a flat "30 min ago" sat safely past the
+      // ceiling (30 max), but the 2026-08-13 bump to 0.75 raised the ceiling to 35
+      // and turned this assertion into a ~2-in-3 coin flip. Deriving it keeps the
+      // test deterministic through any future jitter change.
+      const clearlyDue = interval * (1 + POLL_JITTER_FRACTION) + 5 * 60_000;
+      store.markPollSuccess(a.account.id, now - 5 * 60_000, "A1"); // 5 min ago — under interval, never due
+      store.markPollSuccess(b.account.id, now - clearlyDue, "B1"); // past interval+max jitter — always due
+      store.markPollSuccess(p.account.id, now - clearlyDue, "P1"); // due, but paused
 
-    const due = store.dueAccounts(now, interval, 10);
-    const names = due.map((d) => d.username).sort();
-    expect(names).toEqual(['never_polled', 'stale']);
-    mem.close();
-  });
+      const due = store.dueAccounts(now, interval, 10);
+      const names = due.map((d) => d.username).sort();
+      expect(names).toEqual(["never_polled", "stale"]);
+      mem.close();
+   });
 
-  test('exponential backoff on consecutive_failures', async () => {
-    const { store, mem } = await newStore();
-    const r = store.upsertAccount({ username: 'x', added_by: 'U' });
-    const now = 1_000_000_000;
-    store.markPollFailure(r.account.id, now - 10 * 60_000); // 10 min ago
-    // After 1 failure, next due = 10min + 20min*2^1 = 50min from poll. So not due at +10min.
-    const dueWithBackoff = store.dueAccounts(now, 20 * 60_000, 10).map((d) => d.username);
-    expect(dueWithBackoff).not.toContain('x');
-    // 60 minutes after the failed poll, it should be due.
-    const dueLater = store
-      .dueAccounts(now + 60 * 60_000, 20 * 60_000, 10)
-      .map((d) => d.username);
-    expect(dueLater).toContain('x');
-    mem.close();
-  });
+   test("exponential backoff on consecutive_failures", async () => {
+      const { store, mem } = await newStore();
+      const r = store.upsertAccount({ username: "x", added_by: "U" });
+      const now = 1_000_000_000;
+      store.markPollFailure(r.account.id, now - 10 * 60_000); // 10 min ago
+      // After 1 failure, next due = 10min + 20min*2^1 = 50min from poll. So not due at +10min.
+      const dueWithBackoff = store
+         .dueAccounts(now, 20 * 60_000, 10)
+         .map((d) => d.username);
+      expect(dueWithBackoff).not.toContain("x");
+      // 60 minutes after the failed poll, it should be due.
+      const dueLater = store
+         .dueAccounts(now + 60 * 60_000, 20 * 60_000, 10)
+         .map((d) => d.username);
+      expect(dueLater).toContain("x");
+      mem.close();
+   });
 
-  test('pollJitterMs is bounded random and off-able', () => {
-    const max = 600_000;
-    const cycle = 1_700_000_000_000;
-    // Bounded to [0, max).
-    const samples: number[] = [];
-    for (let i = 0; i < 100; i++) {
-      const j = pollJitterMs(1, cycle, max);
-      expect(j).toBeGreaterThanOrEqual(0);
-      expect(j).toBeLessThan(max);
-      samples.push(j);
-    }
-    // Random (not deterministic): 100 draws from a 600_000-wide range with
-    // <2 unique values has astronomically low probability (~1e-300).
-    expect(new Set(samples).size).toBeGreaterThan(1);
-    // Disabled paths return 0 deterministically:
-    // - max <= 0 (caller turned jitter off)
-    // - last_polled_at == null (never-polled accounts skip jitter so their
-    //   first poll fires immediately)
-    expect(pollJitterMs(1, cycle, 0)).toBe(0);
-    expect(pollJitterMs(1, null, max)).toBe(0);
-  });
+   test("pollJitterMs is bounded random and off-able", () => {
+      const max = 600_000;
+      const cycle = 1_700_000_000_000;
+      // Bounded to [0, max).
+      const samples: number[] = [];
+      for (let i = 0; i < 100; i++) {
+         const j = pollJitterMs(1, cycle, max);
+         expect(j).toBeGreaterThanOrEqual(0);
+         expect(j).toBeLessThan(max);
+         samples.push(j);
+      }
+      // Random (not deterministic): 100 draws from a 600_000-wide range with
+      // <2 unique values has astronomically low probability (~1e-300).
+      expect(new Set(samples).size).toBeGreaterThan(1);
+      // Disabled paths return 0 deterministically:
+      // - max <= 0 (caller turned jitter off)
+      // - last_polled_at == null (never-polled accounts skip jitter so their
+      //   first poll fires immediately)
+      expect(pollJitterMs(1, cycle, 0)).toBe(0);
+      expect(pollJitterMs(1, null, max)).toBe(0);
+   });
 
-  test('dueAccounts: per-account jitter (sized to the interval) defers a just-due account', async () => {
-    const { store, mem } = await newStore();
-    const r = store.upsertAccount({ username: 'x', added_by: 'U' });
-    const interval = 20 * 60_000;
-    const now = 1_000_000_000;
+   test("dueAccounts: per-account jitter (sized to the interval) defers a just-due account", async () => {
+      const { store, mem } = await newStore();
+      const r = store.upsertAccount({ username: "x", added_by: "U" });
+      const interval = 20 * 60_000;
+      const now = 1_000_000_000;
 
-    // Polled "now": dueAt = now + interval + jitter > now → never due, any draw.
-    store.markPollSuccess(r.account.id, now, 'A');
-    for (let i = 0; i < 30; i++) {
-      expect(store.dueAccounts(now, interval, 10).map((a) => a.username)).not.toContain('x');
-    }
+      // Polled "now": dueAt = now + interval + jitter > now → never due, any draw.
+      store.markPollSuccess(r.account.id, now, "A");
+      for (let i = 0; i < 30; i++) {
+         expect(
+            store.dueAccounts(now, interval, 10).map((a) => a.username),
+         ).not.toContain("x");
+      }
 
-    // Polled 2× the interval ago: the jitter ceiling is
-    // POLL_JITTER_FRACTION × interval (< 1 × interval), so dueAt < now → always
-    // due, any draw. Holds for any fraction below 1.0.
-    store.markPollSuccess(r.account.id, now - 2 * interval, 'A');
-    for (let i = 0; i < 30; i++) {
-      expect(store.dueAccounts(now, interval, 10).map((a) => a.username)).toContain('x');
-    }
+      // Polled 2× the interval ago: the jitter ceiling is
+      // POLL_JITTER_FRACTION × interval (< 1 × interval), so dueAt < now → always
+      // due, any draw. Holds for any fraction below 1.0.
+      store.markPollSuccess(r.account.id, now - 2 * interval, "A");
+      for (let i = 0; i < 30; i++) {
+         expect(
+            store.dueAccounts(now, interval, 10).map((a) => a.username),
+         ).toContain("x");
+      }
 
-    // Polled exactly one interval ago: dueAt = now + jitter,
-    // jitter ∈ [0, POLL_JITTER_FRACTION × interval).
-    // Jitter is real → across many draws it's deferred (not always due).
-    store.markPollSuccess(r.account.id, now - interval, 'A');
-    let deferred = 0;
-    for (let i = 0; i < 50; i++) {
-      if (!store.dueAccounts(now, interval, 10).map((a) => a.username).includes('x')) deferred++;
-    }
-    expect(deferred).toBeGreaterThan(0);
-    mem.close();
-  });
+      // Polled exactly one interval ago: dueAt = now + jitter,
+      // jitter ∈ [0, POLL_JITTER_FRACTION × interval).
+      // Jitter is real → across many draws it's deferred (not always due).
+      store.markPollSuccess(r.account.id, now - interval, "A");
+      let deferred = 0;
+      for (let i = 0; i < 50; i++) {
+         if (
+            !store
+               .dueAccounts(now, interval, 10)
+               .map((a) => a.username)
+               .includes("x")
+         )
+            deferred++;
+      }
+      expect(deferred).toBeGreaterThan(0);
+      mem.close();
+   });
 
-  test('hasSeen + recordSeen + recentPushed are still per-channel for fan-out dedup', async () => {
-    const { store, mem } = await newStore();
-    expect(store.hasSeen('C', 'P1')).toBe(false);
-    store.recordSeen({
-      channel_id: 'C',
-      ig_post_id: 'P1',
-      account_username: 'foo',
-      caption: 'cap',
-      media_type: 'image',
-      posted_at: 1,
-      classification_json: null,
-      pushed: true,
-      discord_message_id: 'D1',
-    });
-    store.recordSeen({
-      channel_id: 'C',
-      ig_post_id: 'P2',
-      account_username: 'foo',
-      caption: 'cap2',
-      media_type: 'image',
-      posted_at: 2,
-      classification_json: null,
-      pushed: false,
-      discord_message_id: null,
-    });
-    expect(store.hasSeen('C', 'P1')).toBe(true);
-    expect(store.hasSeen('C', 'P2')).toBe(true);
-    const pushed = store.recentPushed('C', 10);
-    expect(pushed.map((p) => p.ig_post_id)).toEqual(['P1']);
-    // A different channel sees neither — that's the no-backfill guarantee.
-    expect(store.hasSeen('OTHER', 'P1')).toBe(false);
-    expect(store.recentPushed('OTHER', 10)).toHaveLength(0);
-    mem.close();
-  });
+   test("hasSeen + recordSeen + recentPushed are still per-channel for fan-out dedup", async () => {
+      const { store, mem } = await newStore();
+      expect(store.hasSeen("C", "P1")).toBe(false);
+      store.recordSeen({
+         channel_id: "C",
+         ig_post_id: "P1",
+         account_username: "foo",
+         caption: "cap",
+         media_type: "image",
+         posted_at: 1,
+         classification_json: null,
+         pushed: true,
+         discord_message_id: "D1",
+      });
+      store.recordSeen({
+         channel_id: "C",
+         ig_post_id: "P2",
+         account_username: "foo",
+         caption: "cap2",
+         media_type: "image",
+         posted_at: 2,
+         classification_json: null,
+         pushed: false,
+         discord_message_id: null,
+      });
+      expect(store.hasSeen("C", "P1")).toBe(true);
+      expect(store.hasSeen("C", "P2")).toBe(true);
+      const pushed = store.recentPushed("C", 10);
+      expect(pushed.map((p) => p.ig_post_id)).toEqual(["P1"]);
+      // A different channel sees neither — that's the no-backfill guarantee.
+      expect(store.hasSeen("OTHER", "P1")).toBe(false);
+      expect(store.recentPushed("OTHER", 10)).toHaveLength(0);
+      mem.close();
+   });
 
-  test('resetLastPost clears the dedup anchor', async () => {
-    const { store, mem } = await newStore();
-    const r = store.upsertAccount({ username: 'x', added_by: 'U' });
-    store.markPollSuccess(r.account.id, 1, 'A1');
-    expect(store.getAccount('x')?.last_post_id).toBe('A1');
-    store.resetLastPost('x');
-    const after = store.getAccount('x');
-    expect(after?.last_post_id).toBeNull();
-    expect(after?.last_polled_at).toBeNull();
-    mem.close();
-  });
+   test("resetLastPost clears the dedup anchor", async () => {
+      const { store, mem } = await newStore();
+      const r = store.upsertAccount({ username: "x", added_by: "U" });
+      store.markPollSuccess(r.account.id, 1, "A1");
+      expect(store.getAccount("x")?.last_post_id).toBe("A1");
+      store.resetLastPost("x");
+      const after = store.getAccount("x");
+      expect(after?.last_post_id).toBeNull();
+      expect(after?.last_polled_at).toBeNull();
+      mem.close();
+   });
 });
 
-describe('InstagramMonitorStore — global runtime / circuit breaker (v5)', () => {
-  test('v5 migration seeds a single un-stopped runtime row', async () => {
-    const { store, mem } = await newStore();
-    const r = store.getRuntime();
-    expect(r.global_stop).toBe(0);
-    expect(store.isGlobalStopped()).toBe(false);
-    mem.close();
-  });
+describe("InstagramMonitorStore — global runtime / circuit breaker (v5)", () => {
+   test("v5 migration seeds a single un-stopped runtime row", async () => {
+      const { store, mem } = await newStore();
+      const r = store.getRuntime();
+      expect(r.global_stop).toBe(0);
+      expect(store.isGlobalStopped()).toBe(false);
+      mem.close();
+   });
 
-  test('tripGlobalStop engages the kill-switch and keeps the first reason', async () => {
-    const { store, mem } = await newStore();
-    store.tripGlobalStop('first reason', 1_000);
-    store.tripGlobalStop('second reason', 2_000);
-    const r = store.getRuntime();
-    expect(store.isGlobalStopped()).toBe(true);
-    expect(r.stop_reason).toBe('first reason');
-    expect(r.stopped_at).toBe(1_000);
-    mem.close();
-  });
+   test("tripGlobalStop engages the kill-switch and keeps the first reason", async () => {
+      const { store, mem } = await newStore();
+      store.tripGlobalStop("first reason", 1_000);
+      store.tripGlobalStop("second reason", 2_000);
+      const r = store.getRuntime();
+      expect(store.isGlobalStopped()).toBe(true);
+      expect(r.stop_reason).toBe("first reason");
+      expect(r.stopped_at).toBe(1_000);
+      mem.close();
+   });
 
-  test('clearGlobalStop is the only way back, and clears event windows', async () => {
-    const { store, mem } = await newStore();
-    store.tripGlobalStop('boom', 1_000);
-    store.recordAuthEvent(1_000);
-    store.clearGlobalStop();
-    const r = store.getRuntime();
-    expect(store.isGlobalStopped()).toBe(false);
-    expect(r.stop_reason).toBeNull();
-    expect(r.recent_auth_json).toBeNull();
-    mem.close();
-  });
+   test("clearGlobalStop is the only way back, and clears event windows", async () => {
+      const { store, mem } = await newStore();
+      store.tripGlobalStop("boom", 1_000);
+      store.recordAuthEvent(1_000);
+      store.clearGlobalStop();
+      const r = store.getRuntime();
+      expect(store.isGlobalStopped()).toBe(false);
+      expect(r.stop_reason).toBeNull();
+      expect(r.recent_auth_json).toBeNull();
+      mem.close();
+   });
 
-  test('clearFailureBackoff does NOT clear the persistent global stop', async () => {
-    // The whole point of the separate runtime table: a restart (which calls
-    // clearFailureBackoff) must not silently un-stop a tripped breaker.
-    const { store, mem } = await newStore();
-    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.markPollFailure(a.account.id, 1, { auth: true });
-    store.tripGlobalStop('flagged', 1_000);
-    store.clearFailureBackoff();
-    expect(store.getAccount('foo')?.consecutive_auth_failures).toBe(0); // counters cleared
-    expect(store.isGlobalStopped()).toBe(true); // breaker survives
-    mem.close();
-  });
+   test("clearFailureBackoff does NOT clear the persistent global stop", async () => {
+      // The whole point of the separate runtime table: a restart (which calls
+      // clearFailureBackoff) must not silently un-stop a tripped breaker.
+      const { store, mem } = await newStore();
+      const a = store.upsertAccount({ username: "foo", added_by: "U" });
+      store.markPollFailure(a.account.id, 1, { auth: true });
+      store.tripGlobalStop("flagged", 1_000);
+      store.clearFailureBackoff();
+      expect(store.getAccount("foo")?.consecutive_auth_failures).toBe(0); // counters cleared
+      expect(store.isGlobalStopped()).toBe(true); // breaker survives
+      mem.close();
+   });
 
-  test('event windowing counts within the window and prunes older entries', async () => {
-    const { store, mem } = await newStore();
-    const base = 10_000_000_000;
-    expect(store.record429Event(base)).toBe(1);
-    expect(store.record429Event(base + 1_000)).toBe(2);
-    // 7h later: the first two have aged out of the 6h window.
-    const count = store.record429Event(base + 7 * 60 * 60 * 1000);
-    expect(count).toBe(1);
-    mem.close();
-  });
+   test("event windowing counts within the window and prunes older entries", async () => {
+      const { store, mem } = await newStore();
+      const base = 10_000_000_000;
+      expect(store.record429Event(base)).toBe(1);
+      expect(store.record429Event(base + 1_000)).toBe(2);
+      // 7h later: the first two have aged out of the 6h window.
+      const count = store.record429Event(base + 7 * 60 * 60 * 1000);
+      expect(count).toBe(1);
+      mem.close();
+   });
 
-  test('writeHeartbeat is readable via getRuntime', async () => {
-    const { store, mem } = await newStore();
-    store.writeHeartbeat({
-      authCooldownUntil: 111,
-      rateCooldownUntil: 222,
-      budgetPauseUntil: 333,
-      requests24h: 7,
-      nowMs: 444,
-    });
-    const r = store.getRuntime();
-    expect(r.auth_cooldown_until).toBe(111);
-    expect(r.rate_cooldown_until).toBe(222);
-    expect(r.budget_pause_until).toBe(333);
-    expect(r.requests_24h).toBe(7);
-    expect(r.heartbeat_at).toBe(444);
-    mem.close();
-  });
+   test("writeHeartbeat is readable via getRuntime", async () => {
+      const { store, mem } = await newStore();
+      store.writeHeartbeat({
+         authCooldownUntil: 111,
+         rateCooldownUntil: 222,
+         budgetPauseUntil: 333,
+         requests24h: 7,
+         nowMs: 444,
+      });
+      const r = store.getRuntime();
+      expect(r.auth_cooldown_until).toBe(111);
+      expect(r.rate_cooldown_until).toBe(222);
+      expect(r.budget_pause_until).toBe(333);
+      expect(r.requests_24h).toBe(7);
+      expect(r.heartbeat_at).toBe(444);
+      mem.close();
+   });
 });
 
 function acct(p: Partial<MonitoredAccount>): MonitoredAccount {
-  return {
-    id: 1,
-    username: 'a',
-    added_by: 'U',
-    added_at: 0,
-    paused: 0,
-    last_polled_at: null,
-    last_post_id: null,
-    last_post_at: null,
-    consecutive_failures: 0,
-    consecutive_auth_failures: 0,
-    consecutive_hard_failures: 0,
-    poll_interval_ms: null,
-    posts_per_day: null,
-    cadence_updated_at: null,
-    ig_pk: null,
-    prefer_username_feed: 0,
-    prefer_username_feed_at: null,
-    ...p,
-  };
+   return {
+      id: 1,
+      username: "a",
+      added_by: "U",
+      added_at: 0,
+      paused: 0,
+      last_polled_at: null,
+      last_post_id: null,
+      last_post_at: null,
+      consecutive_failures: 0,
+      consecutive_auth_failures: 0,
+      consecutive_hard_failures: 0,
+      poll_interval_ms: null,
+      posts_per_day: null,
+      cadence_updated_at: null,
+      ig_pk: null,
+      prefer_username_feed: 0,
+      prefer_username_feed_at: null,
+      ...p,
+   };
 }
 
 /** `count` post times, newest first, spaced `gapMs` apart. Span = (count-1)*gapMs
  * — keep it above CADENCE_MIN_SPAN_MS (3d) for the trust gate to pass. */
 function gapSeries(newest: number, count: number, gapMs: number): number[] {
-  return Array.from({ length: count }, (_, i) => newest - i * gapMs);
+   return Array.from({ length: count }, (_, i) => newest - i * gapMs);
 }
 
-describe('adaptive cadence — computeCadenceInterval', () => {
-  test('regular cadence → median gap × factor (in range)', () => {
-    const newest = 2_000_000_000_000;
-    const ts = gapSeries(newest, 14, 6 * HOUR); // every 6h, span 78h (> 3d)
-    const { intervalMs, postsPerDay } = computeCadenceInterval(ts, newest);
-    expect(intervalMs).toBe(6 * HOUR * CADENCE_INTERVAL_FACTOR); // 3h
-    expect(postsPerDay).toBeCloseTo(4, 5);
-  });
+describe("adaptive cadence — computeCadenceInterval", () => {
+   test("regular cadence → median gap × factor (in range)", () => {
+      const newest = 2_000_000_000_000;
+      const ts = gapSeries(newest, 14, 6 * HOUR); // every 6h, span 78h (> 3d)
+      const { intervalMs, postsPerDay } = computeCadenceInterval(ts, newest);
+      expect(intervalMs).toBe(6 * HOUR * CADENCE_INTERVAL_FACTOR); // 3h
+      expect(postsPerDay).toBeCloseTo(4, 5);
+   });
 
-  test('too few samples → null (cold start)', () => {
-    const newest = 2_000_000_000_000;
-    const ts = [0, 1, 2, 3].map((i) => newest - i * 6 * HOUR); // only 4
-    expect(computeCadenceInterval(ts, newest).intervalMs).toBeNull();
-  });
+   test("too few samples → null (cold start)", () => {
+      const newest = 2_000_000_000_000;
+      const ts = [0, 1, 2, 3].map((i) => newest - i * 6 * HOUR); // only 4
+      expect(computeCadenceInterval(ts, newest).intervalMs).toBeNull();
+   });
 
-  test('enough samples but span too short → null (burst guard)', () => {
-    const newest = 2_000_000_000_000;
-    const ts = [0, 15, 30, 45, 60].map((m) => newest - m * 60_000); // 5 posts in 1h
-    expect(computeCadenceInterval(ts, newest).intervalMs).toBeNull();
-  });
+   test("enough samples but span too short → null (burst guard)", () => {
+      const newest = 2_000_000_000_000;
+      const ts = [0, 15, 30, 45, 60].map((m) => newest - m * 60_000); // 5 posts in 1h
+      expect(computeCadenceInterval(ts, newest).intervalMs).toBeNull();
+   });
 
-  test('median is robust to a burst + one huge gap, floored at MIN', () => {
-    const newest = 2_000_000_000_000;
-    const ts = [
-      newest,
-      newest - 1 * 60_000,
-      newest - 2 * 60_000,
-      newest - 3 * 60_000,
-      newest - 4 * 60_000,
-      newest - 30 * DAY,
-    ];
-    expect(computeCadenceInterval(ts, newest).intervalMs).toBe(CADENCE_MIN_INTERVAL_MS);
-  });
-
-  test('recency decay stretches a quieted account toward MAX', () => {
-    const newest = 2_000_000_000_000;
-    const ts = gapSeries(newest, 14, 6 * HOUR);
-    // Evaluate 5 days after the last post (silence ≫ median gap).
-    expect(computeCadenceInterval(ts, newest + 5 * DAY).intervalMs).toBe(CADENCE_MAX_INTERVAL_MS);
-  });
-
-  test('a rare cadence between 6h and the 12h ceiling is honored, not clamped', () => {
-    // Mirrors live `semillasderebeldia` (~20h median gap → wants ~10h). Under the
-    // old 6h ceiling this clamped to 6h (over-polling); now it passes through.
-    const newest = 2_000_000_000_000;
-    const ts = gapSeries(newest, 8, 20 * HOUR); // median gap 20h, span 140h
-    expect(computeCadenceInterval(ts, newest).intervalMs).toBe(10 * HOUR); // 20h × 0.5
-  });
-
-  test('non-positive / degenerate inputs → null', () => {
-    expect(computeCadenceInterval([], 0).intervalMs).toBeNull();
-    const t = 1_000_000_000;
-    // all identical → no positive gaps
-    expect(computeCadenceInterval([t, t, t, t, t], t).intervalMs).toBeNull();
-  });
-});
-
-describe('adaptive cadence — effectiveBaseIntervalMs / nextDueAtMs', () => {
-  test('effective interval applies default + stretch, clamped to MAX', () => {
-    expect(effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 1)).toBe(60 * 60_000);
-    expect(effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 2)).toBe(120 * 60_000);
-    // 3h × 3 = 9h is under the 12h ceiling → not clamped.
-    expect(effectiveBaseIntervalMs({ poll_interval_ms: 3 * HOUR }, 60 * 60_000, 3)).toBe(9 * HOUR);
-    // 3h × 5 = 15h exceeds the ceiling → clamped to MAX.
-    expect(effectiveBaseIntervalMs({ poll_interval_ms: 3 * HOUR }, 60 * 60_000, 5)).toBe(
-      CADENCE_MAX_INTERVAL_MS,
-    );
-    // invalid stretch falls back to 1
-    expect(effectiveBaseIntervalMs({ poll_interval_ms: 2 * HOUR }, 60 * 60_000, 0)).toBe(2 * HOUR);
-  });
-
-  test('nextDueAtMs mirrors the due formula without jitter; null when never polled', () => {
-    expect(nextDueAtMs(acct({ poll_interval_ms: 2 * HOUR, last_polled_at: null }), 60 * 60_000, 1)).toBeNull();
-    expect(
-      nextDueAtMs(acct({ poll_interval_ms: 2 * HOUR, last_polled_at: 1_000_000 }), 60 * 60_000, 1),
-    ).toBe(1_000_000 + 2 * HOUR);
-  });
-});
-
-describe('hard deterministic-failure auto-pause (migration v8)', () => {
-  test('v8 column defaults to 0; markPollFailure({hard}) increments only its counter', async () => {
-    const { store, mem } = await newStore();
-    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    expect(store.getAccount('foo')?.consecutive_hard_failures).toBe(0);
-    store.markPollFailure(a.account.id, 1_000, { hard: true });
-    const after = store.getAccount('foo')!;
-    expect(after.consecutive_hard_failures).toBe(1);
-    expect(after.consecutive_failures).toBe(1); // shared counter still moves (backoff)
-    expect(after.consecutive_auth_failures).toBe(0);
-    mem.close();
-  });
-
-  test('dueAccounts skips accounts at HARD_PAUSE_THRESHOLD; success re-arms them', async () => {
-    const { store, mem } = await newStore();
-    const now = Date.now();
-    const broken = store.upsertAccount({ username: 'broken', added_by: 'U' });
-    const healthy = store.upsertAccount({ username: 'healthy', added_by: 'U' });
-    store.markPollSuccess(healthy.account.id, now - 25 * HOUR, 'H1');
-    for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
-      store.markPollFailure(broken.account.id, now - (26 - i) * HOUR, { hard: true });
-    }
-    const due = store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username);
-    expect(due).toContain('healthy');
-    expect(due).not.toContain('broken');
-    // One below the threshold still polls.
-    const almost = store.upsertAccount({ username: 'almost', added_by: 'U' });
-    for (let i = 0; i < HARD_PAUSE_THRESHOLD - 1; i++) {
-      store.markPollFailure(almost.account.id, now - (26 - i) * HOUR, { hard: true });
-    }
-    expect(store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username)).toContain('almost');
-    // A successful poll resets the gate.
-    store.markPollSuccess(broken.account.id, now - 25 * HOUR, 'B1');
-    expect(store.getAccount('broken')?.consecutive_hard_failures).toBe(0);
-    expect(store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username)).toContain('broken');
-    mem.close();
-  });
-
-  test('clearFailureBackoff does NOT clear the hard counter; operator actions do', async () => {
-    const { store, mem } = await newStore();
-    const a = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
-      store.markPollFailure(a.account.id, 1_000 + i, { hard: true });
-    }
-    store.clearFailureBackoff(); // runs on every scheduler start
-    const afterClear = store.getAccount('foo')!;
-    expect(afterClear.consecutive_failures).toBe(0);
-    expect(afterClear.consecutive_auth_failures).toBe(0);
-    expect(afterClear.consecutive_hard_failures).toBe(HARD_PAUSE_THRESHOLD); // survives restarts
-
-    store.setPaused('foo', false); // operator "try again" gesture
-    expect(store.getAccount('foo')?.consecutive_hard_failures).toBe(0);
-
-    for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
-      store.markPollFailure(a.account.id, 2_000 + i, { hard: true });
-    }
-    store.resetLastPost('foo'); // operator force-poll
-    expect(store.getAccount('foo')?.consecutive_hard_failures).toBe(0);
-    mem.close();
-  });
-});
-
-describe('persistent fetch hints (v9)', () => {
-  test('remembered pk and username-feed survive a logical restart', async () => {
-    const { store, mem } = await newStore();
-    store.upsertAccount({ username: 'foo', added_by: 'U' });
-    store.rememberAccountPk('foo', '12345');
-    expect(store.getAccount('foo')?.ig_pk).toBe('12345');
-    expect(store.prefersUsernameFeed('foo', 1_000)).toBe(false);
-
-    store.rememberUsernameFeed('foo', 1_000);
-    expect(store.prefersUsernameFeed('foo', 1_000)).toBe(true);
-    expect(store.prefersUsernameFeed('foo', 1_000 + USERNAME_FEED_REPROBE_MS - 1)).toBe(true);
-    expect(store.prefersUsernameFeed('foo', 1_000 + USERNAME_FEED_REPROBE_MS + 1)).toBe(false);
-
-    store.setPaused('foo', false);
-    expect(store.prefersUsernameFeed('foo', 2_000)).toBe(false);
-
-    store.rememberUsernameFeed('foo', 3_000);
-    store.resetLastPost('foo');
-    expect(store.prefersUsernameFeed('foo', 4_000)).toBe(false);
-    expect(store.getAccount('foo')?.ig_pk).toBe('12345'); // pk is stable
-    mem.close();
-  });
-});
-
-describe('adaptive cadence — expectedPollsPerDay', () => {
-  const QUIET = 5 * HOUR;
-  const TICK = 60_000;
-
-  test('degenerates to DAY/interval with no quiet window and no tick', () => {
-    expect(expectedPollsPerDay(HOUR, 0, 0)).toBeCloseTo(24, 6);
-    expect(expectedPollsPerDay(12 * HOUR, 0, 0)).toBeCloseTo(2, 6);
-  });
-
-  test('quiet hours time-shift, not drop: a 12h account keeps ~2 polls/day', () => {
-    // min(DAY/sp, (DAY−quiet)/sp + 1): for a 12h interval the awake-hours term
-    // (19/12 + 1 ≈ 2.58) exceeds the raw rate (~1.94), so the quiet window
-    // costs it (almost) nothing — the old uniform ×0.73 modeled only ~1.46.
-    const p = expectedPollsPerDay(12 * HOUR, QUIET, TICK);
-    expect(p).toBeGreaterThan(1.9);
-    expect(p).toBeLessThanOrEqual(2);
-  });
-
-  test('quiet hours DO cost short-interval accounts their in-window polls', () => {
-    // 1h interval, jitter fraction 0.75: E[extra] ≈ sqrt(π/2 × 45min × 1min)
-    // ≈ 8.4min → spacing ~68.4min → raw ~21/day, quiet-aware ~16.7 awake + 1
-    // catch-up ≈ 17.7.
-    const p = expectedPollsPerDay(HOUR, QUIET, TICK);
-    expect(p).toBeLessThan(21);
-    expect(p).toBeGreaterThan(17);
-  });
-
-  test('re-rolled jitter adds a sqrt-scale delay, far below maxJitter/2', () => {
-    // For a 2h interval, J = 1h: E[extra] ≈ sqrt(π/2 × J × tick) ≈ 9.2 min,
-    // not J/2 = 30 min (jitter is re-drawn every tick — first-passage time).
-    const sp = DAY / expectedPollsPerDay(2 * HOUR, 0, TICK);
-    const extraMin = (sp - 2 * HOUR) / 60_000;
-    expect(extraMin).toBeGreaterThan(5);
-    expect(extraMin).toBeLessThan(15);
-  });
-
-  test('monotonically decreasing in interval (binary-search prerequisite)', () => {
-    let prev = Infinity;
-    for (const iv of [45, 60, 90, 120, 240, 480, 720].map((m) => m * 60_000)) {
-      const p = expectedPollsPerDay(iv, QUIET, TICK);
-      expect(p).toBeLessThan(prev);
-      prev = p;
-    }
-  });
-});
-
-describe('adaptive cadence — budget governor', () => {
-  test('stretch keeps projected at/under the headroom ceiling; preserves ratio', () => {
-    const accounts = [acct({ poll_interval_ms: HOUR }), acct({ poll_interval_ms: HOUR })];
-    const { stretch, projected } = computeGovernorStretch(accounts, {
-      callsPerPoll: 1,
-      dailyRequestBudget: 10,
-      defaultIntervalMs: HOUR,
-      quietWindowMs: 0,
-      tickMs: 0,
-      headroom: 1,
-    });
-    // No account clamps at this stretch (1h × 4.8 = 4.8h < 12h MAX), so the
-    // clamp-aware solve matches the old closed form: stretch = 48/10 = 4.8, and
-    // `projected` is now the REALIZED spend at that stretch == the ceiling.
-    expect(stretch).toBeCloseTo(4.8, 5);
-    expect(projected).toBeCloseTo(10, 5);
-  });
-
-  test('clamp-aware: realized spend respects the ceiling when accounts pin at MAX', () => {
-    // 2 fast (1h) + 4 pinned at the 12h ceiling. The pinned accounts contribute a
-    // FIXED rate the stretch can't reduce, so the old `projected/ceiling` closed
-    // form under-corrected (stretch 56/20 = 2.8 → realized ~25 > 20). The
-    // clamp-aware solve pushes stretch until realized actually meets the ceiling.
-    const accounts = [
-      acct({ poll_interval_ms: HOUR }),
-      acct({ poll_interval_ms: HOUR }),
-      ...Array.from({ length: 4 }, () => acct({ poll_interval_ms: CADENCE_MAX_INTERVAL_MS })),
-    ];
-    const { stretch, projected } = computeGovernorStretch(accounts, {
-      callsPerPoll: 1,
-      dailyRequestBudget: 20,
-      defaultIntervalMs: HOUR,
-      quietWindowMs: 0,
-      tickMs: 0,
-      headroom: 1,
-    });
-    // Independently recompute realized spend with the same clamp the scheduler applies.
-    const realized = accounts.reduce(
-      (s, a) => s + DAY / Math.min((a.poll_interval_ms as number) * stretch, CADENCE_MAX_INTERVAL_MS),
-      0,
-    );
-    expect(realized).toBeLessThanOrEqual(20 + 1e-6);
-    expect(projected).toBeCloseTo(realized, 4);
-    expect(projected).toBeCloseTo(20, 4); // solved to the ceiling, not under it
-    expect(stretch).toBeGreaterThan(2.8); // strictly more than the clamp-blind value
-    expect(stretch).toBeCloseTo(4, 4); // 48/s + 8 = 20 → s = 4
-  });
-
-  test('clamp-aware: caps stretch at the all-pinned point when the ceiling is unreachable', () => {
-    // 10 fast accounts, a tiny budget: even with every interval clamped to MAX the
-    // floor (10 × DAY/12h = 20) exceeds the ceiling (2). Stretch maxes out where
-    // the fastest account first hits MAX (12h/1h = 12); going further is a no-op.
-    const accounts = Array.from({ length: 10 }, () => acct({ poll_interval_ms: HOUR }));
-    const { stretch, projected } = computeGovernorStretch(accounts, {
-      callsPerPoll: 1,
-      dailyRequestBudget: 2,
-      defaultIntervalMs: HOUR,
-      quietWindowMs: 0,
-      tickMs: 0,
-      headroom: 1,
-    });
-    expect(stretch).toBeCloseTo(12, 4);
-    expect(projected).toBeCloseTo(20, 4); // all clamped to 12h → 10 × 2
-  });
-
-  test('disabled when budget ≤ 0; excludes paused / auth-blocked / hard-auto-paused', () => {
-    const accounts = [
-      acct({ poll_interval_ms: HOUR, paused: 1 }),
-      acct({ poll_interval_ms: HOUR, consecutive_auth_failures: 5 }),
-      acct({ poll_interval_ms: HOUR, consecutive_hard_failures: HARD_PAUSE_THRESHOLD }),
-    ];
-    expect(
-      computeGovernorStretch(accounts, {
-        callsPerPoll: 1,
-        dailyRequestBudget: 0,
-        defaultIntervalMs: HOUR,
-        quietWindowMs: 0,
-        tickMs: 0,
-        headroom: 1,
-      }).stretch,
-    ).toBe(1);
-    expect(
-      computeGovernorStretch(accounts, {
-        callsPerPoll: 1,
-        dailyRequestBudget: 10,
-        defaultIntervalMs: HOUR,
-        quietWindowMs: 0,
-        tickMs: 0,
-        headroom: 1,
-      }).projected,
-    ).toBe(0);
-  });
-});
-
-describe('adaptive cadence — store integration', () => {
-  test('v6/v7 columns default correctly (null cadence, stretch 1) + roundtrip', async () => {
-    const { store, mem } = await newStore();
-    store.upsertAccount({ username: 'foo', added_by: 'U' });
-    const a = store.getAccount('foo')!;
-    expect(a.poll_interval_ms).toBeNull();
-    expect(a.posts_per_day).toBeNull();
-    expect(a.cadence_updated_at).toBeNull();
-    const rt = store.getRuntime();
-    expect(rt.poll_stretch).toBe(1);
-    expect(rt.last_digest_at).toBeNull();
-    store.writePollStretch(2.5);
-    store.writeLastDigestAt(999);
-    expect(store.getRuntime().poll_stretch).toBe(2.5);
-    expect(store.getRuntime().last_digest_at).toBe(999);
-    mem.close();
-  });
-
-  test('recomputeCadence dedups per-channel posts (interval not halved) and caches it', async () => {
-    const { store, mem } = await newStore();
-    const r = store.upsertAccount({ username: 'foo', added_by: 'U' });
-    const newest = 2_000_000_000_000;
-    const postedAts = gapSeries(newest, 14, 6 * HOUR);
-    postedAts.forEach((at, i) => {
-      for (const ch of ['C1', 'C2']) {
-        store.recordSeen({
-          channel_id: ch,
-          ig_post_id: `P${i}`,
-          account_username: 'foo',
-          caption: null,
-          media_type: 'image',
-          posted_at: at,
-          classification_json: null,
-          pushed: true,
-          discord_message_id: null,
-        });
-      }
-    });
-    store.recomputeCadence(r.account.id, newest);
-    const a = store.getAccount('foo')!;
-    expect(a.poll_interval_ms).toBe(3 * HOUR); // deduped median 6h × 0.5
-    expect(a.posts_per_day).toBeCloseTo(4, 5); // 4, not 8 — proves the GROUP BY dedup
-    expect(a.cadence_updated_at).toBe(newest);
-    mem.close();
-  });
-
-  test('dueAccounts uses the cached per-account interval', async () => {
-    const { store, mem } = await newStore();
-    const fast = store.upsertAccount({ username: 'fast', added_by: 'U' });
-    const slow = store.upsertAccount({ username: 'slow', added_by: 'U' });
-    const now = 1_000_000_000;
-    mem
-      .db()
-      .prepare('UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?')
-      .run(10 * 60_000, fast.account.id);
-    store.markPollSuccess(fast.account.id, now - 20 * 60_000, 'A'); // 20m ago
-    store.markPollSuccess(slow.account.id, now - 20 * 60_000, 'B'); // 20m ago
-    // fast (10m interval, so jitter ≤ 7.5m at the 0.75 fraction) is due at 20m
-    // elapsed; slow (60m default) is not.
-    const due = store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username);
-    expect(due).toContain('fast');
-    expect(due).not.toContain('slow');
-    mem.close();
-  });
-
-  test('recomputeAllCadence populates cadence + writes the governor stretch', async () => {
-    const { store, mem } = await newStore();
-    store.upsertAccount({ username: 'foo', added_by: 'U' });
-    const newest = 2_000_000_000_000;
-    gapSeries(newest, 14, 6 * HOUR).forEach((at, i) =>
-        store.recordSeen({
-          channel_id: 'C1',
-          ig_post_id: `P${i}`,
-          account_username: 'foo',
-          caption: null,
-          media_type: 'image',
-          posted_at: at,
-          classification_json: null,
-          pushed: true,
-          discord_message_id: null,
-        }),
+   test("median is robust to a burst + one huge gap, floored at MIN", () => {
+      const newest = 2_000_000_000_000;
+      const ts = [
+         newest,
+         newest - 1 * 60_000,
+         newest - 2 * 60_000,
+         newest - 3 * 60_000,
+         newest - 4 * 60_000,
+         newest - 30 * DAY,
+      ];
+      expect(computeCadenceInterval(ts, newest).intervalMs).toBe(
+         CADENCE_MIN_INTERVAL_MS,
       );
-    const res = store.recomputeAllCadence(newest, {
-      callsPerPoll: 1.5,
-      dailyRequestBudget: 120,
-      defaultIntervalMs: 60 * 60_000,
-      quietWindowMs: 5 * HOUR,
-      tickMs: 60_000,
-    });
-    expect(res.swept).toBe(1);
-    expect(store.getAccount('foo')!.poll_interval_ms).toBe(3 * HOUR);
-    // one 3h-interval account ≈ 9 calls/day ≪ 96 ceiling → no stretch
-    expect(res.stretch).toBe(1);
-    expect(store.getRuntime().poll_stretch).toBe(1);
-    mem.close();
-  });
+   });
 
-  test('recomputeGovernorStretch tracks CURRENT cached intervals without a cadence sweep', async () => {
-    const { store, mem } = await newStore();
-    // Many short-interval (active) accounts so the projection blows past the
-    // ceiling and the governor must stretch > 1.
-    const ids: number[] = [];
-    for (let i = 0; i < 12; i++) {
-      const r = store.upsertAccount({ username: `acct${i}`, added_by: 'U' });
-      ids.push(r.account.id);
-      mem
-        .db()
-        .prepare('UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?')
-        .run(45 * 60_000, r.account.id); // 45-min floor — maximally active
-    }
-    const opts = {
-      callsPerPoll: 1.7,
-      dailyRequestBudget: 120,
-      defaultIntervalMs: 60 * 60_000,
-      quietWindowMs: 5 * HOUR,
-      tickMs: 60_000,
-    };
-    // No recomputeAllCadence / no sweep — just the cheap stretch recompute.
-    const first = store.recomputeGovernorStretch(opts);
-    expect(first.stretch).toBeGreaterThan(1);
-    expect(store.getRuntime().poll_stretch).toBe(first.stretch);
-    // Now mimic the intra-day drift: active accounts tighten (more would clamp at
-    // the floor → already there) AND a couple more accounts turn active. The
-    // stretch must RISE off the latest cached intervals, with no sweep in between.
-    for (let i = 0; i < 4; i++) {
-      const r = store.upsertAccount({ username: `surge${i}`, added_by: 'U' });
-      mem
-        .db()
-        .prepare('UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?')
-        .run(45 * 60_000, r.account.id);
-    }
-    const second = store.recomputeGovernorStretch(opts);
-    expect(second.stretch).toBeGreaterThan(first.stretch);
-    expect(store.getRuntime().poll_stretch).toBe(second.stretch);
-    mem.close();
-  });
+   test("recency decay stretches a quieted account toward MAX", () => {
+      const newest = 2_000_000_000_000;
+      const ts = gapSeries(newest, 14, 6 * HOUR);
+      // Evaluate 5 days after the last post (silence ≫ median gap).
+      expect(computeCadenceInterval(ts, newest + 5 * DAY).intervalMs).toBe(
+         CADENCE_MAX_INTERVAL_MS,
+      );
+   });
+
+   test("a rare cadence between 6h and the 12h ceiling is honored, not clamped", () => {
+      // Mirrors live `semillasderebeldia` (~20h median gap → wants ~10h). Under the
+      // old 6h ceiling this clamped to 6h (over-polling); now it passes through.
+      const newest = 2_000_000_000_000;
+      const ts = gapSeries(newest, 8, 20 * HOUR); // median gap 20h, span 140h
+      expect(computeCadenceInterval(ts, newest).intervalMs).toBe(10 * HOUR); // 20h × 0.5
+   });
+
+   test("non-positive / degenerate inputs → null", () => {
+      expect(computeCadenceInterval([], 0).intervalMs).toBeNull();
+      const t = 1_000_000_000;
+      // all identical → no positive gaps
+      expect(computeCadenceInterval([t, t, t, t, t], t).intervalMs).toBeNull();
+   });
+});
+
+describe("adaptive cadence — effectiveBaseIntervalMs / nextDueAtMs", () => {
+   test("effective interval applies default + stretch, clamped to MAX", () => {
+      expect(
+         effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 1),
+      ).toBe(60 * 60_000);
+      expect(
+         effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 2),
+      ).toBe(120 * 60_000);
+      // 3h × 3 = 9h is under the 12h ceiling → not clamped.
+      expect(
+         effectiveBaseIntervalMs(
+            { poll_interval_ms: 3 * HOUR },
+            60 * 60_000,
+            3,
+         ),
+      ).toBe(9 * HOUR);
+      // 3h × 5 = 15h exceeds the ceiling → clamped to MAX.
+      expect(
+         effectiveBaseIntervalMs(
+            { poll_interval_ms: 3 * HOUR },
+            60 * 60_000,
+            5,
+         ),
+      ).toBe(CADENCE_MAX_INTERVAL_MS);
+      // invalid stretch falls back to 1
+      expect(
+         effectiveBaseIntervalMs(
+            { poll_interval_ms: 2 * HOUR },
+            60 * 60_000,
+            0,
+         ),
+      ).toBe(2 * HOUR);
+   });
+
+   test("nextDueAtMs mirrors the due formula without jitter; null when never polled", () => {
+      expect(
+         nextDueAtMs(
+            acct({ poll_interval_ms: 2 * HOUR, last_polled_at: null }),
+            60 * 60_000,
+            1,
+         ),
+      ).toBeNull();
+      expect(
+         nextDueAtMs(
+            acct({ poll_interval_ms: 2 * HOUR, last_polled_at: 1_000_000 }),
+            60 * 60_000,
+            1,
+         ),
+      ).toBe(1_000_000 + 2 * HOUR);
+   });
+});
+
+describe("hard deterministic-failure auto-pause (migration v8)", () => {
+   test("v8 column defaults to 0; markPollFailure({hard}) increments only its counter", async () => {
+      const { store, mem } = await newStore();
+      const a = store.upsertAccount({ username: "foo", added_by: "U" });
+      expect(store.getAccount("foo")?.consecutive_hard_failures).toBe(0);
+      store.markPollFailure(a.account.id, 1_000, { hard: true });
+      const after = store.getAccount("foo")!;
+      expect(after.consecutive_hard_failures).toBe(1);
+      expect(after.consecutive_failures).toBe(1); // shared counter still moves (backoff)
+      expect(after.consecutive_auth_failures).toBe(0);
+      mem.close();
+   });
+
+   test("dueAccounts skips accounts at HARD_PAUSE_THRESHOLD; success re-arms them", async () => {
+      const { store, mem } = await newStore();
+      const now = Date.now();
+      const broken = store.upsertAccount({ username: "broken", added_by: "U" });
+      const healthy = store.upsertAccount({
+         username: "healthy",
+         added_by: "U",
+      });
+      store.markPollSuccess(healthy.account.id, now - 25 * HOUR, "H1");
+      for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
+         store.markPollFailure(broken.account.id, now - (26 - i) * HOUR, {
+            hard: true,
+         });
+      }
+      const due = store
+         .dueAccounts(now, 60 * 60_000, 10)
+         .map((a) => a.username);
+      expect(due).toContain("healthy");
+      expect(due).not.toContain("broken");
+      // One below the threshold still polls.
+      const almost = store.upsertAccount({ username: "almost", added_by: "U" });
+      for (let i = 0; i < HARD_PAUSE_THRESHOLD - 1; i++) {
+         store.markPollFailure(almost.account.id, now - (26 - i) * HOUR, {
+            hard: true,
+         });
+      }
+      expect(
+         store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username),
+      ).toContain("almost");
+      // A successful poll resets the gate.
+      store.markPollSuccess(broken.account.id, now - 25 * HOUR, "B1");
+      expect(store.getAccount("broken")?.consecutive_hard_failures).toBe(0);
+      expect(
+         store.dueAccounts(now, 60 * 60_000, 10).map((a) => a.username),
+      ).toContain("broken");
+      mem.close();
+   });
+
+   test("clearFailureBackoff does NOT clear the hard counter; operator actions do", async () => {
+      const { store, mem } = await newStore();
+      const a = store.upsertAccount({ username: "foo", added_by: "U" });
+      for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
+         store.markPollFailure(a.account.id, 1_000 + i, { hard: true });
+      }
+      store.clearFailureBackoff(); // runs on every scheduler start
+      const afterClear = store.getAccount("foo")!;
+      expect(afterClear.consecutive_failures).toBe(0);
+      expect(afterClear.consecutive_auth_failures).toBe(0);
+      expect(afterClear.consecutive_hard_failures).toBe(HARD_PAUSE_THRESHOLD); // survives restarts
+
+      store.setPaused("foo", false); // operator "try again" gesture
+      expect(store.getAccount("foo")?.consecutive_hard_failures).toBe(0);
+
+      for (let i = 0; i < HARD_PAUSE_THRESHOLD; i++) {
+         store.markPollFailure(a.account.id, 2_000 + i, { hard: true });
+      }
+      store.resetLastPost("foo"); // operator force-poll
+      expect(store.getAccount("foo")?.consecutive_hard_failures).toBe(0);
+      mem.close();
+   });
+});
+
+describe("persistent fetch hints (v9)", () => {
+   test("remembered pk and username-feed survive a logical restart", async () => {
+      const { store, mem } = await newStore();
+      store.upsertAccount({ username: "foo", added_by: "U" });
+      store.rememberAccountPk("foo", "12345");
+      expect(store.getAccount("foo")?.ig_pk).toBe("12345");
+      expect(store.prefersUsernameFeed("foo", 1_000)).toBe(false);
+
+      store.rememberUsernameFeed("foo", 1_000);
+      expect(store.prefersUsernameFeed("foo", 1_000)).toBe(true);
+      expect(
+         store.prefersUsernameFeed("foo", 1_000 + USERNAME_FEED_REPROBE_MS - 1),
+      ).toBe(true);
+      expect(
+         store.prefersUsernameFeed("foo", 1_000 + USERNAME_FEED_REPROBE_MS + 1),
+      ).toBe(false);
+
+      store.setPaused("foo", false);
+      expect(store.prefersUsernameFeed("foo", 2_000)).toBe(false);
+
+      store.rememberUsernameFeed("foo", 3_000);
+      store.resetLastPost("foo");
+      expect(store.prefersUsernameFeed("foo", 4_000)).toBe(false);
+      expect(store.getAccount("foo")?.ig_pk).toBe("12345"); // pk is stable
+      mem.close();
+   });
+});
+
+describe("adaptive cadence — expectedPollsPerDay", () => {
+   const QUIET = 5 * HOUR;
+   const TICK = 60_000;
+
+   test("degenerates to DAY/interval with no quiet window and no tick", () => {
+      expect(expectedPollsPerDay(HOUR, 0, 0)).toBeCloseTo(24, 6);
+      expect(expectedPollsPerDay(12 * HOUR, 0, 0)).toBeCloseTo(2, 6);
+   });
+
+   test("quiet hours time-shift, not drop: a 12h account keeps ~2 polls/day", () => {
+      // min(DAY/sp, (DAY−quiet)/sp + 1): for a 12h interval the awake-hours term
+      // (19/12 + 1 ≈ 2.58) exceeds the raw rate (~1.94), so the quiet window
+      // costs it (almost) nothing — the old uniform ×0.73 modeled only ~1.46.
+      const p = expectedPollsPerDay(12 * HOUR, QUIET, TICK);
+      expect(p).toBeGreaterThan(1.9);
+      expect(p).toBeLessThanOrEqual(2);
+   });
+
+   test("quiet hours DO cost short-interval accounts their in-window polls", () => {
+      // 1h interval, jitter fraction 0.75: E[extra] ≈ sqrt(π/2 × 45min × 1min)
+      // ≈ 8.4min → spacing ~68.4min → raw ~21/day, quiet-aware ~16.7 awake + 1
+      // catch-up ≈ 17.7.
+      const p = expectedPollsPerDay(HOUR, QUIET, TICK);
+      expect(p).toBeLessThan(21);
+      expect(p).toBeGreaterThan(17);
+   });
+
+   test("re-rolled jitter adds a sqrt-scale delay, far below maxJitter/2", () => {
+      // For a 2h interval, J = 1h: E[extra] ≈ sqrt(π/2 × J × tick) ≈ 9.2 min,
+      // not J/2 = 30 min (jitter is re-drawn every tick — first-passage time).
+      const sp = DAY / expectedPollsPerDay(2 * HOUR, 0, TICK);
+      const extraMin = (sp - 2 * HOUR) / 60_000;
+      expect(extraMin).toBeGreaterThan(5);
+      expect(extraMin).toBeLessThan(15);
+   });
+
+   test("monotonically decreasing in interval (binary-search prerequisite)", () => {
+      let prev = Infinity;
+      for (const iv of [45, 60, 90, 120, 240, 480, 720].map(
+         (m) => m * 60_000,
+      )) {
+         const p = expectedPollsPerDay(iv, QUIET, TICK);
+         expect(p).toBeLessThan(prev);
+         prev = p;
+      }
+   });
+});
+
+describe("adaptive cadence — budget governor", () => {
+   test("stretch keeps projected at/under the headroom ceiling; preserves ratio", () => {
+      const accounts = [
+         acct({ poll_interval_ms: HOUR }),
+         acct({ poll_interval_ms: HOUR }),
+      ];
+      const { stretch, projected } = computeGovernorStretch(accounts, {
+         callsPerPoll: 1,
+         dailyRequestBudget: 10,
+         defaultIntervalMs: HOUR,
+         quietWindowMs: 0,
+         tickMs: 0,
+         headroom: 1,
+      });
+      // No account clamps at this stretch (1h × 4.8 = 4.8h < 12h MAX), so the
+      // clamp-aware solve matches the old closed form: stretch = 48/10 = 4.8, and
+      // `projected` is now the REALIZED spend at that stretch == the ceiling.
+      expect(stretch).toBeCloseTo(4.8, 5);
+      expect(projected).toBeCloseTo(10, 5);
+   });
+
+   test("clamp-aware: realized spend respects the ceiling when accounts pin at MAX", () => {
+      // 2 fast (1h) + 4 pinned at the 12h ceiling. The pinned accounts contribute a
+      // FIXED rate the stretch can't reduce, so the old `projected/ceiling` closed
+      // form under-corrected (stretch 56/20 = 2.8 → realized ~25 > 20). The
+      // clamp-aware solve pushes stretch until realized actually meets the ceiling.
+      const accounts = [
+         acct({ poll_interval_ms: HOUR }),
+         acct({ poll_interval_ms: HOUR }),
+         ...Array.from({ length: 4 }, () =>
+            acct({ poll_interval_ms: CADENCE_MAX_INTERVAL_MS }),
+         ),
+      ];
+      const { stretch, projected } = computeGovernorStretch(accounts, {
+         callsPerPoll: 1,
+         dailyRequestBudget: 20,
+         defaultIntervalMs: HOUR,
+         quietWindowMs: 0,
+         tickMs: 0,
+         headroom: 1,
+      });
+      // Independently recompute realized spend with the same clamp the scheduler applies.
+      const realized = accounts.reduce(
+         (s, a) =>
+            s +
+            DAY /
+               Math.min(
+                  (a.poll_interval_ms as number) * stretch,
+                  CADENCE_MAX_INTERVAL_MS,
+               ),
+         0,
+      );
+      expect(realized).toBeLessThanOrEqual(20 + 1e-6);
+      expect(projected).toBeCloseTo(realized, 4);
+      expect(projected).toBeCloseTo(20, 4); // solved to the ceiling, not under it
+      expect(stretch).toBeGreaterThan(2.8); // strictly more than the clamp-blind value
+      expect(stretch).toBeCloseTo(4, 4); // 48/s + 8 = 20 → s = 4
+   });
+
+   test("clamp-aware: caps stretch at the all-pinned point when the ceiling is unreachable", () => {
+      // 10 fast accounts, a tiny budget: even with every interval clamped to MAX the
+      // floor (10 × DAY/12h = 20) exceeds the ceiling (2). Stretch maxes out where
+      // the fastest account first hits MAX (12h/1h = 12); going further is a no-op.
+      const accounts = Array.from({ length: 10 }, () =>
+         acct({ poll_interval_ms: HOUR }),
+      );
+      const { stretch, projected } = computeGovernorStretch(accounts, {
+         callsPerPoll: 1,
+         dailyRequestBudget: 2,
+         defaultIntervalMs: HOUR,
+         quietWindowMs: 0,
+         tickMs: 0,
+         headroom: 1,
+      });
+      expect(stretch).toBeCloseTo(12, 4);
+      expect(projected).toBeCloseTo(20, 4); // all clamped to 12h → 10 × 2
+   });
+
+   test("disabled when budget ≤ 0; excludes paused / auth-blocked / hard-auto-paused", () => {
+      const accounts = [
+         acct({ poll_interval_ms: HOUR, paused: 1 }),
+         acct({ poll_interval_ms: HOUR, consecutive_auth_failures: 5 }),
+         acct({
+            poll_interval_ms: HOUR,
+            consecutive_hard_failures: HARD_PAUSE_THRESHOLD,
+         }),
+      ];
+      expect(
+         computeGovernorStretch(accounts, {
+            callsPerPoll: 1,
+            dailyRequestBudget: 0,
+            defaultIntervalMs: HOUR,
+            quietWindowMs: 0,
+            tickMs: 0,
+            headroom: 1,
+         }).stretch,
+      ).toBe(1);
+      expect(
+         computeGovernorStretch(accounts, {
+            callsPerPoll: 1,
+            dailyRequestBudget: 10,
+            defaultIntervalMs: HOUR,
+            quietWindowMs: 0,
+            tickMs: 0,
+            headroom: 1,
+         }).projected,
+      ).toBe(0);
+   });
+});
+
+describe("adaptive cadence — store integration", () => {
+   test("v6/v7 columns default correctly (null cadence, stretch 1) + roundtrip", async () => {
+      const { store, mem } = await newStore();
+      store.upsertAccount({ username: "foo", added_by: "U" });
+      const a = store.getAccount("foo")!;
+      expect(a.poll_interval_ms).toBeNull();
+      expect(a.posts_per_day).toBeNull();
+      expect(a.cadence_updated_at).toBeNull();
+      const rt = store.getRuntime();
+      expect(rt.poll_stretch).toBe(1);
+      expect(rt.last_digest_at).toBeNull();
+      store.writePollStretch(2.5);
+      store.writeLastDigestAt(999);
+      expect(store.getRuntime().poll_stretch).toBe(2.5);
+      expect(store.getRuntime().last_digest_at).toBe(999);
+      mem.close();
+   });
+
+   test("recomputeCadence dedups per-channel posts (interval not halved) and caches it", async () => {
+      const { store, mem } = await newStore();
+      const r = store.upsertAccount({ username: "foo", added_by: "U" });
+      const newest = 2_000_000_000_000;
+      const postedAts = gapSeries(newest, 14, 6 * HOUR);
+      postedAts.forEach((at, i) => {
+         for (const ch of ["C1", "C2"]) {
+            store.recordSeen({
+               channel_id: ch,
+               ig_post_id: `P${i}`,
+               account_username: "foo",
+               caption: null,
+               media_type: "image",
+               posted_at: at,
+               classification_json: null,
+               pushed: true,
+               discord_message_id: null,
+            });
+         }
+      });
+      store.recomputeCadence(r.account.id, newest);
+      const a = store.getAccount("foo")!;
+      expect(a.poll_interval_ms).toBe(3 * HOUR); // deduped median 6h × 0.5
+      expect(a.posts_per_day).toBeCloseTo(4, 5); // 4, not 8 — proves the GROUP BY dedup
+      expect(a.cadence_updated_at).toBe(newest);
+      mem.close();
+   });
+
+   test("dueAccounts uses the cached per-account interval", async () => {
+      const { store, mem } = await newStore();
+      const fast = store.upsertAccount({ username: "fast", added_by: "U" });
+      const slow = store.upsertAccount({ username: "slow", added_by: "U" });
+      const now = 1_000_000_000;
+      mem.db()
+         .prepare(
+            "UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?",
+         )
+         .run(10 * 60_000, fast.account.id);
+      store.markPollSuccess(fast.account.id, now - 20 * 60_000, "A"); // 20m ago
+      store.markPollSuccess(slow.account.id, now - 20 * 60_000, "B"); // 20m ago
+      // fast (10m interval, so jitter ≤ 7.5m at the 0.75 fraction) is due at 20m
+      // elapsed; slow (60m default) is not.
+      const due = store
+         .dueAccounts(now, 60 * 60_000, 10)
+         .map((a) => a.username);
+      expect(due).toContain("fast");
+      expect(due).not.toContain("slow");
+      mem.close();
+   });
+
+   test("recomputeAllCadence populates cadence + writes the governor stretch", async () => {
+      const { store, mem } = await newStore();
+      store.upsertAccount({ username: "foo", added_by: "U" });
+      const newest = 2_000_000_000_000;
+      gapSeries(newest, 14, 6 * HOUR).forEach((at, i) =>
+         store.recordSeen({
+            channel_id: "C1",
+            ig_post_id: `P${i}`,
+            account_username: "foo",
+            caption: null,
+            media_type: "image",
+            posted_at: at,
+            classification_json: null,
+            pushed: true,
+            discord_message_id: null,
+         }),
+      );
+      const res = store.recomputeAllCadence(newest, {
+         callsPerPoll: 1.5,
+         dailyRequestBudget: 120,
+         defaultIntervalMs: 60 * 60_000,
+         quietWindowMs: 5 * HOUR,
+         tickMs: 60_000,
+      });
+      expect(res.swept).toBe(1);
+      expect(store.getAccount("foo")!.poll_interval_ms).toBe(3 * HOUR);
+      // one 3h-interval account ≈ 9 calls/day ≪ 96 ceiling → no stretch
+      expect(res.stretch).toBe(1);
+      expect(store.getRuntime().poll_stretch).toBe(1);
+      mem.close();
+   });
+
+   test("recomputeGovernorStretch tracks CURRENT cached intervals without a cadence sweep", async () => {
+      const { store, mem } = await newStore();
+      // Many short-interval (active) accounts so the projection blows past the
+      // ceiling and the governor must stretch > 1.
+      const ids: number[] = [];
+      for (let i = 0; i < 12; i++) {
+         const r = store.upsertAccount({ username: `acct${i}`, added_by: "U" });
+         ids.push(r.account.id);
+         mem.db()
+            .prepare(
+               "UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?",
+            )
+            .run(45 * 60_000, r.account.id); // 45-min floor — maximally active
+      }
+      const opts = {
+         callsPerPoll: 1.7,
+         dailyRequestBudget: 120,
+         defaultIntervalMs: 60 * 60_000,
+         quietWindowMs: 5 * HOUR,
+         tickMs: 60_000,
+      };
+      // No recomputeAllCadence / no sweep — just the cheap stretch recompute.
+      const first = store.recomputeGovernorStretch(opts);
+      expect(first.stretch).toBeGreaterThan(1);
+      expect(store.getRuntime().poll_stretch).toBe(first.stretch);
+      // Now mimic the intra-day drift: active accounts tighten (more would clamp at
+      // the floor → already there) AND a couple more accounts turn active. The
+      // stretch must RISE off the latest cached intervals, with no sweep in between.
+      for (let i = 0; i < 4; i++) {
+         const r = store.upsertAccount({
+            username: `surge${i}`,
+            added_by: "U",
+         });
+         mem.db()
+            .prepare(
+               "UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?",
+            )
+            .run(45 * 60_000, r.account.id);
+      }
+      const second = store.recomputeGovernorStretch(opts);
+      expect(second.stretch).toBeGreaterThan(first.stretch);
+      expect(store.getRuntime().poll_stretch).toBe(second.stretch);
+      mem.close();
+   });
 });

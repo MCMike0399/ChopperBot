@@ -1,33 +1,33 @@
-import { type Client } from 'discord.js';
-import type Database from 'better-sqlite3';
-import { config } from '../../config.js';
-import { log } from '../../log.js';
-import { composeToolSources } from '../../tools/source.js';
-import { sendAdminAlert as sendAdminAlertShared } from '../../discord/admin-alert.js';
+import { type Client } from "discord.js";
+import type Database from "better-sqlite3";
+import { config } from "../../config.js";
+import { log } from "../../log.js";
+import { composeToolSources } from "../../tools/source.js";
+import { sendAdminAlert as sendAdminAlertShared } from "../../discord/admin-alert.js";
 import type {
-  Capability,
-  CapabilityInitDeps,
-  CapabilityStartDeps,
-  CapabilityTurnBundle,
-  CapabilityTurnContext,
-} from '../capability.js';
+   Capability,
+   CapabilityInitDeps,
+   CapabilityStartDeps,
+   CapabilityTurnBundle,
+   CapabilityTurnContext,
+} from "../capability.js";
 import {
-  CADENCE_COLD_START_INTERVAL_MS,
-  INSTAGRAM_MONITOR_MIGRATIONS,
-  InstagramMonitorStore,
-} from './store.js';
+   CADENCE_COLD_START_INTERVAL_MS,
+   INSTAGRAM_MONITOR_MIGRATIONS,
+   InstagramMonitorStore,
+} from "./store.js";
 import {
-  DirectInstagramFetcher,
-  type InstagramAuth,
-  type InstagramFetcher,
-  type InstagramFetchHints,
-} from './fetcher.js';
-import { isModTurn } from '../mod-authority.js';
-import { InstagramMonitorScheduler } from './scheduler.js';
-import { InstagramMonitorToolSource } from './source.js';
-import { setIgCdnUserAgent, configureIgCdn } from './publisher.js';
-import { renderInstagramMonitorPrompt } from './preamble.js';
-import { formatDurationEs, formatStatusDigest } from './format.js';
+   DirectInstagramFetcher,
+   type InstagramAuth,
+   type InstagramFetcher,
+   type InstagramFetchHints,
+} from "./fetcher.js";
+import { isModTurn } from "../mod-authority.js";
+import { InstagramMonitorScheduler } from "./scheduler.js";
+import { InstagramMonitorToolSource } from "./source.js";
+import { setIgCdnUserAgent, configureIgCdn } from "./publisher.js";
+import { renderInstagramMonitorPrompt } from "./preamble.js";
+import { formatDurationEs, formatStatusDigest } from "./format.js";
 
 /** Probability of skipping a whole scheduler tick (anti-metronome). Raised
  * 0.08 → 0.15 on 2026-08-13 after IG flagged the polling account for suspected
@@ -35,120 +35,137 @@ import { formatDurationEs, formatStatusDigest } from './format.js';
  * jittered tick delays (0.8–3.0×) so the loop isn't a 60s clock. */
 const TICK_SKIP_PROBABILITY = 0.15;
 
-export const INSTAGRAM_MONITOR_CAPABILITY_ID = 'instagram_monitor';
+export const INSTAGRAM_MONITOR_CAPABILITY_ID = "instagram_monitor";
 
 export class InstagramMonitorCapability implements Capability {
-  readonly id = INSTAGRAM_MONITOR_CAPABILITY_ID;
-  readonly description =
-    'Monitorea cuentas públicas de Instagram y publica eventos/alertas/convocatorias en el canal de Discord vinculado. Sondeo en segundo plano cada ~60 minutos.';
+   readonly id = INSTAGRAM_MONITOR_CAPABILITY_ID;
+   readonly description =
+      "Monitorea cuentas públicas de Instagram y publica eventos/alertas/convocatorias en el canal de Discord vinculado. Sondeo en segundo plano cada ~60 minutos.";
 
-  private store: InstagramMonitorStore | null = null;
-  private fetcher: InstagramFetcher | null = null;
-  private scheduler: InstagramMonitorScheduler | null = null;
-  /** Shared handle, kept so a turn can read who counts as a moderator. */
-  private db: Database.Database | null = null;
+   private store: InstagramMonitorStore | null = null;
+   private fetcher: InstagramFetcher | null = null;
+   private scheduler: InstagramMonitorScheduler | null = null;
+   /** Shared handle, kept so a turn can read who counts as a moderator. */
+   private db: Database.Database | null = null;
 
-  async init({ memory }: CapabilityInitDeps): Promise<void> {
-    await memory.migrate(this.id, INSTAGRAM_MONITOR_MIGRATIONS);
-    this.db = memory.db();
-    this.store = new InstagramMonitorStore(memory.db());
+   async init({ memory }: CapabilityInitDeps): Promise<void> {
+      await memory.migrate(this.id, INSTAGRAM_MONITOR_MIGRATIONS);
+      this.db = memory.db();
+      this.store = new InstagramMonitorStore(memory.db());
 
-    const auth: InstagramAuth | null =
-      config.IG_SESSIONID && config.IG_CSRFTOKEN && config.IG_DS_USER_ID
-        ? {
-            sessionid: config.IG_SESSIONID,
-            csrftoken: config.IG_CSRFTOKEN,
-            dsUserId: config.IG_DS_USER_ID,
-            mid: config.IG_MID,
-            igDid: config.IG_DID,
-          }
-        : null;
-    // Use one UA across the API fetcher AND the CDN media fetches so a session
-    // presents a single consistent fingerprint. IG_USER_AGENT should match the
-    // browser the cookies came from; unset falls back to the built-in default.
-    if (config.IG_USER_AGENT) setIgCdnUserAgent(config.IG_USER_AGENT);
-    const hints = storeFetchHints(this.store);
-    // 0.8 warmup: a logged-in browser almost always loads the HTML profile
-    // before the feed XHR. 0.5 left a coin-flip of API-only polls, which is
-    // the scraper signature IG already flagged us for.
-    const fetcher = new DirectInstagramFetcher(auth, 0.8, config.IG_USER_AGENT, hints);
-    this.fetcher = fetcher;
-    configureIgCdn({ headers: () => fetcher.cdnHeaders() });
-    log.warn(
-      { capability: this.id, authed: auth !== null, custom_ua: !!config.IG_USER_AGENT },
-      auth
-        ? 'InstagramMonitorCapability initialized in DIRECT+AUTH mode (logged-in IG session cookies). Higher rate limits; session can expire (watch for instagram_monitor.auth.expired).'
-        : 'InstagramMonitorCapability initialized in DIRECT mode (no auth). OK for local dev; in prod this risks IP throttling.',
-    );
-  }
+      const auth: InstagramAuth | null =
+         config.IG_SESSIONID && config.IG_CSRFTOKEN && config.IG_DS_USER_ID
+            ? {
+                 sessionid: config.IG_SESSIONID,
+                 csrftoken: config.IG_CSRFTOKEN,
+                 dsUserId: config.IG_DS_USER_ID,
+                 mid: config.IG_MID,
+                 igDid: config.IG_DID,
+              }
+            : null;
+      // Use one UA across the API fetcher AND the CDN media fetches so a session
+      // presents a single consistent fingerprint. IG_USER_AGENT should match the
+      // browser the cookies came from; unset falls back to the built-in default.
+      if (config.IG_USER_AGENT) setIgCdnUserAgent(config.IG_USER_AGENT);
+      const hints = storeFetchHints(this.store);
+      // 0.8 warmup: a logged-in browser almost always loads the HTML profile
+      // before the feed XHR. 0.5 left a coin-flip of API-only polls, which is
+      // the scraper signature IG already flagged us for.
+      const fetcher = new DirectInstagramFetcher(
+         auth,
+         0.8,
+         config.IG_USER_AGENT,
+         hints,
+      );
+      this.fetcher = fetcher;
+      configureIgCdn({ headers: () => fetcher.cdnHeaders() });
+      log.warn(
+         {
+            capability: this.id,
+            authed: auth !== null,
+            custom_ua: !!config.IG_USER_AGENT,
+         },
+         auth
+            ? "InstagramMonitorCapability initialized in DIRECT+AUTH mode (logged-in IG session cookies). Higher rate limits; session can expire (watch for instagram_monitor.auth.expired)."
+            : "InstagramMonitorCapability initialized in DIRECT mode (no auth). OK for local dev; in prod this risks IP throttling.",
+      );
+   }
 
-  async start({ client, router }: CapabilityStartDeps): Promise<void> {
-    if (!this.store || !this.fetcher) {
-      throw new Error('InstagramMonitorCapability.start() called before init()');
-    }
-    const store = this.store;
-    this.scheduler = new InstagramMonitorScheduler({
-      store,
-      fetcher: this.fetcher,
-      client,
-      // Re-read on every tick so live re-bindings take effect without a restart.
-      getBoundChannels: () => {
-        const out: string[] = [];
-        for (const [channelId, capabilityId] of router.getAllBindings()) {
-          if (capabilityId === this.id) out.push(channelId);
-        }
-        return out;
-      },
-      notifyAuthExpired: ({ account, reason }) =>
-        postAuthExpiredAlert(client, account, reason),
-      notifyCircuitBroken: (reason) => postCircuitBrokenAlert(client, reason),
-      notifyBudgetExhausted: ({ requests24h, budget }) =>
-        postBudgetExhaustedAlert(client, requests24h, budget),
-      notifyResumed: ({ reason, pausedForMs }) =>
-        postResumedAlert(client, reason, pausedForMs),
-      notifyAccountAutoPaused: ({ account, reason, failures }) =>
-        postAccountAutoPausedAlert(client, account, reason, failures),
-      notifyStatusDigest: () =>
-        postStatusDigest(
-          client,
-          store,
-          config.IG_DAILY_REQUEST_BUDGET,
-          CADENCE_COLD_START_INTERVAL_MS,
-        ),
-      dailyRequestBudget: config.IG_DAILY_REQUEST_BUDGET,
-      tickSkipProbability: TICK_SKIP_PROBABILITY,
-    });
-    this.scheduler.start();
-    log.info({ capability: this.id }, 'InstagramMonitorCapability scheduler started');
-  }
+   async start({ client, router }: CapabilityStartDeps): Promise<void> {
+      if (!this.store || !this.fetcher) {
+         throw new Error(
+            "InstagramMonitorCapability.start() called before init()",
+         );
+      }
+      const store = this.store;
+      this.scheduler = new InstagramMonitorScheduler({
+         store,
+         fetcher: this.fetcher,
+         client,
+         // Re-read on every tick so live re-bindings take effect without a restart.
+         getBoundChannels: () => {
+            const out: string[] = [];
+            for (const [channelId, capabilityId] of router.getAllBindings()) {
+               if (capabilityId === this.id) out.push(channelId);
+            }
+            return out;
+         },
+         notifyAuthExpired: ({ account, reason }) =>
+            postAuthExpiredAlert(client, account, reason),
+         notifyCircuitBroken: (reason) =>
+            postCircuitBrokenAlert(client, reason),
+         notifyBudgetExhausted: ({ requests24h, budget }) =>
+            postBudgetExhaustedAlert(client, requests24h, budget),
+         notifyResumed: ({ reason, pausedForMs }) =>
+            postResumedAlert(client, reason, pausedForMs),
+         notifyAccountAutoPaused: ({ account, reason, failures }) =>
+            postAccountAutoPausedAlert(client, account, reason, failures),
+         notifyStatusDigest: () =>
+            postStatusDigest(
+               client,
+               store,
+               config.IG_DAILY_REQUEST_BUDGET,
+               CADENCE_COLD_START_INTERVAL_MS,
+            ),
+         dailyRequestBudget: config.IG_DAILY_REQUEST_BUDGET,
+         tickSkipProbability: TICK_SKIP_PROBABILITY,
+      });
+      this.scheduler.start();
+      log.info(
+         { capability: this.id },
+         "InstagramMonitorCapability scheduler started",
+      );
+   }
 
-  async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
-    if (!this.store || !this.fetcher) {
-      throw new Error('InstagramMonitorCapability.buildTurn called before init');
-    }
-    // Changing the watch list fans out to every bound channel, so it's mod-only
-    // (fail-closed). Non-mods keep the read tools — "¿qué publicaste hoy?" is a
-    // fair question for anyone in the channel.
-    const isMod = isModTurn(this.db, ctx);
-    const source = new InstagramMonitorToolSource({
-      store: this.store,
-      channelId: ctx.channelId,
-      userId: ctx.userId,
-      nowMs: ctx.now.getTime(),
-      isMod,
-    });
-    return {
-      system: renderInstagramMonitorPrompt(ctx.now, isMod),
-      tools: composeToolSources([source]),
-    };
-  }
+   async buildTurn(ctx: CapabilityTurnContext): Promise<CapabilityTurnBundle> {
+      if (!this.store || !this.fetcher) {
+         throw new Error(
+            "InstagramMonitorCapability.buildTurn called before init",
+         );
+      }
+      // Changing the watch list fans out to every bound channel, so it's mod-only
+      // (fail-closed). Non-mods keep the read tools — "¿qué publicaste hoy?" is a
+      // fair question for anyone in the channel.
+      const isMod = isModTurn(this.db, ctx);
+      const source = new InstagramMonitorToolSource({
+         store: this.store,
+         channelId: ctx.channelId,
+         userId: ctx.userId,
+         nowMs: ctx.now.getTime(),
+         isMod,
+      });
+      return {
+         system: renderInstagramMonitorPrompt(ctx.now, isMod),
+         tools: composeToolSources([source]),
+      };
+   }
 
-  async dispose(): Promise<void> {
-    if (this.scheduler) {
-      await this.scheduler.dispose();
-      this.scheduler = null;
-    }
-  }
+   async dispose(): Promise<void> {
+      if (this.scheduler) {
+         await this.scheduler.dispose();
+         this.scheduler = null;
+      }
+   }
 }
 
 /**
@@ -161,22 +178,22 @@ export class InstagramMonitorCapability implements Capability {
  * drive this exact code path without faking an IG auth failure.
  */
 export async function postAuthExpiredAlert(
-  client: Client,
-  account: string,
-  reason: string,
+   client: Client,
+   account: string,
+   reason: string,
 ): Promise<void> {
-  await sendAdminAlert(client, [
-    '⚠️ **Instagram monitor: sesión bloqueada**',
-    `Cuenta probada: \`${account}\``,
-    `Detalle: ${reason}`,
-    '',
-    'Acción:',
-    '1. Abre `instagram.com` en el navegador con la cuenta y completa el reto / "¿Fuiste tú?".',
-    '2. Saca cookies nuevas (`sessionid`, `csrftoken`, `ds_user_id`, `mid`, `ig_did`) y reemplázalas en `.env` (con el mismo navegador que `IG_USER_AGENT`).',
-    '3. `pnpm run build && systemctl --user restart chopperbot.service`.',
-    '',
-    'Mientras tanto el sondeo está suspendido 1 h y se reanudará automáticamente si la sesión recupera.',
-  ]);
+   await sendAdminAlert(client, [
+      "⚠️ **Instagram monitor: sesión bloqueada**",
+      `Cuenta probada: \`${account}\``,
+      `Detalle: ${reason}`,
+      "",
+      "Acción:",
+      '1. Abre `instagram.com` en el navegador con la cuenta y completa el reto / "¿Fuiste tú?".',
+      "2. Saca cookies nuevas (`sessionid`, `csrftoken`, `ds_user_id`, `mid`, `ig_did`) y reemplázalas en `.env` (con el mismo navegador que `IG_USER_AGENT`).",
+      "3. `pnpm run build && systemctl --user restart chopperbot.service`.",
+      "",
+      "Mientras tanto el sondeo está suspendido 1 h y se reanudará automáticamente si la sesión recupera.",
+   ]);
 }
 
 /**
@@ -186,18 +203,21 @@ export async function postAuthExpiredAlert(
  * confirming the account is healthy. Wired as the scheduler's
  * `notifyCircuitBroken` dep.
  */
-export async function postCircuitBrokenAlert(client: Client, reason: string): Promise<void> {
-  await sendAdminAlert(client, [
-    '🛑 **Instagram monitor: DETENIDO (interruptor de seguridad)**',
-    `Motivo: ${reason}`,
-    '',
-    'El sondeo de TODAS las cuentas está detenido y **no se reanudará solo** (protección de tu cuenta personal contra baneos).',
-    '',
-    'Antes de reanudar:',
-    '1. Abre `instagram.com` con tu cuenta y revisa que no haya retos/avisos pendientes.',
-    '2. Si IG pidió verificación, complétala y refresca las cookies en `.env`.',
-    '3. Para reanudar el monitor escríbeme en este canal: `config_instagram action:resume_monitor` (confirma).',
-  ]);
+export async function postCircuitBrokenAlert(
+   client: Client,
+   reason: string,
+): Promise<void> {
+   await sendAdminAlert(client, [
+      "🛑 **Instagram monitor: DETENIDO (interruptor de seguridad)**",
+      `Motivo: ${reason}`,
+      "",
+      "El sondeo de TODAS las cuentas está detenido y **no se reanudará solo** (protección de tu cuenta personal contra baneos).",
+      "",
+      "Antes de reanudar:",
+      "1. Abre `instagram.com` con tu cuenta y revisa que no haya retos/avisos pendientes.",
+      "2. Si IG pidió verificación, complétala y refresca las cookies en `.env`.",
+      "3. Para reanudar el monitor escríbeme en este canal: `config_instagram action:resume_monitor` (confirma).",
+   ]);
 }
 
 /**
@@ -205,17 +225,17 @@ export async function postCircuitBrokenAlert(client: Client, reason: string): Pr
  * that auto-recovers as the window drains — informational, no action required.
  */
 export async function postBudgetExhaustedAlert(
-  client: Client,
-  requests24h: number,
-  budget: number,
+   client: Client,
+   requests24h: number,
+   budget: number,
 ): Promise<void> {
-  await sendAdminAlert(client, [
-    'ℹ️ **Instagram monitor: presupuesto diario alcanzado**',
-    `Peticiones en 24 h: ${requests24h} / ${budget}.`,
-    '',
-    'El sondeo se pausó temporalmente y se reanudará automáticamente conforme la ventana de 24 h se vacíe. ' +
-      'Si pasa seguido, sube `IG_DAILY_REQUEST_BUDGET` o reduce el número de cuentas monitoreadas.',
-  ]);
+   await sendAdminAlert(client, [
+      "ℹ️ **Instagram monitor: presupuesto diario alcanzado**",
+      `Peticiones en 24 h: ${requests24h} / ${budget}.`,
+      "",
+      "El sondeo se pausó temporalmente y se reanudará automáticamente conforme la ventana de 24 h se vacíe. " +
+         "Si pasa seguido, sube `IG_DAILY_REQUEST_BUDGET` o reduce el número de cuentas monitoreadas.",
+   ]);
 }
 
 /**
@@ -225,23 +245,23 @@ export async function postBudgetExhaustedAlert(
  * back. Wired as the scheduler's `notifyResumed` dep.
  */
 export async function postResumedAlert(
-  client: Client,
-  reason: 'killswitch' | 'auth' | 'rate' | 'budget',
-  pausedForMs: number,
+   client: Client,
+   reason: "killswitch" | "auth" | "rate" | "budget",
+   pausedForMs: number,
 ): Promise<void> {
-  const why: Record<typeof reason, string> = {
-    killswitch: 'el interruptor de seguridad fue liberado',
-    auth: 'la sesión se recuperó tras el periodo de espera',
-    rate: 'terminó el enfriamiento por límite de peticiones (429) de Instagram',
-    budget: 'la ventana de 24 h se vació por debajo del presupuesto diario',
-  };
-  await sendAdminAlert(client, [
-    '✅ **Instagram monitor: sondeo REANUDADO**',
-    `Motivo: ${why[reason]}.`,
-    `Estuvo pausado ~${formatDurationEs(pausedForMs)}.`,
-    '',
-    'El monitor volvió a sondear las cuentas con normalidad. No se requiere ninguna acción.',
-  ]);
+   const why: Record<typeof reason, string> = {
+      killswitch: "el interruptor de seguridad fue liberado",
+      auth: "la sesión se recuperó tras el periodo de espera",
+      rate: "terminó el enfriamiento por límite de peticiones (429) de Instagram",
+      budget: "la ventana de 24 h se vació por debajo del presupuesto diario",
+   };
+   await sendAdminAlert(client, [
+      "✅ **Instagram monitor: sondeo REANUDADO**",
+      `Motivo: ${why[reason]}.`,
+      `Estuvo pausado ~${formatDurationEs(pausedForMs)}.`,
+      "",
+      "El monitor volvió a sondear las cuentas con normalidad. No se requiere ninguna acción.",
+   ]);
 }
 
 /**
@@ -252,20 +272,20 @@ export async function postResumedAlert(
  * dep; fires once per streak, at the crossing.
  */
 export async function postAccountAutoPausedAlert(
-  client: Client,
-  account: string,
-  reason: string,
-  failures: number,
+   client: Client,
+   account: string,
+   reason: string,
+   failures: number,
 ): Promise<void> {
-  await sendAdminAlert(client, [
-    '⏸️ **Instagram monitor: cuenta auto-pausada**',
-    `Cuenta: \`@${account}\` — ${failures} fallos deterministas seguidos.`,
-    `Detalle: ${reason}`,
-    '',
-    'Instagram rechaza esta consulta siempre de la misma forma; reintentarla no sirve y delata automatización. La cuenta queda fuera del sondeo hasta que:',
-    '1. Verifiques a mano que el perfil existe y es público, y',
-    '2. La reanudes con `config_instagram action:pause_account` (`paused:false`) o `action:force_poll`.',
-  ]);
+   await sendAdminAlert(client, [
+      "⏸️ **Instagram monitor: cuenta auto-pausada**",
+      `Cuenta: \`@${account}\` — ${failures} fallos deterministas seguidos.`,
+      `Detalle: ${reason}`,
+      "",
+      "Instagram rechaza esta consulta siempre de la misma forma; reintentarla no sirve y delata automatización. La cuenta queda fuera del sondeo hasta que:",
+      "1. Verifiques a mano que el perfil existe y es público, y",
+      "2. La reanudes con `config_instagram action:pause_account` (`paused:false`) o `action:force_poll`.",
+   ]);
 }
 
 /**
@@ -276,36 +296,36 @@ export async function postAccountAutoPausedAlert(
  * action:digest_now` for an on-demand post.
  */
 export async function postStatusDigest(
-  client: Client,
-  store: InstagramMonitorStore,
-  dailyRequestBudget: number,
-  defaultPollIntervalMs: number,
+   client: Client,
+   store: InstagramMonitorStore,
+   dailyRequestBudget: number,
+   defaultPollIntervalMs: number,
 ): Promise<void> {
-  const lines = formatStatusDigest({
-    runtime: store.getRuntime(),
-    accounts: store.listAccounts(),
-    dailyRequestBudget,
-    defaultPollIntervalMs,
-    nowMs: Date.now(),
-  });
-  await sendAdminAlert(client, lines);
+   const lines = formatStatusDigest({
+      runtime: store.getRuntime(),
+      accounts: store.listAccounts(),
+      dailyRequestBudget,
+      defaultPollIntervalMs,
+      nowMs: Date.now(),
+   });
+   await sendAdminAlert(client, lines);
 }
 
 /** Admin-channel sender shared bot-wide; see src/discord/admin-alert.ts. The
  * local wrapper just pins this capability's journal tag. */
 async function sendAdminAlert(client: Client, lines: string[]): Promise<void> {
-  await sendAdminAlertShared(client, lines, 'instagram_monitor.auth_alert');
+   await sendAdminAlertShared(client, lines, "instagram_monitor.auth_alert");
 }
 
 /** SQLite-backed pk / username-feed cache. Survives deploys so we don't
  * re-hit web_profile_info (or the laser.provider 400) on every restart. */
 function storeFetchHints(store: InstagramMonitorStore): InstagramFetchHints {
-  return {
-    getPk: (username) => store.getAccount(username)?.ig_pk ?? undefined,
-    rememberPk: (username, pk) => store.rememberAccountPk(username, pk),
-    prefersUsernameFeed: (username, nowMs = Date.now()) =>
-      store.prefersUsernameFeed(username, nowMs),
-    rememberUsernameFeed: (username, nowMs = Date.now()) =>
-      store.rememberUsernameFeed(username, nowMs),
-  };
+   return {
+      getPk: (username) => store.getAccount(username)?.ig_pk ?? undefined,
+      rememberPk: (username, pk) => store.rememberAccountPk(username, pk),
+      prefersUsernameFeed: (username, nowMs = Date.now()) =>
+         store.prefersUsernameFeed(username, nowMs),
+      rememberUsernameFeed: (username, nowMs = Date.now()) =>
+         store.rememberUsernameFeed(username, nowMs),
+   };
 }

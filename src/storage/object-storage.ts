@@ -10,28 +10,28 @@
  */
 
 export interface ObjectStorage {
-  /** Short backend id for logs/status ('minio', 'local', ...). */
-  readonly backend: string;
+   /** Short backend id for logs/status ('minio', 'local', ...). */
+   readonly backend: string;
 
-  /** Create/overwrite an object. */
-  put(key: string, bytes: Uint8Array, contentType?: string): Promise<void>;
+   /** Create/overwrite an object. */
+   put(key: string, bytes: Uint8Array, contentType?: string): Promise<void>;
 
-  /** Fetch an object's bytes; null when the key does not exist. */
-  get(key: string): Promise<Uint8Array | null>;
+   /** Fetch an object's bytes; null when the key does not exist. */
+   get(key: string): Promise<Uint8Array | null>;
 
-  /** Delete one object; deleting a missing key is not an error. */
-  delete(key: string): Promise<void>;
+   /** Delete one object; deleting a missing key is not an error. */
+   delete(key: string): Promise<void>;
 
-  /** Delete every object under `prefix`; returns how many were removed. */
-  deletePrefix(prefix: string): Promise<number>;
+   /** Delete every object under `prefix`; returns how many were removed. */
+   deletePrefix(prefix: string): Promise<number>;
 
-  /**
-   * One-time readiness check at boot (create the bucket/dir if needed).
-   * Implementations MUST NOT throw — an unavailable backend degrades to
-   * "storage disabled" behavior in the caller, not a boot failure.
-   */
-  ensureReady(): Promise<boolean>;
+   /**
+    * One-time readiness check at boot (create the bucket/dir if needed).
+    * Implementations MUST NOT throw — an unavailable backend degrades to
+    * "storage disabled" behavior in the caller, not a boot failure.
+    */
+   ensureReady(): Promise<boolean>;
 
-  /** Release underlying resources (HTTP agents, clients). */
-  destroy?(): void;
+   /** Release underlying resources (HTTP agents, clients). */
+   destroy?(): void;
 }

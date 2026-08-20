@@ -1,6 +1,6 @@
-import { ChannelType, type Client } from 'discord.js';
-import { CONFIGURATION_CHANNEL_ID } from '../capabilities/configuration/constants.js';
-import { log } from '../log.js';
+import { ChannelType, type Client } from "discord.js";
+import { CONFIGURATION_CHANNEL_ID } from "../capabilities/configuration/constants.js";
+import { log } from "../log.js";
 
 /**
  * Shared admin/config-channel alert sender, used by every operator-facing
@@ -18,25 +18,32 @@ import { log } from '../log.js';
  * merging with it, so the safe parts are spelled out again here.
  */
 export async function sendAdminAlert(
-  client: Client,
-  lines: string[],
-  logTag = 'admin_alert',
-  roleIds: readonly string[] = [],
+   client: Client,
+   lines: string[],
+   logTag = "admin_alert",
+   roleIds: readonly string[] = [],
 ): Promise<void> {
-  try {
-    const channel = await client.channels.fetch(CONFIGURATION_CHANNEL_ID);
-    if (
-      !channel ||
-      (channel.type !== ChannelType.GuildText && channel.type !== ChannelType.DM)
-    ) {
-      log.warn({ channel: CONFIGURATION_CHANNEL_ID }, `${logTag}.channel_unavailable`);
-      return;
-    }
-    await channel.send({
-      content: lines.join('\n'),
-      allowedMentions: { parse: ['users'], roles: [...roleIds] },
-    });
-  } catch (err) {
-    log.warn({ err, channel: CONFIGURATION_CHANNEL_ID }, `${logTag}.send_failed`);
-  }
+   try {
+      const channel = await client.channels.fetch(CONFIGURATION_CHANNEL_ID);
+      if (
+         !channel ||
+         (channel.type !== ChannelType.GuildText &&
+            channel.type !== ChannelType.DM)
+      ) {
+         log.warn(
+            { channel: CONFIGURATION_CHANNEL_ID },
+            `${logTag}.channel_unavailable`,
+         );
+         return;
+      }
+      await channel.send({
+         content: lines.join("\n"),
+         allowedMentions: { parse: ["users"], roles: [...roleIds] },
+      });
+   } catch (err) {
+      log.warn(
+         { err, channel: CONFIGURATION_CHANNEL_ID },
+         `${logTag}.send_failed`,
+      );
+   }
 }

@@ -1,9 +1,9 @@
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import Database from 'better-sqlite3';
-import { runMigrations, type Migration } from './migrations.js';
+import { mkdirSync } from "node:fs";
+import { dirname } from "node:path";
+import Database from "better-sqlite3";
+import { runMigrations, type Migration } from "./migrations.js";
 
-export type { Migration } from './migrations.js';
+export type { Migration } from "./migrations.js";
 
 /**
  * Per-capability persistent storage. Capabilities receive a NamespacedMemory
@@ -15,41 +15,41 @@ export type { Migration } from './migrations.js';
  * enforce this — it's a shared-DB cleanliness convention.
  */
 export interface MemoryStore {
-  /** Raw better-sqlite3 handle. Synchronous. */
-  db(): Database.Database;
-  /** Apply pending migrations for `capabilityId`. Idempotent. */
-  migrate(capabilityId: string, migrations: Migration[]): Promise<void>;
+   /** Raw better-sqlite3 handle. Synchronous. */
+   db(): Database.Database;
+   /** Apply pending migrations for `capabilityId`. Idempotent. */
+   migrate(capabilityId: string, migrations: Migration[]): Promise<void>;
 }
 
 export interface SqliteMemoryStoreOptions {
-  /** Absolute or relative path to the .db file. Use ':memory:' for tests. */
-  path: string;
+   /** Absolute or relative path to the .db file. Use ':memory:' for tests. */
+   path: string;
 }
 
 /** Process-level SQLite store. One file, shared across all capabilities. */
 export class SqliteMemoryStore implements MemoryStore {
-  private readonly handle: Database.Database;
+   private readonly handle: Database.Database;
 
-  constructor(opts: SqliteMemoryStoreOptions) {
-    if (opts.path !== ':memory:') {
-      mkdirSync(dirname(opts.path), { recursive: true });
-    }
-    this.handle = new Database(opts.path);
-    this.handle.pragma('journal_mode = WAL');
-    this.handle.pragma('foreign_keys = ON');
-  }
+   constructor(opts: SqliteMemoryStoreOptions) {
+      if (opts.path !== ":memory:") {
+         mkdirSync(dirname(opts.path), { recursive: true });
+      }
+      this.handle = new Database(opts.path);
+      this.handle.pragma("journal_mode = WAL");
+      this.handle.pragma("foreign_keys = ON");
+   }
 
-  db(): Database.Database {
-    return this.handle;
-  }
+   db(): Database.Database {
+      return this.handle;
+   }
 
-  async migrate(capabilityId: string, migrations: Migration[]): Promise<void> {
-    runMigrations(this.handle, capabilityId, migrations);
-  }
+   async migrate(capabilityId: string, migrations: Migration[]): Promise<void> {
+      runMigrations(this.handle, capabilityId, migrations);
+   }
 
-  close(): void {
-    this.handle.close();
-  }
+   close(): void {
+      this.handle.close();
+   }
 }
 
 /**
@@ -59,16 +59,16 @@ export class SqliteMemoryStore implements MemoryStore {
  * cannot accidentally migrate another's tables.
  */
 export class NamespacedMemory implements MemoryStore {
-  constructor(
-    private readonly inner: MemoryStore,
-    private readonly capabilityId: string,
-  ) {}
+   constructor(
+      private readonly inner: MemoryStore,
+      private readonly capabilityId: string,
+   ) {}
 
-  db(): Database.Database {
-    return this.inner.db();
-  }
+   db(): Database.Database {
+      return this.inner.db();
+   }
 
-  migrate(_ignored: string, migrations: Migration[]): Promise<void> {
-    return this.inner.migrate(this.capabilityId, migrations);
-  }
+   migrate(_ignored: string, migrations: Migration[]): Promise<void> {
+      return this.inner.migrate(this.capabilityId, migrations);
+   }
 }

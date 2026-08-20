@@ -1,4 +1,4 @@
-export const CONFIGURATION_CAPABILITY_ID = 'configuration';
+export const CONFIGURATION_CAPABILITY_ID = "configuration";
 
 /**
  * The single hardcoded channel that runs the configuration capability. Every
@@ -9,15 +9,15 @@ export const CONFIGURATION_CAPABILITY_ID = 'configuration';
  * console. The bot fails to boot if this is unset.
  */
 function requireConfigChannel(): string {
-  const id = process.env.CHOPPERBOT_CONFIG_CHANNEL_ID;
-  if (!id || !/^\d{17,20}$/.test(id)) {
-    throw new Error(
-      'CHOPPERBOT_CONFIG_CHANNEL_ID env var is required — set it to the ' +
-        'Discord snowflake (17–20 digits) of the channel that should run the ' +
-        'configuration capability.',
-    );
-  }
-  return id;
+   const id = process.env.CHOPPERBOT_CONFIG_CHANNEL_ID;
+   if (!id || !/^\d{17,20}$/.test(id)) {
+      throw new Error(
+         "CHOPPERBOT_CONFIG_CHANNEL_ID env var is required — set it to the " +
+            "Discord snowflake (17–20 digits) of the channel that should run the " +
+            "configuration capability.",
+      );
+   }
+   return id;
 }
 
 export const CONFIGURATION_CHANNEL_ID = requireConfigChannel();

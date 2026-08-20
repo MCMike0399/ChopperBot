@@ -27,29 +27,29 @@
  */
 
 export type SpanishStyleRuleId =
-  | 'usted'
-  | 'mixed_register'
-  | 'inclusive_malformed'
-  | 'scaffolding'
-  | 'service_closer'
-  | 'enclitic_accent';
+   | "usted"
+   | "mixed_register"
+   | "inclusive_malformed"
+   | "scaffolding"
+   | "service_closer"
+   | "enclitic_accent";
 
 export interface SpanishStyleFinding {
-  rule: SpanishStyleRuleId;
-  /** The exact snippet that tripped the rule — what a human needs to see. */
-  match: string;
-  /** One-line operator-facing explanation (English: this lands in the journal). */
-  why: string;
+   rule: SpanishStyleRuleId;
+   /** The exact snippet that tripped the rule — what a human needs to see. */
+   match: string;
+   /** One-line operator-facing explanation (English: this lands in the journal). */
+   why: string;
 }
 
 export interface LintSpanishOptions {
-  /**
-   * Tool names available to the turn. Any of them appearing in the reply is a
-   * scaffolding leak: the bot must say "la busco", never "llamo a
-   * calendar_search_events". Optional — the built-in prefix rule already
-   * catches the framework's own naming convention.
-   */
-  toolNames?: readonly string[];
+   /**
+    * Tool names available to the turn. Any of them appearing in the reply is a
+    * scaffolding leak: the bot must say "la busco", never "llamo a
+    * calendar_search_events". Optional — the built-in prefix rule already
+    * catches the framework's own naming convention.
+    */
+   toolNames?: readonly string[];
 }
 
 /**
@@ -59,13 +59,13 @@ export interface LintSpanishOptions {
  * on either side survive.
  */
 function maskNonProse(text: string): string {
-  const blank = (m: string): string => ' '.repeat(m.length);
-  return text
-    .replace(/```[\s\S]*?```/g, blank)
-    .replace(/`[^`\n]*`/g, blank)
-    .replace(/https?:\/\/\S+/gi, blank)
-    .replace(/<a?:[A-Za-z0-9_]+:\d+>/g, blank)
-    .replace(/<[@#][!&]?\d+>/g, blank);
+   const blank = (m: string): string => " ".repeat(m.length);
+   return text
+      .replace(/```[\s\S]*?```/g, blank)
+      .replace(/`[^`\n]*`/g, blank)
+      .replace(/https?:\/\/\S+/gi, blank)
+      .replace(/<a?:[A-Za-z0-9_]+:\d+>/g, blank)
+      .replace(/<[@#][!&]?\d+>/g, blank);
 }
 
 /**
@@ -76,11 +76,11 @@ function maskNonProse(text: string): string {
  * a marker — "le creé el evento de Discord" is correct tuteo.
  */
 const USTED_PATTERNS: ReadonlyArray<RegExp> = [
-  /\busted\b(?!es)/gi,
-  /\bse le (?:habla|dice|pide|informa|explica|comunica|solicita|recomienda|contesta|atiende)\b/gi,
-  /\b(?:sírvase|avíseme|aviseme|dígame|digame|escríbame|envíeme|indíqueme|confírmeme|comuníquese|diríjase)\b/gi,
-  /\b(?:tenga en cuenta|no dude en|quedo a sus órdenes|para servirle|si lo desea|si gusta usted)\b/gi,
-  /¿\s*(?:desea|gusta|podría usted|le gustaría|necesita usted|quiere usted)\b/gi,
+   /\busted\b(?!es)/gi,
+   /\bse le (?:habla|dice|pide|informa|explica|comunica|solicita|recomienda|contesta|atiende)\b/gi,
+   /\b(?:sírvase|avíseme|aviseme|dígame|digame|escríbame|envíeme|indíqueme|confírmeme|comuníquese|diríjase)\b/gi,
+   /\b(?:tenga en cuenta|no dude en|quedo a sus órdenes|para servirle|si lo desea|si gusta usted)\b/gi,
+   /¿\s*(?:desea|gusta|podría usted|le gustaría|necesita usted|quiere usted)\b/gi,
 ];
 
 /**
@@ -89,9 +89,9 @@ const USTED_PATTERNS: ReadonlyArray<RegExp> = [
  * different token and does not match), so they are reliable on their own.
  */
 const TUTEO_PATTERNS: ReadonlyArray<RegExp> = [
-  /\b(?:tú|te|ti|tu|tus|contigo|tuyo|tuya|tuyos|tuyas)\b/gi,
-  /\b(?:dime|dile|avísame|mándame|pásame|escríbeme|cuéntame|checa|súbela|súbelo|mándalo|pregúntame)\b/gi,
-  /¿\s*(?:quieres|puedes|necesitas|te gustaría|te parece)\b/gi,
+   /\b(?:tú|te|ti|tu|tus|contigo|tuyo|tuya|tuyos|tuyas)\b/gi,
+   /\b(?:dime|dile|avísame|mándame|pásame|escríbeme|cuéntame|checa|súbela|súbelo|mándalo|pregúntame)\b/gi,
+   /¿\s*(?:quieres|puedes|necesitas|te gustaría|te parece)\b/gi,
 ];
 
 /**
@@ -114,7 +114,7 @@ const TUTEO_PATTERNS: ReadonlyArray<RegExp> = [
  * plurals ("lxs", "ellxs") through.
  */
 const INVENTED_PRONOUNS =
-  /(?<![a-záéíóúüñA-ZÁÉÍÓÚÜÑ])(?:elx|ellx|lx|unx|algunx|ningunx|estx|esx|aquelx|aquellx)(?![a-záéíóúüñA-ZÁÉÍÓÚÜÑs])/gi;
+   /(?<![a-záéíóúüñA-ZÁÉÍÓÚÜÑ])(?:elx|ellx|lx|unx|algunx|ningunx|estx|esx|aquelx|aquellx)(?![a-záéíóúüñA-ZÁÉÍÓÚÜÑs])/gi;
 
 /**
  * Internal vocabulary that must never reach a community channel: the framework's
@@ -127,10 +127,10 @@ const INVENTED_PRONOUNS =
  * a la vez" reached the channel.
  */
 const SCAFFOLDING_PATTERNS: ReadonlyArray<RegExp> = [
-  /\b(?:calendar|workshop|server|config|configuration|instagram|ig|event|file|memory|user)_[a-z0-9_]+\b/g,
-  /\b(?:start_at_iso|start_at_local|occurrence_date_iso|occurrence_count|occurrence_index|recurrence_freq|recurrence_count|recurrence_until_iso|recurrence_until_local|recurrence_open_ended|updated_scope|deleted_scope|discord_event_id|image_url|venue_kind|venue_name|needs_room|missing_permission|no_output_channel)\b/g,
-  /\b(?:NUNCA|SIEMPRE|JAMÁS|JAMAS|IMPORTANTE|OBLIGATORIO|REQUERIDO|OPCIONAL|MÍNIMO|MINIMO|UNA|SOLO|SÓLO|TODOS|ANTES)\b/g,
-  /\b(?:mis instrucciones|mi prompt|el system prompt|mis reglas internas|se me indicó|mi configuración me|como modelo de lenguaje|como IA)\b/gi,
+   /\b(?:calendar|workshop|server|config|configuration|instagram|ig|event|file|memory|user)_[a-z0-9_]+\b/g,
+   /\b(?:start_at_iso|start_at_local|occurrence_date_iso|occurrence_count|occurrence_index|recurrence_freq|recurrence_count|recurrence_until_iso|recurrence_until_local|recurrence_open_ended|updated_scope|deleted_scope|discord_event_id|image_url|venue_kind|venue_name|needs_room|missing_permission|no_output_channel)\b/g,
+   /\b(?:NUNCA|SIEMPRE|JAMÁS|JAMAS|IMPORTANTE|OBLIGATORIO|REQUERIDO|OPCIONAL|MÍNIMO|MINIMO|UNA|SOLO|SÓLO|TODOS|ANTES)\b/g,
+   /\b(?:mis instrucciones|mi prompt|el system prompt|mis reglas internas|se me indicó|mi configuración me|como modelo de lenguaje|como IA)\b/gi,
 ];
 
 /**
@@ -142,13 +142,13 @@ const SCAFFOLDING_PATTERNS: ReadonlyArray<RegExp> = [
  * explicitly asks for it.
  */
 const SERVICE_CLOSER_PATTERNS: ReadonlyArray<RegExp> = [
-  /¿\s*(?:algo|hay algo|necesitas algo|puedo ayudarte en algo)\s*más\s*[?¿]/gi,
-  /¿\s*en qué más\b/gi,
-  /\bestoy (?:aquí )?para (?:ayudarte|servirte|lo que necesites)\b/gi,
-  /\bquedo (?:atento|atenta|a la orden|pendiente)\b/gi,
-  /\bno dudes en (?:preguntar|escribir|consultar|contactar|decirme)\b/gi,
-  /\bespero (?:que )?(?:esto|esta información|te)\s*\w*\s*(?:sea|haya sido|resulte)\s*(?:útil|de ayuda)\b/gi,
-  /\bque tengas (?:un |una )?(?:buen|buena|excelente)\b/gi,
+   /¿\s*(?:algo|hay algo|necesitas algo|puedo ayudarte en algo)\s*más\s*[?¿]/gi,
+   /¿\s*en qué más\b/gi,
+   /\bestoy (?:aquí )?para (?:ayudarte|servirte|lo que necesites)\b/gi,
+   /\bquedo (?:atento|atenta|a la orden|pendiente)\b/gi,
+   /\bno dudes en (?:preguntar|escribir|consultar|contactar|decirme)\b/gi,
+   /\bespero (?:que )?(?:esto|esta información|te)\s*\w*\s*(?:sea|haya sido|resulte)\s*(?:útil|de ayuda)\b/gi,
+   /\bque tengas (?:un |una )?(?:buen|buena|excelente)\b/gi,
 ];
 
 /**
@@ -160,39 +160,42 @@ const SERVICE_CLOSER_PATTERNS: ReadonlyArray<RegExp> = [
  * one (pon → ponlo, never "pónlo").
  */
 const ENCLITIC_ACCENT_PATTERNS: ReadonlyArray<RegExp> = [
-  /\b(?:propón|detén|mantén|contén|sostén|retén|entretén)(?:lo|la|los|las|le|les|me|te|nos|se)\b/gi,
-  /\b(?:pón|ház|dí|vé|dá|tén|vén|sál)(?:lo|la|los|las|le|les|me|te|nos|se)\b/gi,
+   /\b(?:propón|detén|mantén|contén|sostén|retén|entretén)(?:lo|la|los|las|le|les|me|te|nos|se)\b/gi,
+   /\b(?:pón|ház|dí|vé|dá|tén|vén|sál)(?:lo|la|los|las|le|les|me|te|nos|se)\b/gi,
 ];
 
 const WHY: Record<SpanishStyleRuleId, string> = {
-  usted: 'usted register — the server tutea',
-  mixed_register: 'tú and usted mixed in the same reply',
-  inclusive_malformed: 'invented inclusive pronoun/article (use a name, "esa persona", or a plural -xs form)',
-  scaffolding: 'internal prompt vocabulary reached the reply',
-  service_closer: 'customer-service closer',
-  enclitic_accent: 'enclitic accent misspelling',
+   usted: "usted register — the server tutea",
+   mixed_register: "tú and usted mixed in the same reply",
+   inclusive_malformed:
+      'invented inclusive pronoun/article (use a name, "esa persona", or a plural -xs form)',
+   scaffolding: "internal prompt vocabulary reached the reply",
+   service_closer: "customer-service closer",
+   enclitic_accent: "enclitic accent misspelling",
 };
 
 function collect(
-  rule: SpanishStyleRuleId,
-  text: string,
-  patterns: ReadonlyArray<RegExp>,
-  out: SpanishStyleFinding[],
-  seen: Set<string>,
+   rule: SpanishStyleRuleId,
+   text: string,
+   patterns: ReadonlyArray<RegExp>,
+   out: SpanishStyleFinding[],
+   seen: Set<string>,
 ): void {
-  for (const pattern of patterns) {
-    for (const m of text.matchAll(new RegExp(pattern.source, pattern.flags))) {
-      const match = m[0].trim();
-      const key = `${rule}:${match.toLowerCase()}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push({ rule, match, why: WHY[rule] });
-    }
-  }
+   for (const pattern of patterns) {
+      for (const m of text.matchAll(
+         new RegExp(pattern.source, pattern.flags),
+      )) {
+         const match = m[0].trim();
+         const key = `${rule}:${match.toLowerCase()}`;
+         if (seen.has(key)) continue;
+         seen.add(key);
+         out.push({ rule, match, why: WHY[rule] });
+      }
+   }
 }
 
 function hits(text: string, patterns: ReadonlyArray<RegExp>): boolean {
-  return patterns.some((p) => new RegExp(p.source, p.flags).test(text));
+   return patterns.some((p) => new RegExp(p.source, p.flags).test(text));
 }
 
 /**
@@ -200,34 +203,45 @@ function hits(text: string, patterns: ReadonlyArray<RegExp>): boolean {
  * rule order; an empty array means the reply is in voice as far as the
  * deterministic rules can tell.
  */
-export function lintSpanish(text: string, opts: LintSpanishOptions = {}): SpanishStyleFinding[] {
-  const prose = maskNonProse(text);
-  const findings: SpanishStyleFinding[] = [];
-  const seen = new Set<string>();
+export function lintSpanish(
+   text: string,
+   opts: LintSpanishOptions = {},
+): SpanishStyleFinding[] {
+   const prose = maskNonProse(text);
+   const findings: SpanishStyleFinding[] = [];
+   const seen = new Set<string>();
 
-  collect('usted', prose, USTED_PATTERNS, findings, seen);
-  if (hits(prose, USTED_PATTERNS) && hits(prose, TUTEO_PATTERNS)) {
-    findings.push({ rule: 'mixed_register', match: '', why: WHY.mixed_register });
-  }
+   collect("usted", prose, USTED_PATTERNS, findings, seen);
+   if (hits(prose, USTED_PATTERNS) && hits(prose, TUTEO_PATTERNS)) {
+      findings.push({
+         rule: "mixed_register",
+         match: "",
+         why: WHY.mixed_register,
+      });
+   }
 
-  collect('inclusive_malformed', prose, [INVENTED_PRONOUNS], findings, seen);
+   collect("inclusive_malformed", prose, [INVENTED_PRONOUNS], findings, seen);
 
-  collect('scaffolding', prose, SCAFFOLDING_PATTERNS, findings, seen);
-  for (const name of opts.toolNames ?? []) {
-    if (!prose.includes(name)) continue;
-    const key = `scaffolding:${name.toLowerCase()}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    findings.push({ rule: 'scaffolding', match: name, why: WHY.scaffolding });
-  }
+   collect("scaffolding", prose, SCAFFOLDING_PATTERNS, findings, seen);
+   for (const name of opts.toolNames ?? []) {
+      if (!prose.includes(name)) continue;
+      const key = `scaffolding:${name.toLowerCase()}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      findings.push({ rule: "scaffolding", match: name, why: WHY.scaffolding });
+   }
 
-  collect('service_closer', prose, SERVICE_CLOSER_PATTERNS, findings, seen);
-  collect('enclitic_accent', prose, ENCLITIC_ACCENT_PATTERNS, findings, seen);
+   collect("service_closer", prose, SERVICE_CLOSER_PATTERNS, findings, seen);
+   collect("enclitic_accent", prose, ENCLITIC_ACCENT_PATTERNS, findings, seen);
 
-  return findings;
+   return findings;
 }
 
 /** Compact one-line rendering of a lint result, for logs and CLI scorecards. */
-export function describeFindings(findings: readonly SpanishStyleFinding[]): string {
-  return findings.map((f) => (f.match ? `${f.rule}("${f.match}")` : f.rule)).join(', ');
+export function describeFindings(
+   findings: readonly SpanishStyleFinding[],
+): string {
+   return findings
+      .map((f) => (f.match ? `${f.rule}("${f.match}")` : f.rule))
+      .join(", ");
 }

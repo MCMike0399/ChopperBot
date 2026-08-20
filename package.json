@@ -1,47 +1,50 @@
 {
-  "name": "chopperbot",
-  "version": "1.25.1",
-  "description": "Discord Q&A bot for fintech project, powered by Amazon Bedrock (Converse API).",
-  "private": true,
-  "license": "MIT",
-  "type": "module",
-  "main": "dist/index.js",
-  "scripts": {
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "dev": "tsx watch src/index.ts",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "release": "tsx scripts/publish-release.ts"
-  },
-  "engines": {
-    "node": ">=20"
-  },
-  "dependencies": {
-    "@aws-sdk/client-bedrock-runtime": "^3.1074.0",
-    "@aws-sdk/client-cloudwatch-logs": "^3.1074.0",
-    "@aws-sdk/client-s3": "^3.1104.0",
-    "@aws-sdk/credential-providers": "^3.1074.0",
-    "@discordjs/opus": "^0.10.0",
-    "@discordjs/voice": "^0.19.2",
-    "@snazzah/davey": "^0.1.12",
-    "better-sqlite3": "^12.10.0",
-    "discord.js": "^14.16.3",
-    "dotenv": "^16.4.5",
-    "openai": "^6.46.0",
-    "pdf-lib": "^1.17.1",
-    "pino": "^9.5.0",
-    "prism-media": "^1.3.5",
-    "tweetnacl": "^1.0.3",
-    "undici": "^6.24.1",
-    "zod": "^3.23.8"
-  },
-  "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
-    "@types/node": "^22.10.0",
-    "tsx": "^4.19.2",
-    "typescript": "^5.7.2",
-    "vitest": "^4.1.5"
-  }
+   "name": "chopperbot",
+   "version": "1.25.1",
+   "description": "Discord Q&A bot for fintech project, powered by Amazon Bedrock (Converse API).",
+   "private": true,
+   "license": "MIT",
+   "type": "module",
+   "main": "dist/index.js",
+   "scripts": {
+      "build": "tsc",
+      "start": "node dist/index.js",
+      "dev": "tsx watch src/index.ts",
+      "typecheck": "tsc --noEmit",
+      "format": "prettier --write .",
+      "format:check": "prettier --check .",
+      "test": "vitest run",
+      "test:watch": "vitest",
+      "release": "tsx scripts/publish-release.ts"
+   },
+   "engines": {
+      "node": ">=20"
+   },
+   "dependencies": {
+      "@aws-sdk/client-bedrock-runtime": "^3.1074.0",
+      "@aws-sdk/client-cloudwatch-logs": "^3.1074.0",
+      "@aws-sdk/client-s3": "^3.1104.0",
+      "@aws-sdk/credential-providers": "^3.1074.0",
+      "@discordjs/opus": "^0.10.0",
+      "@discordjs/voice": "^0.19.2",
+      "@snazzah/davey": "^0.1.12",
+      "better-sqlite3": "^12.10.0",
+      "discord.js": "^14.16.3",
+      "dotenv": "^16.4.5",
+      "openai": "^6.46.0",
+      "pdf-lib": "^1.17.1",
+      "pino": "^9.5.0",
+      "prism-media": "^1.3.5",
+      "tweetnacl": "^1.0.3",
+      "undici": "^6.24.1",
+      "zod": "^3.23.8"
+   },
+   "devDependencies": {
+      "@types/better-sqlite3": "^7.6.13",
+      "@types/node": "^22.10.0",
+      "prettier": "^3.9.6",
+      "tsx": "^4.19.2",
+      "typescript": "^5.7.2",
+      "vitest": "^4.1.5"
+   }
 }

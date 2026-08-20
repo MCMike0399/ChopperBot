@@ -1,25 +1,25 @@
-import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
-import type { WorkspaceFile } from './workspace.js';
-import { isDeliverablePath } from './workspace.js';
+import { SPANISH_VOICE_RULES } from "../../lang/voice.js";
+import type { WorkspaceFile } from "./workspace.js";
+import { isDeliverablePath } from "./workspace.js";
 
 export interface WorkshopPromptContext {
-  now: Date;
-  userTag: string;
-  userId: string;
-  channelName: string | null;
-  files: WorkspaceFile[];
-  sandboxAvailable: boolean;
-  venvAvailable: boolean;
-  /** Names of files the user attached to THIS message, already saved to uploads/. */
-  savedUploads: string[];
-  /** Running compaction summary of conversation older than the live window. */
-  summary?: string | null;
-  /**
-   * rel_paths with a durable DELIVERED copy (sent deliverables + user uploads).
-   * Drives the per-file delivery status in the workspace listing, so the model
-   * can tell "está en el workspace" apart from "el usuario ya lo recibió".
-   */
-  deliveredPaths?: ReadonlySet<string>;
+   now: Date;
+   userTag: string;
+   userId: string;
+   channelName: string | null;
+   files: WorkspaceFile[];
+   sandboxAvailable: boolean;
+   venvAvailable: boolean;
+   /** Names of files the user attached to THIS message, already saved to uploads/. */
+   savedUploads: string[];
+   /** Running compaction summary of conversation older than the live window. */
+   summary?: string | null;
+   /**
+    * rel_paths with a durable DELIVERED copy (sent deliverables + user uploads).
+    * Drives the per-file delivery status in the workspace listing, so the model
+    * can tell "está en el workspace" apart from "el usuario ya lo recibió".
+    */
+   deliveredPaths?: ReadonlySet<string>;
 }
 
 const SKILLS_BLOCK = `# Habilidades (recetas)
@@ -36,42 +36,43 @@ Límites del entorno: sin internet y sin \`pip install\` — solo las librerías
 
 /** The system prompt for a workshop session turn. */
 export function renderWorkshopPrompt(ctx: WorkshopPromptContext): string {
-  const delivered = ctx.deliveredPaths ?? new Set<string>();
-  const fileLine = (f: WorkspaceFile): string => {
-    const base = `- ${f.path} (${formatBytes(f.bytes)})`;
-    if (f.path.startsWith('uploads/')) return `${base} — 📥 subido por el usuario`;
-    if (delivered.has(f.path)) return `${base} — ✅ ya entregado al usuario`;
-    // Only real deliverables get the alarm; intermediates (.txt extracts…)
-    // stay plain so the listing doesn't cry wolf.
-    if (isDeliverablePath(f.path)) {
-      return `${base} — ⚠️ NO entregado: solo existe en el workspace, el usuario no lo ha recibido`;
-    }
-    return base;
-  };
-  const filesBlock =
-    ctx.files.length === 0
-      ? '- (vacío)'
-      : ctx.files
-          .slice(0, 40)
-          .map(fileLine)
-          .join('\n') + (ctx.files.length > 40 ? `\n- … y ${ctx.files.length - 40} más` : '');
+   const delivered = ctx.deliveredPaths ?? new Set<string>();
+   const fileLine = (f: WorkspaceFile): string => {
+      const base = `- ${f.path} (${formatBytes(f.bytes)})`;
+      if (f.path.startsWith("uploads/"))
+         return `${base} — 📥 subido por el usuario`;
+      if (delivered.has(f.path)) return `${base} — ✅ ya entregado al usuario`;
+      // Only real deliverables get the alarm; intermediates (.txt extracts…)
+      // stay plain so the listing doesn't cry wolf.
+      if (isDeliverablePath(f.path)) {
+         return `${base} — ⚠️ NO entregado: solo existe en el workspace, el usuario no lo ha recibido`;
+      }
+      return base;
+   };
+   const filesBlock =
+      ctx.files.length === 0
+         ? "- (vacío)"
+         : ctx.files.slice(0, 40).map(fileLine).join("\n") +
+           (ctx.files.length > 40
+              ? `\n- … y ${ctx.files.length - 40} más`
+              : "");
 
-  const uploadsLine =
-    ctx.savedUploads.length > 0
-      ? `\n# Archivos recién subidos por el usuario (ya guardados en el workspace)\n${ctx.savedUploads.map((f) => `- ${f}`).join('\n')}\nProcésalos directamente desde esas rutas con Python.`
-      : '';
+   const uploadsLine =
+      ctx.savedUploads.length > 0
+         ? `\n# Archivos recién subidos por el usuario (ya guardados en el workspace)\n${ctx.savedUploads.map((f) => `- ${f}`).join("\n")}\nProcésalos directamente desde esas rutas con Python.`
+         : "";
 
-  const sandboxNote = !ctx.sandboxAvailable
-    ? '\n⚠️ La ejecución de código NO está disponible ahora mismo — dilo si el usuario pide algo que la requiera.'
-    : !ctx.venvAvailable
-      ? '\n⚠️ Solo está disponible la librería estándar de Python (el entorno con openpyxl/docx/etc. no está instalado).'
-      : '';
+   const sandboxNote = !ctx.sandboxAvailable
+      ? "\n⚠️ La ejecución de código NO está disponible ahora mismo — dilo si el usuario pide algo que la requiera."
+      : !ctx.venvAvailable
+        ? "\n⚠️ Solo está disponible la librería estándar de Python (el entorno con openpyxl/docx/etc. no está instalado)."
+        : "";
 
-  return `Eres **ChopperBot** en un **taller privado** de Revolución Z: el canal personal de ${ctx.userTag} (<@${ctx.userId}>) para su escuela y su trabajo. Funciona como un chat de IA completo (tipo web): la persona escribe directo, sin mencionarte, y tú respondes cada mensaje.
+   return `Eres **ChopperBot** en un **taller privado** de Revolución Z: el canal personal de ${ctx.userTag} (<@${ctx.userId}>) para su escuela y su trabajo. Funciona como un chat de IA completo (tipo web): la persona escribe directo, sin mencionarte, y tú respondes cada mensaje.
 
 # Hora actual
 - UTC: ${ctx.now.toISOString()}
-${ctx.channelName ? `- Canal: #${ctx.channelName}` : ''}
+${ctx.channelName ? `- Canal: #${ctx.channelName}` : ""}
 
 # Tu papel
 Asistente de estudio y trabajo: tareas, ensayos, presentaciones, hojas de cálculo, análisis de datos, programación, preparación de exámenes, CVs… Lo que un compa que estudia o chambea necesite. Explica con claridad y al nivel de quien pregunta; en español por defecto (espeja el idioma del usuario).
@@ -86,7 +87,7 @@ Eres un asistente cálido, paciente y profesional — cercano, pero SIEMPRE resp
 
 ${SKILLS_BLOCK}${sandboxNote}
 
-${ctx.summary ? `# Resumen de lo trabajado antes en esta sesión (contexto comprimido)\n${ctx.summary}\n` : ''}
+${ctx.summary ? `# Resumen de lo trabajado antes en esta sesión (contexto comprimido)\n${ctx.summary}\n` : ""}
 # Workspace de la sesión (persiste entre mensajes)
 ${filesBlock}${uploadsLine}
 
@@ -113,31 +114,31 @@ ${filesBlock}${uploadsLine}
 
 /** Intro posted in a freshly created session channel (before the panel pin). */
 export function renderSessionIntro(userId: string): string {
-  return (
-    `¡Hola <@${userId}>! 👋 Este es **tu taller privado** — solo tú (y la moderación) pueden verlo.\n\n` +
-    'Escríbeme directo, sin mencionarme: esto funciona como un chat de IA completo.\n' +
-    '**Puedo, entre otras cosas:**\n' +
-    '- 📊 Crear **Excel** (.xlsx), 📄 **Word** (.docx), 📽️ **PowerPoint** (.pptx) y 📈 gráficas de verdad, listas para descargar\n' +
-    '- 🐍 Ejecutar **código Python** (análisis de datos, mate, automatizaciones)\n' +
-    '- 📎 Procesar archivos que me subas (CSV, TXT, código…)\n' +
-    '- 📚 Explicarte temas, revisar ensayos, preparar exámenes, armar CVs\n\n' +
-    'Los archivos que generemos viven en el workspace de esta sesión y persisten entre mensajes; aunque limpies el chat, quedan reunidos en un mensaje 📁 del canal.\n' +
-    '_Consejo: dime qué estás estudiando o en qué estás chambeando y empezamos._'
-  );
+   return (
+      `¡Hola <@${userId}>! 👋 Este es **tu taller privado** — solo tú (y la moderación) pueden verlo.\n\n` +
+      "Escríbeme directo, sin mencionarme: esto funciona como un chat de IA completo.\n" +
+      "**Puedo, entre otras cosas:**\n" +
+      "- 📊 Crear **Excel** (.xlsx), 📄 **Word** (.docx), 📽️ **PowerPoint** (.pptx) y 📈 gráficas de verdad, listas para descargar\n" +
+      "- 🐍 Ejecutar **código Python** (análisis de datos, mate, automatizaciones)\n" +
+      "- 📎 Procesar archivos que me subas (CSV, TXT, código…)\n" +
+      "- 📚 Explicarte temas, revisar ensayos, preparar exámenes, armar CVs\n\n" +
+      "Los archivos que generemos viven en el workspace de esta sesión y persisten entre mensajes; aunque limpies el chat, quedan reunidos en un mensaje 📁 del canal.\n" +
+      "_Consejo: dime qué estás estudiando o en qué estás chambeando y empezamos._"
+   );
 }
 
 /** The pinned control panel content (buttons ride on the same message). */
 export function renderPanelContent(): string {
-  return (
-    '**Panel de la sesión** — controla tu taller aquí:\n' +
-    '🧹 **Limpiar** borra la conversación y empieza de cero (tus archivos se conservan, reunidos en un mensaje 📁)\n' +
-    '🔒 **Cerrar** elimina este canal cuando ya no lo necesites\n' +
-    'También puedes pedírmelo con palabras ("limpia el chat", "cierra la sesión").'
-  );
+   return (
+      "**Panel de la sesión** — controla tu taller aquí:\n" +
+      "🧹 **Limpiar** borra la conversación y empieza de cero (tus archivos se conservan, reunidos en un mensaje 📁)\n" +
+      "🔒 **Cerrar** elimina este canal cuando ya no lo necesites\n" +
+      'También puedes pedírmelo con palabras ("limpia el chat", "cierra la sesión").'
+   );
 }
 
 function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+   if (n < 1024) return `${n} B`;
+   if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }

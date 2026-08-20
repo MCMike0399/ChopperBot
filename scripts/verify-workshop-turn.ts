@@ -10,48 +10,68 @@
  *
  *   npx tsx scripts/verify-workshop-turn.ts <channelId>
  */
-import { Client, GatewayIntentBits, ChannelType } from 'discord.js';
-import { config } from '../src/config.js';
-import { LiveStatusMessage, composeStatusText } from '../src/discord/status-message.js';
+import { Client, GatewayIntentBits, ChannelType } from "discord.js";
+import { config } from "../src/config.js";
+import {
+   LiveStatusMessage,
+   composeStatusText,
+} from "../src/discord/status-message.js";
 
 const channelId = process.argv[2];
 if (!channelId) {
-  console.error('usage: npx tsx scripts/verify-workshop-turn.ts <channelId>');
-  process.exit(1);
+   console.error("usage: npx tsx scripts/verify-workshop-turn.ts <channelId>");
+   process.exit(1);
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
-client.once('clientReady', async () => {
-  try {
-    const channel = await client.channels.fetch(channelId);
-    if (!channel || channel.type !== ChannelType.GuildText) {
-      throw new Error(`channel ${channelId} is not a text channel`);
-    }
-    const status = new LiveStatusMessage(channel);
+client.once("clientReady", async () => {
+   try {
+      const channel = await client.channels.fetch(channelId);
+      if (!channel || channel.type !== ChannelType.GuildText) {
+         throw new Error(`channel ${channelId} is not a text channel`);
+      }
+      const status = new LiveStatusMessage(channel);
 
-    await status.start(composeStatusText({ phase: 'thinking', step: 0, elapsedMs: 0 }));
-    console.log(status.active ? '✅ status line posted' : '❌ status line FAILED to post');
-    if (!status.active) process.exitCode = 1;
+      await status.start(
+         composeStatusText({ phase: "thinking", step: 0, elapsedMs: 0 }),
+      );
+      console.log(
+         status.active
+            ? "✅ status line posted"
+            : "❌ status line FAILED to post",
+      );
+      if (!status.active) process.exitCode = 1;
 
-    status.update(
-      composeStatusText({ phase: 'tool', toolName: 'workshop_run_python', step: 2, elapsedMs: 42_000 }),
-    );
-    await new Promise((r) => setTimeout(r, 2500));
+      status.update(
+         composeStatusText({
+            phase: "tool",
+            toolName: "workshop_run_python",
+            step: 2,
+            elapsedMs: 42_000,
+         }),
+      );
+      await new Promise((r) => setTimeout(r, 2500));
 
-    const anchor = await status.finishAsReply(['✅ Verificación de entrega (se borra en 3s).']);
-    console.log(anchor ? '✅ reply delivered (status morphed)' : '❌ reply delivery FAILED');
-    if (!anchor) process.exitCode = 1;
+      const anchor = await status.finishAsReply([
+         "✅ Verificación de entrega (se borra en 3s).",
+      ]);
+      console.log(
+         anchor
+            ? "✅ reply delivered (status morphed)"
+            : "❌ reply delivery FAILED",
+      );
+      if (!anchor) process.exitCode = 1;
 
-    await new Promise((r) => setTimeout(r, 3000));
-    await anchor?.delete().catch(() => {});
-    console.log('🧹 limpieza lista');
-  } catch (err) {
-    console.error('FAILED:', err);
-    process.exitCode = 1;
-  } finally {
-    await client.destroy();
-  }
+      await new Promise((r) => setTimeout(r, 3000));
+      await anchor?.delete().catch(() => {});
+      console.log("🧹 limpieza lista");
+   } catch (err) {
+      console.error("FAILED:", err);
+      process.exitCode = 1;
+   } finally {
+      await client.destroy();
+   }
 });
 
 await client.login(config.DISCORD_TOKEN);

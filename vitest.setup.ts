@@ -1,11 +1,11 @@
 // Pre-populate env so `src/config.ts` (which validates at module load) is happy
 // in tests. Using `??=` so a real value (e.g. CI-provided) takes precedence.
 // DISCORD_CHANNEL_ID is optional now (tests may use DISCORD_AUTHORIZED_CHANNELS instead).
-process.env.DISCORD_TOKEN ??= 'test-discord-token';
-process.env.DISCORD_CHANNEL_ID ??= '12345678901234567890';
-process.env.CHOPPERBOT_CONFIG_CHANNEL_ID ??= '12345678901234567899';
-process.env.KIMI_API_KEY ??= 'test-kimi-api-key';
-process.env.KIMI_MODEL_ID ??= 'test-kimi-model';
+process.env.DISCORD_TOKEN ??= "test-discord-token";
+process.env.DISCORD_CHANNEL_ID ??= "12345678901234567890";
+process.env.CHOPPERBOT_CONFIG_CHANNEL_ID ??= "12345678901234567899";
+process.env.KIMI_API_KEY ??= "test-kimi-api-key";
+process.env.KIMI_MODEL_ID ??= "test-kimi-model";
 // Pin the text backend, or the host's real `.env` decides which brain the suite
 // exercises: dotenv can't override the vars set above (override:false), but it
 // DOES fill in any this file leaves unset. The live `.env` carries
@@ -13,14 +13,14 @@ process.env.KIMI_MODEL_ID ??= 'test-kimi-model';
 // re-pointed the "→ Kimi" routing and wire-contract tests at DeepSeek and failed
 // them on the model id. The deepseek resolver is covered directly in
 // src/__tests__/config.test.ts, which sets the var explicitly.
-process.env.LLM_TEXT_BACKEND ??= 'kimi';
-process.env.ACCESS_KEY_ID ??= 'test-access-key-id';
-process.env.SECRET_ACCESS_KEY ??= 'test-secret-access-key';
-process.env.AWS_REGION ??= 'us-east-1';
-process.env.BEDROCK_MODEL_ID ??= 'test-model';
-process.env.BEDROCK_MODEL_LOW ??= 'test-vision-model';
-process.env.MAX_OUTPUT_TOKENS ??= '4096';
-process.env.MAX_TOOL_ITERATIONS ??= '5';
-process.env.LOG_LEVEL ??= 'fatal';
-process.env.MAX_ATTACHMENT_BYTES ??= '10485760';
-process.env.MAX_ATTACHMENT_COUNT ??= '5';
+process.env.LLM_TEXT_BACKEND ??= "kimi";
+process.env.ACCESS_KEY_ID ??= "test-access-key-id";
+process.env.SECRET_ACCESS_KEY ??= "test-secret-access-key";
+process.env.AWS_REGION ??= "us-east-1";
+process.env.BEDROCK_MODEL_ID ??= "test-model";
+process.env.BEDROCK_MODEL_LOW ??= "test-vision-model";
+process.env.MAX_OUTPUT_TOKENS ??= "4096";
+process.env.MAX_TOOL_ITERATIONS ??= "5";
+process.env.LOG_LEVEL ??= "fatal";
+process.env.MAX_ATTACHMENT_BYTES ??= "10485760";
+process.env.MAX_ATTACHMENT_COUNT ??= "5";
