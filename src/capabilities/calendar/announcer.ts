@@ -64,12 +64,6 @@ interface AnnouncePayload {
   content: string;
   allowedMentions: { parse: MentionParseType[]; roles: string[] };
   /**
-   * The linked Discord event's cover image, attached so the announcement looks
-   * like the admins' manual posts (they always paste the flyer). A CDN URL —
-   * discord.js downloads and re-uploads it as a real attachment.
-   */
-  files?: string[];
-  /**
    * Idempotency key for the create (see {@link announceNonce}). With
    * `enforceNonce` Discord returns the message it already made instead of making
    * a second one, so a retried POST can no longer duplicate the @-ping.
@@ -110,7 +104,11 @@ export interface AnnouncementResult {
   discordEventUrl: string | null;
   /** The exact text posted (or that would be posted, in a dry run). */
   text: string;
-  /** Cover image attached to the post (the Discord event's banner), if any. */
+  /**
+   * Cover of the linked Discord event, if any. Reported for logs / dry-run —
+   * not attached to the post. Discord's event-URL embed already shows it, and
+   * attaching the same file duplicated the flyer (live 2026-08-19).
+   */
   imageUrl: string | null;
   posted: boolean;
   messageId: string | null;
@@ -419,7 +417,6 @@ export class CalendarAnnouncer {
         parse: mentions.everyone ? ['everyone'] : [],
         roles: mentions.roleIds,
       },
-      files: result.imageUrl ? [result.imageUrl] : undefined,
       nonce,
       enforceNonce: true,
     });

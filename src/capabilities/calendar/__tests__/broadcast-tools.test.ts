@@ -251,7 +251,7 @@ describe('calendar_draft_announcement', () => {
     expect(p.mentions).toEqual([{ id: ANNOUNCE_ROLE, mention: `<@&${ANNOUNCE_ROLE}>`, name: 'Usuarix' }]);
   });
 
-  test('the Discord event link and flyer ride along when the event is linked', async () => {
+  test('the Discord event link rides along; the flyer is not attached', async () => {
     const ev = createSeries();
     store.setDiscordEventId(ev.id, 'DE1');
     const discordEvent: DiscordScheduledEvent = {
@@ -271,8 +271,12 @@ describe('calendar_draft_announcement', () => {
       channels: ['general'],
     });
     expect(p.has_event_link).toBe(true);
-    expect(p.attaches_flyer).toBe(true);
+    expect(p.attaches_flyer).toBe(false);
     expect(String(p.draft)).toContain('https://discord.com/events/1/DE1');
+
+    await makeSource({ discordEvent }).handle('calendar_send_announcement', { token: String(p.token) });
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.imageUrl).toBeNull();
   });
 
   test('refuses an event that already started well before now', async () => {
