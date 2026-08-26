@@ -199,6 +199,7 @@ export class CalendarCapability implements Capability {
     const source = new CalendarToolSource(store, ctx.userId, ctx.now.getTime(), publisher, {
       syncer: isMod ? syncer : undefined,
       allowedImageUrls: imageAttachments.map((a) => a.url),
+      guildId: guildId ?? undefined,
       // On-demand announcements: mod-only, and only where there's a guild to
       // resolve channels in. The writer is the same `ask()` the daily announcer
       // uses — the community's voice is the whole reason a model writes these.

@@ -1,4 +1,10 @@
-import { ChannelType, PermissionFlagsBits, type Client } from "discord.js";
+import {
+   ChannelType,
+   GuildScheduledEventStatus,
+   PermissionFlagsBits,
+   type Client,
+   type GuildBasedChannel,
+} from "discord.js";
 import { log } from "../../log.js";
 import type {
    ToolHandlerResult,
@@ -30,13 +36,33 @@ export interface DirectoryChannel {
    topic: string | null;
 }
 
+/** A Discord scheduled event the asking member can see (RSVP / "Me interesa"). */
+export interface DirectoryDiscordEvent {
+   id: string;
+   name: string;
+   url: string;
+   startAtMs: number;
+   location: string | null;
+   channelName: string | null;
+   status: "programado" | "en_curso";
+}
+
 export interface ChannelDirectoryProvider {
    /** Channels of the guild the ASKING MEMBER can view. Throws if the member
     * can't be resolved (fail closed). */
    listViewableChannels(): Promise<DirectoryChannel[]>;
+   /**
+    * Instructional text on a channel the member can view (pins + recent bot
+    * embeds: Ticket Tool "Comenzar formulario", etc.). Null if none / hidden.
+    */
+   getChannelInstructions?(channelId: string): Promise<string | null>;
+   /** Upcoming Discord scheduled events the member can see. */
+   listDiscordEvents?(): Promise<DirectoryDiscordEvent[]>;
 }
 
-const TOPIC_MAX = 160;
+const LIST_TOPIC_MAX = 160;
+const INFO_TOPIC_MAX = 800;
+const INSTRUCTIONS_MAX = 500;
 
 const TYPE_LABELS: Partial<Record<ChannelType, DirectoryChannel["type"]>> = {
    [ChannelType.GuildText]: "texto",
@@ -105,13 +131,20 @@ export function groupByCategory(
    }));
 }
 
-function channelPayload(c: DirectoryChannel): Record<string, unknown> {
+function channelPayload(
+   c: DirectoryChannel,
+   topicMax: number = LIST_TOPIC_MAX,
+): Record<string, unknown> {
+   const topic =
+      c.topic && c.topic.length > topicMax
+         ? `${c.topic.slice(0, topicMax)}…`
+         : c.topic;
    return {
       mention: `<#${c.id}>`,
       name: c.name,
       type: c.type,
       category: c.categoryName,
-      ...(c.topic ? { topic: c.topic } : {}),
+      ...(topic ? { topic } : {}),
    };
 }
 
@@ -140,11 +173,10 @@ export function createDiscordDirectoryProvider(
                "topic" in channel && typeof channel.topic === "string"
                   ? channel.topic
                   : null;
-            const topic = topicRaw
-               ? topicRaw.length > TOPIC_MAX
-                  ? `${topicRaw.slice(0, TOPIC_MAX)}…`
-                  : topicRaw
-               : null;
+            const topic =
+               topicRaw && topicRaw.length > INFO_TOPIC_MAX
+                  ? `${topicRaw.slice(0, INFO_TOPIC_MAX)}…`
+                  : topicRaw;
             out.push({
                id: channel.id,
                name: channel.name,
@@ -157,7 +189,117 @@ export function createDiscordDirectoryProvider(
          }
          return out;
       },
+      async getChannelInstructions(channelId: string): Promise<string | null> {
+         const client = getClient();
+         const guild = await client.guilds.fetch(guildId);
+         const member = await guild.members.fetch(userId);
+         const raw = await guild.channels.fetch(channelId).catch(() => null);
+         if (!raw) return null;
+         const channel = raw as GuildBasedChannel;
+         const perms = channel.permissionsFor(member);
+         if (!perms?.has(PermissionFlagsBits.ViewChannel)) return null;
+         return readChannelInstructions(channel);
+      },
+      async listDiscordEvents(): Promise<DirectoryDiscordEvent[]> {
+         const client = getClient();
+         const guild = await client.guilds.fetch(guildId);
+         const member = await guild.members.fetch(userId);
+         const events = await guild.scheduledEvents.fetch();
+         const out: DirectoryDiscordEvent[] = [];
+         for (const e of events.values()) {
+            const status = discordEventStatus(e.status);
+            if (!status) continue;
+            if (e.channelId) {
+               const room =
+                  e.channel ??
+                  guild.channels.cache.get(e.channelId) ??
+                  (await guild.channels.fetch(e.channelId).catch(() => null));
+               const perms = room?.permissionsFor(member);
+               if (!perms?.has(PermissionFlagsBits.ViewChannel)) continue;
+            }
+            out.push({
+               id: e.id,
+               name: e.name,
+               url: `https://discord.com/events/${guildId}/${e.id}`,
+               startAtMs: e.scheduledStartTimestamp ?? 0,
+               location: e.entityMetadata?.location ?? e.channel?.name ?? null,
+               channelName: e.channel?.name ?? null,
+               status,
+            });
+         }
+         return out
+            .filter((ev) => ev.startAtMs > 0)
+            .sort((a, b) => a.startAtMs - b.startAtMs)
+            .slice(0, 15);
+      },
    };
+}
+
+function discordEventStatus(
+   status: GuildScheduledEventStatus,
+): DirectoryDiscordEvent["status"] | null {
+   if (status === GuildScheduledEventStatus.Active) return "en_curso";
+   if (status === GuildScheduledEventStatus.Scheduled) return "programado";
+   return null;
+}
+
+/** Pins + recent bot embeds, as ChopperBot sees them. Best-effort. */
+async function readChannelInstructions(
+   channel: GuildBasedChannel,
+): Promise<string | null> {
+   if (!channel.isTextBased() || !("messages" in channel)) return null;
+   const snippets: string[] = [];
+   const push = (text: string | null | undefined) => {
+      const t = (text ?? "").replace(/\s+/g, " ").trim();
+      if (t && !snippets.includes(t)) snippets.push(t);
+   };
+   try {
+      const messages = (
+         channel as {
+            messages: {
+               fetchPinned?: () => Promise<Map<string, unknown>>;
+               fetch: (o: { limit: number }) => Promise<Map<string, unknown>>;
+            };
+         }
+      ).messages;
+      const pinned = messages.fetchPinned
+         ? await messages.fetchPinned().catch(() => new Map())
+         : new Map();
+      for (const raw of pinned.values()) collectEmbedText(raw, push);
+      const recent = await messages.fetch({ limit: 12 });
+      for (const raw of recent.values()) {
+         const m = raw as { author?: { bot?: boolean } };
+         if (!m.author?.bot) continue;
+         collectEmbedText(raw, push);
+      }
+   } catch {
+      return snippets.length > 0
+         ? snippets.join(" ").slice(0, INSTRUCTIONS_MAX)
+         : null;
+   }
+   if (snippets.length === 0) return null;
+   const joined = snippets.join(" — ");
+   return joined.length > INSTRUCTIONS_MAX
+      ? `${joined.slice(0, INSTRUCTIONS_MAX)}…`
+      : joined;
+}
+
+function collectEmbedText(
+   raw: unknown,
+   push: (text: string | null | undefined) => void,
+): void {
+   const m = raw as {
+      content?: string;
+      embeds?: Array<{
+         title?: string | null;
+         description?: string | null;
+      }>;
+   };
+   if (m.content) push(m.content);
+   for (const e of m.embeds ?? []) {
+      push(e.title);
+      push(e.description);
+   }
 }
 
 export class ServerDirectoryToolSource implements ToolSource {
@@ -180,7 +322,7 @@ export class ServerDirectoryToolSource implements ToolSource {
          {
             name: "server_channel_info",
             description:
-               'Detalles de UN canal del servidor: tema/descripción, categoría y tipo. `channel` acepta una mención <#id>, un id, o el nombre (aproximado). Si responde "no existe o no puedes verlo", trátalo como que el canal no existe para esa persona.',
+               'Detalles EN VIVO de UN canal: tema real (lo que está escrito en Discord), categoría, tipo, e instrucciones del bot del canal si las hay (p. ej. "Comenzar formulario" vs "Crear Ticket"). `channel` acepta <#id>, id, o nombre. Si el tema dice que el canal es para denuncias, NO lo uses para eventos. Si responde "no existe o no puedes verlo", trátalo como que no existe para esa persona.',
             inputSchema: {
                type: "object",
                properties: {
@@ -192,11 +334,37 @@ export class ServerDirectoryToolSource implements ToolSource {
                required: ["channel"],
             },
          },
+         {
+            name: "server_list_discord_events",
+            description:
+               'Eventos de Discord EN VIVO (la pestaña Eventos del servidor, a los que se les da "Me interesa"). Úsalo para "dónde reservo", "cómo me apunto", "cuál es el link del evento". Cada uno trae `url`. Los eventos son abiertos: este enlace ES la reserva, no un ticket. Solo lista los que la persona puede ver.',
+            inputSchema: { type: "object", properties: {} },
+         },
       ];
    }
 
    async handle(toolName: string, input: unknown): Promise<ToolHandlerResult> {
       try {
+         if (toolName === "server_list_discord_events") {
+            const events = this.provider.listDiscordEvents
+               ? await this.provider.listDiscordEvents()
+               : [];
+            return {
+               status: "success",
+               payload: {
+                  total: events.length,
+                  note: "Estos son los Eventos de Discord para apuntarse. Asistir es abierto: no hace falta ticket.",
+                  events: events.map((e) => ({
+                     name: e.name,
+                     url: e.url,
+                     status: e.status,
+                     start_at_iso: new Date(e.startAtMs).toISOString(),
+                     ...(e.channelName ? { sala: e.channelName } : {}),
+                     ...(e.location ? { location: e.location } : {}),
+                  })),
+               },
+            };
+         }
          const channels = await this.provider.listViewableChannels();
          switch (toolName) {
             case "server_list_channels": {
@@ -219,11 +387,17 @@ export class ServerDirectoryToolSource implements ToolSource {
                      payload: { error: "Falta `channel`." },
                   };
                const { match, candidates } = findChannel(channels, query);
-               if (match)
-                  return {
-                     status: "success",
-                     payload: { channel: channelPayload(match) },
+               if (match) {
+                  const payload: Record<string, unknown> = {
+                     channel: channelPayload(match, INFO_TOPIC_MAX),
                   };
+                  if (this.provider.getChannelInstructions) {
+                     const instructions =
+                        await this.provider.getChannelInstructions(match.id);
+                     if (instructions) payload.instructions = instructions;
+                  }
+                  return { status: "success", payload };
+               }
                if (candidates && candidates.length > 0) {
                   return {
                      status: "success",

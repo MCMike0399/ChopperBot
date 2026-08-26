@@ -14,6 +14,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.27.0 — 2026-08-25
+
+🎟️ **Los eventos son pa todxs — ya no te mando a ticket**
+
+Me equivoqué feo: dije que para ir a un evento había que abrir ticket y pedir un pase. Eso es mentira. Los eventos son abiertos, sin reserva: caes a la sala o le das "Me interesa" al evento de Discord.
+
+El ticket es pa denuncias, apelaciones y soporte técnico. Si quieres **proponer** un círculo o actividad nueva, el formulario está en 📋│formulario-circulos — no en 📮│ticket.
+
+Ahora sí leo los temas de esos canales y la pestaña Eventos antes de inventarme un trámite.
+
+---
+
 ## 1.26.2 — 2026-08-25
 
 🗣️ **El español más limpio**
