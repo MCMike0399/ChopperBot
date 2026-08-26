@@ -14,8 +14,7 @@ import {
   untilFromCount,
   type RecurrenceFreq,
 } from './recurrence.js';
-import { localParts } from './grid.js';
-import { formatInTimezone } from './time.js';
+import { formatInTimezone, localDateKey, relativeLocalDay } from './time.js';
 import type { CalendarPublisher, PublishSummary } from './publisher.js';
 import type { DiscordEventSyncer, DiscordScheduledEvent } from './discord-events.js';
 import type { AnnounceTarget } from './announce.js';
@@ -155,7 +154,7 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_list_upcoming',
         description:
-          'List the next N events on the shared server calendar, ordered by start time. Use for "qué eventos vienen", "what\'s coming up".',
+          'List the next N events on the shared server calendar, ordered by start time. Use for "qué eventos vienen", "what\'s coming up". Each event includes `when` (`today`/`tomorrow`/`later`) relative to the current CDMX date and `start_at_local` — use those to answer hoy/mañana; do not recompute from `start_at_iso` (an 8pm CDMX event is the next calendar day in UTC).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -422,7 +421,7 @@ export class CalendarToolSource implements ToolSource {
           const limit = clampInt(obj.limit, 1, 25, 10);
           const rows = this.store.listUpcoming(this.nowMs, limit);
           log.info({ tool: toolName, count: rows.length, ms: Date.now() - t0 }, 'tool_call');
-          return { status: 'success', payload: { events: rows.map(serialize) } };
+          return { status: 'success', payload: { events: rows.map((e) => serialize(e, this.nowMs)) } };
         }
         case 'calendar_search_events': {
           // Tolerant: "*" or empty means "list everything in range" (the store
@@ -433,7 +432,7 @@ export class CalendarToolSource implements ToolSource {
           const limit = clampInt(obj.limit, 1, 25, 10);
           const rows = this.store.search(query, fromMs, toMs, limit);
           log.info({ tool: toolName, query, count: rows.length, ms: Date.now() - t0 }, 'tool_call');
-          return { status: 'success', payload: { events: rows.map(serialize) } };
+          return { status: 'success', payload: { events: rows.map((e) => serialize(e, this.nowMs)) } };
         }
         case 'calendar_get_event': {
           const id = asPositiveInt(obj.id, 'id');
@@ -1221,13 +1220,15 @@ function describeProblem(r: ChannelResolution): Record<string, unknown> {
   };
 }
 
-function serialize(e: CalendarOccurrence) {
+function serialize(e: CalendarOccurrence, nowMs: number) {
   return {
     id: e.id,
     title: e.title,
     description: e.description,
     start_at_iso: new Date(e.start_at).toISOString(),
     start_at_local: formatInTimezone(e.start_at),
+    local_date: localDateKey(e.start_at),
+    when: relativeLocalDay(e.start_at, nowMs),
     end_at_iso: e.end_at !== null ? new Date(e.end_at).toISOString() : null,
     end_at_local: e.end_at !== null ? formatInTimezone(e.end_at) : null,
     location: e.location,
@@ -1389,11 +1390,6 @@ function parseScope(v: unknown): Scope {
   return v === 'occurrence' || v === 'following' ? v : 'series';
 }
 
-/** Local YYYY-MM-DD for a UTC ms (CDMX wall clock). */
-function localDateKey(utcMs: number): string {
-  const p = localParts(utcMs);
-  return `${p.year}-${String(p.month).padStart(2, '0')}-${String(p.day).padStart(2, '0')}`;
-}
 
 /**
  * The local date the user means: a bare "YYYY-MM-DD" is taken as that LOCAL
