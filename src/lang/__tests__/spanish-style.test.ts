@@ -236,6 +236,36 @@ describe("orthography", () => {
    });
 });
 
+describe("spanglish", () => {
+   test("the live #general reply trips the hyphenated English suffix", () => {
+      const reply = DEEPSEEK_REGRESSIONS.find(
+         (r) => r.id === "1541988518379921459",
+      );
+      expect(reply).toBeDefined();
+      const findings = lintSpanish(reply!.text);
+      expect(findings.map((f) => f.rule)).toContain("spanglish");
+      expect(findings.find((f) => f.rule === "spanglish")?.match).toBe(
+         "emoción-ed",
+      );
+   });
+
+   test.each(["Estoy emoción-ed, jaja.", "Salí emocioned."])(
+      "%j is flagged",
+      (text) => {
+         expect(rules(text)).toContain("spanglish");
+      },
+   );
+
+   test.each([
+      "Estoy emocionado, jaja.",
+      "Suena que va a estar buenísimo.",
+      "El e-mail llegó.",
+      "Haz copy-paste del enlace.",
+   ])("%j stays clean", (text) => {
+      expect(lintSpanish(text)).toEqual([]);
+   });
+});
+
 describe("describeFindings", () => {
    test("renders rule and snippet for the journal", () => {
       expect(describeFindings(lintSpanish("¿Desea que lo cree?"))).toBe(

@@ -450,13 +450,13 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
     ).events;
     expect(events[0]).toMatchObject({
       title: 'Cooperativas en la praxis',
-      when: 'today',
+      when: 'hoy',
       local_date: '2026-08-25',
       start_at_iso: '2026-08-26T02:00:00.000Z',
     });
     expect(events[1]).toMatchObject({
       title: 'Julio Cortázar | Club de poesía',
-      when: 'tomorrow',
+      when: 'mañana',
       local_date: '2026-08-26',
     });
     memory.close();

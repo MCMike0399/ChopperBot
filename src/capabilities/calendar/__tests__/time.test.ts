@@ -47,15 +47,15 @@ describe('localDateKey / relativeLocalDay', () => {
   test('an 8pm CDMX event is still today even though start_at_iso is the next UTC date', () => {
     expect(localDateKey(noonTue)).toBe('2026-08-25');
     expect(localDateKey(coop8pm)).toBe('2026-08-25');
-    expect(relativeLocalDay(coop8pm, noonTue)).toBe('today');
-    expect(relativeLocalDay(poetry8pm, noonTue)).toBe('tomorrow');
+    expect(relativeLocalDay(coop8pm, noonTue)).toBe('hoy');
+    expect(relativeLocalDay(poetry8pm, noonTue)).toBe('mañana');
   });
 
   test('evening CDMX is still today when UTC has already rolled to the next date', () => {
     // 7:00 PM CDMX Tue 25 = 01:00Z Wed 26.
     const sevenPm = Date.parse('2026-08-26T01:00:00Z');
     expect(localDateKey(sevenPm)).toBe('2026-08-25');
-    expect(relativeLocalDay(coop8pm, sevenPm)).toBe('today');
+    expect(relativeLocalDay(coop8pm, sevenPm)).toBe('hoy');
   });
 });
 

@@ -153,6 +153,7 @@ describe("the contract and the linter say the same thing", () => {
       expect(SPANISH_VOICE_RULES).toContain("calendar_create_event");
       expect(SPANISH_VOICE_RULES).toContain("¿algo más?");
       expect(SPANISH_VOICE_RULES).toContain("proponlo");
+      expect(SPANISH_VOICE_RULES).toContain("emoción-ed");
    });
 
    test("the examples the block gives as CORRECT are lint-clean", () => {
@@ -178,6 +179,7 @@ describe("the contract and the linter say the same thing", () => {
          "propónlo",
          "¿algo más?",
          "quedo atento",
+         "emoción-ed",
       ]) {
          expect(lintSpanish(`Listo. ${bad}`).length, bad).toBeGreaterThan(0);
       }

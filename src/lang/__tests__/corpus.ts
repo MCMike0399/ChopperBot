@@ -104,8 +104,9 @@ A darle con todo al evento.`,
 ];
 
 /**
- * DeepSeek era (from 2026-08-13 15:15 CST). Both replies were flagged by the
- * user the same evening as "the quality has worsened a lot in Spanish".
+ * DeepSeek era (from 2026-08-13 15:15 CST). The first two replies were flagged
+ * the same evening as "the quality has worsened a lot in Spanish"; the third
+ * is the 2026-08-25 #general "emoción-ed" turn.
  */
 export const DEEPSEEK_REGRESSIONS: readonly CorpusReply[] = [
    {
@@ -140,5 +141,13 @@ export const DEEPSEEK_REGRESSIONS: readonly CorpusReply[] = [
 Y un tip importante: si es una **actividad que ya existe como serie** (club de cine, club de poesía…), no se crea un evento nuevo — solo se avisa el tema de la semana: *"esta semana vemos Persepolis"* o *"el jueves toca X"*, y yo lo pongo en la sesión correcta sin duplicar nada.
 
 Si le hace falta algo, le pregunto UNA cosa a la vez y listo. ¿Se lo resumo también por acá en un mensaje para elx?`,
+   },
+   {
+      id: "1541988518379921459",
+      at: "2026-08-26T01:51Z",
+      backend: "deepseek",
+      text: `Estoy **emoción-ed**, jaja. 🔥 Hoy martes a las 8pm está **"Cooperativas en la praxis"** con Yeti en la Sala de eventos. ¡No me digas que no has reservado tu lugar! 😄
+
+Suena va a estar buenísimo — de teoría económica aplicada, de esas que luego luego se bajan a la práctica. ¿Tú já la tenías agendada o te acabo de enterar? 👀`,
    },
 ];

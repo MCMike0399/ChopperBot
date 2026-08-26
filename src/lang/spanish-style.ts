@@ -32,7 +32,8 @@ export type SpanishStyleRuleId =
    | "inclusive_malformed"
    | "scaffolding"
    | "service_closer"
-   | "enclitic_accent";
+   | "enclitic_accent"
+   | "spanglish";
 
 export interface SpanishStyleFinding {
    rule: SpanishStyleRuleId;
@@ -164,6 +165,20 @@ const ENCLITIC_ACCENT_PATTERNS: ReadonlyArray<RegExp> = [
    /\b(?:pón|ház|dí|vé|dá|tén|vén|sál)(?:lo|la|los|las|le|les|me|te|nos|se)\b/gi,
 ];
 
+/**
+ * Spanglish morphology — English suffixes glued onto a Spanish stem, with or
+ * without a hyphen. Live 2026-08-25 in #general: "Estoy **emoción-ed**, jaja"
+ * (message 1541988518379921459). "copy-paste" / "e-mail" do not match: those
+ * are English+English or a single letter + English, not a Spanish stem + -ed.
+ *
+ * Deliberately does NOT flag Portuguese "já" (a real word) even though the
+ * same reply also had "Tú já la tenías" as a misspelling of "ya".
+ */
+const SPANGLISH_PATTERNS: ReadonlyArray<RegExp> = [
+   /(?<![a-záéíóúüñA-ZÁÉÍÓÚÜÑ])[a-záéíóúüñA-ZÁÉÍÓÚÜÑ]{3,}-(?:ed|ing|er|ly)\b/gi,
+   /(?<![a-záéíóúüñA-ZÁÉÍÓÚÜÑ])emoci[oó]ned\b/gi,
+];
+
 const WHY: Record<SpanishStyleRuleId, string> = {
    usted: "usted register — the server tutea",
    mixed_register: "tú and usted mixed in the same reply",
@@ -172,6 +187,7 @@ const WHY: Record<SpanishStyleRuleId, string> = {
    scaffolding: "internal prompt vocabulary reached the reply",
    service_closer: "customer-service closer",
    enclitic_accent: "enclitic accent misspelling",
+   spanglish: "English suffix glued onto a Spanish word (emoción-ed)",
 };
 
 function collect(
@@ -233,6 +249,7 @@ export function lintSpanish(
 
    collect("service_closer", prose, SERVICE_CLOSER_PATTERNS, findings, seen);
    collect("enclitic_accent", prose, ENCLITIC_ACCENT_PATTERNS, findings, seen);
+   collect("spanglish", prose, SPANGLISH_PATTERNS, findings, seen);
 
    return findings;
 }
