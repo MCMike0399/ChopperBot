@@ -5,7 +5,7 @@ import type { ParsedForm } from "./parse.js";
 /**
  * System prompts for the ticket-intake flow. Both inject the parsed form and
  * the shared "Conciencia temporal" block (so day/time resolve exactly like the
- * calendar capability). The form MUST be injected here — `buildHistory` stops
+ * calendar capability and general_chat). The form MUST be injected here — `buildHistory` stops
  * the reply-chain walk at the foreign ticket-bot message, so the model never
  * sees the raw form through history.
  */

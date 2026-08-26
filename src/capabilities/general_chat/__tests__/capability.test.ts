@@ -226,6 +226,18 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       h.memory.close();
    });
 
+   test("RevZ prompt names today's CDMX date so 'mañana' is not computed from UTC-6", async () => {
+      // NOW = 2026-05-23T18:00:00Z = sábado 23 mayo, 12:00 CDMX.
+      const h = await buildHarness();
+      const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+      expect(turn.system).toContain("Hoy es");
+      expect(turn.system).toContain("`2026-05-23`");
+      expect(turn.system).toContain("`2026-05-24`");
+      expect(turn.system.toLowerCase()).toContain("sábado");
+      expect(turn.system).toContain("when");
+      h.memory.close();
+   });
+
    test("RevZ turns get the read-only calendar tools + the live channel directory, nothing else", async () => {
       const h = await buildHarness();
       const turn = await callBuildTurn(h, REVZ_GUILD_ID);

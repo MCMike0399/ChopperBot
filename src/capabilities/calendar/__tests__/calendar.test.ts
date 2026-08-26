@@ -28,6 +28,7 @@ const { ask } = await import('../../../llm/client.js');
 const { SqliteMemoryStore, NamespacedMemory } = await import('../../../memory/store.js');
 const { CalendarCapability } = await import('../capability.js');
 const { CalendarStore, CALENDAR_MIGRATIONS } = await import('../store.js');
+const { CalendarToolSource } = await import('../source.js');
 import type { Turn } from '../../../discord/history.js';
 
 /** A migrated store with NO capability seeding (so settings start empty). */
@@ -420,6 +421,44 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
 
     const payload = JSON.parse(findToolMessage(1, 'l1').content) as { events: Array<{ title: string }> };
     expect(payload.events.map((e) => e.title)).toEqual(['Standup', 'Taller']);
+    memory.close();
+  });
+
+  test('list_upcoming labels an 8pm CDMX event as today even though start_at_iso is the next UTC day', async () => {
+    // Live 2026-08-25 11:14 CDMX in #general: Cooperativas is Tue 25 8pm
+    // (= 2026-08-26T02:00:00Z). Without `when`, the model treated UTC-6 as
+    // "subtract a day" and answered "mañana (martes 25)".
+    const { store, memory } = await newCapability();
+    const nowMs = Date.parse('2026-08-25T17:14:00Z');
+    store.create({
+      created_by: 'MOD_1',
+      title: 'Cooperativas en la praxis',
+      start_at: Date.parse('2026-08-26T02:00:00Z'),
+    });
+    store.create({
+      created_by: 'MOD_1',
+      title: 'Julio Cortázar | Club de poesía',
+      start_at: Date.parse('2026-08-27T02:00:00Z'),
+    });
+    const src = new CalendarToolSource(store, 'U1', nowMs);
+    const result = await src.handle('calendar_list_upcoming', { limit: 10 });
+    expect(result.status).toBe('success');
+    const events = (
+      result.payload as {
+        events: Array<{ title: string; when: string; local_date: string; start_at_iso: string }>;
+      }
+    ).events;
+    expect(events[0]).toMatchObject({
+      title: 'Cooperativas en la praxis',
+      when: 'today',
+      local_date: '2026-08-25',
+      start_at_iso: '2026-08-26T02:00:00.000Z',
+    });
+    expect(events[1]).toMatchObject({
+      title: 'Julio Cortázar | Club de poesía',
+      when: 'tomorrow',
+      local_date: '2026-08-26',
+    });
     memory.close();
   });
 

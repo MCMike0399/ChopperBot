@@ -128,7 +128,7 @@ const INVENTED_PRONOUNS =
  */
 const SCAFFOLDING_PATTERNS: ReadonlyArray<RegExp> = [
    /\b(?:calendar|workshop|server|config|configuration|instagram|ig|event|file|memory|user)_[a-z0-9_]+\b/g,
-   /\b(?:start_at_iso|start_at_local|occurrence_date_iso|occurrence_count|occurrence_index|recurrence_freq|recurrence_count|recurrence_until_iso|recurrence_until_local|recurrence_open_ended|updated_scope|deleted_scope|discord_event_id|image_url|venue_kind|venue_name|needs_room|missing_permission|no_output_channel)\b/g,
+   /\b(?:start_at_iso|start_at_local|local_date|occurrence_date_iso|occurrence_count|occurrence_index|recurrence_freq|recurrence_count|recurrence_until_iso|recurrence_until_local|recurrence_open_ended|updated_scope|deleted_scope|discord_event_id|image_url|venue_kind|venue_name|needs_room|missing_permission|no_output_channel)\b/g,
    /\b(?:NUNCA|SIEMPRE|JAMÁS|JAMAS|IMPORTANTE|OBLIGATORIO|REQUERIDO|OPCIONAL|MÍNIMO|MINIMO|UNA|SOLO|SÓLO|TODOS|ANTES)\b/g,
    /\b(?:mis instrucciones|mi prompt|el system prompt|mis reglas internas|se me indicó|mi configuración me|como modelo de lenguaje|como IA)\b/gi,
 ];

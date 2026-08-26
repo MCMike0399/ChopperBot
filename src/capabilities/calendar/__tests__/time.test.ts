@@ -1,5 +1,10 @@
 import { describe, test, expect } from 'vitest';
-import { formatInTimezone } from '../time.js';
+import {
+  formatInTimezone,
+  localDateKey,
+  relativeLocalDay,
+  renderTemporalAwareness,
+} from '../time.js';
 
 describe('formatInTimezone', () => {
   test('renders Mexico City time at UTC-6 even during US DST', () => {
@@ -28,5 +33,51 @@ describe('formatInTimezone', () => {
     const s = formatInTimezone(ms, 'America/New_York');
     expect(s).toContain('12:00');
     expect(s).toContain('PM');
+  });
+});
+
+describe('localDateKey / relativeLocalDay', () => {
+  // Live 2026-08-25 11:14 CDMX (Tue): UTC is already 17:14 the SAME calendar day.
+  const noonTue = Date.parse('2026-08-25T17:14:00Z');
+  // Cooperativas en la praxis — 8:00 PM CDMX Tue 25 = 02:00Z Wed 26.
+  const coop8pm = Date.parse('2026-08-26T02:00:00Z');
+  // Club de poesía Cortázar — 8:00 PM CDMX Wed 26.
+  const poetry8pm = Date.parse('2026-08-27T02:00:00Z');
+
+  test('an 8pm CDMX event is still today even though start_at_iso is the next UTC date', () => {
+    expect(localDateKey(noonTue)).toBe('2026-08-25');
+    expect(localDateKey(coop8pm)).toBe('2026-08-25');
+    expect(relativeLocalDay(coop8pm, noonTue)).toBe('today');
+    expect(relativeLocalDay(poetry8pm, noonTue)).toBe('tomorrow');
+  });
+
+  test('evening CDMX is still today when UTC has already rolled to the next date', () => {
+    // 7:00 PM CDMX Tue 25 = 01:00Z Wed 26.
+    const sevenPm = Date.parse('2026-08-26T01:00:00Z');
+    expect(localDateKey(sevenPm)).toBe('2026-08-25');
+    expect(relativeLocalDay(coop8pm, sevenPm)).toBe('today');
+  });
+});
+
+describe('renderTemporalAwareness', () => {
+  test('names hoy/mañana by local date, not UTC-6-minus-a-day (live 2026-08-25 #general)', () => {
+    // 11:14 AM CDMX Tuesday 25 — the UTC timestamp is 17:14 the same day, so a
+    // model that "subtracts a day because UTC-6" would call today Monday 24.
+    const block = renderTemporalAwareness(new Date('2026-08-25T17:14:00Z'));
+    expect(block).toContain('2026-08-25T17:14:00.000Z');
+    expect(block).toMatch(/\*\*Hoy es .+\*\* \(fecha local `2026-08-25`\)/);
+    expect(block).toMatch(/\*\*Mañana es .+\*\* \(`2026-08-26`\)/);
+    expect(block).toMatch(/Ayer fue .+\(`2026-08-24`\)/);
+    expect(block.toLowerCase()).toContain('martes');
+    expect(block.toLowerCase()).toContain('miércoles');
+    expect(block).not.toMatch(/\*\*Hoy es .*\(`2026-08-24`\)/);
+  });
+
+  test('an evening UTC date still prints the previous local weekday', () => {
+    // 8:00 PM CDMX Tue 25 = 02:00Z Wed 26. UTC date is Wednesday; local is Tuesday.
+    const block = renderTemporalAwareness(new Date('2026-08-26T02:00:00Z'));
+    expect(block).toContain('`2026-08-25`');
+    expect(block.toLowerCase()).toContain('martes');
+    expect(block).toMatch(/\*\*Mañana es .*\(`2026-08-26`\)/);
   });
 });

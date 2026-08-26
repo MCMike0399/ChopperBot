@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.26.1 — 2026-08-25
+
+🗓️ **Ya no me equivoco del día**
+
+Si me preguntan "qué hay mañana" o "qué hay hoy" en el chat, ahora sí uso el día de acá (hora de México) y no me lío restando horas. Hoy es hoy, mañana es mañana — sin decirte que el evento de esta noche es mañana.
+
+---
+
 ## 1.26.0 — 2026-08-20
 
 🛡️ **En el chat general ahora sí reviso los videos**
