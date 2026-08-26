@@ -35,6 +35,7 @@ const GENERAL_CHANNEL_ID = "1437237844966899742";
 
 const PROBES = [
    "cuéntame del servidor, dónde puedo ver los eventos de la semana y dónde puedo votar para las peliculas que veremos",
+   "dónde reservo para el evento de hoy",
    "¿cómo agendo un evento en el calendario?",
    "jajaja eres un agente verdad",
 ];
@@ -88,7 +89,9 @@ async function main(): Promise<void> {
       const turn = await generalCap.buildTurn({
          channelId: GENERAL_CHANNEL_ID,
          guildId: REVZ_GUILD_ID,
-         userId: "verify-script",
+         // Real member snowflake: directory/how-to tools fetch this user to
+         // filter visibility. A fake id like "verify-script" 400s Discord.
+         userId: "187289179871248384",
          userTag: "verify#0000",
          now: new Date(),
       });

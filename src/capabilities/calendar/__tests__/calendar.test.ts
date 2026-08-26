@@ -462,6 +462,26 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
     memory.close();
   });
 
+  test('list_upcoming mints discord_event_url when guildId is set', async () => {
+    const { store, memory } = await newCapability();
+    const nowMs = Date.parse('2026-08-25T17:14:00Z');
+    const created = store.create({
+      created_by: 'MOD_1',
+      title: 'Cooperativas en la praxis',
+      start_at: Date.parse('2026-08-26T02:00:00Z'),
+    });
+    store.setDiscordEventId(created.id, '1537954664698617966');
+    const src = new CalendarToolSource(store, 'U1', nowMs, undefined, {
+      guildId: '1435843683541979248',
+    });
+    const result = await src.handle('calendar_list_upcoming', { limit: 5 });
+    const events = (result.payload as { events: Array<{ discord_event_url?: string }> }).events;
+    expect(events[0]!.discord_event_url).toBe(
+      'https://discord.com/events/1435843683541979248/1537954664698617966',
+    );
+    memory.close();
+  });
+
   test('any mod can delete any event; delete echoes the deleted event', async () => {
     const { cap, store, memory } = await newCapability();
     const created = store.create({ created_by: 'MOD_1', title: 'Lunch', start_at: NOW.getTime() + 60_000 });

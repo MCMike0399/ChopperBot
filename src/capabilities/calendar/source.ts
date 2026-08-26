@@ -117,6 +117,11 @@ export interface CalendarToolSourceOptions {
   getDiscordEvent?: (discordEventId: string) => Promise<DiscordScheduledEvent | null>;
   /** Channel the mod is talking in — scopes the "sí, publícalo" draft lookup. */
   sourceChannelId?: string;
+  /**
+   * Guild id used to mint `discord.com/events/<guild>/<id>` RSVP links on
+   * list/search/get payloads. Absent → `discord_event_url` is omitted (tests).
+   */
+  guildId?: string;
 }
 
 export class CalendarToolSource implements ToolSource {
@@ -154,7 +159,7 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_list_upcoming',
         description:
-          'List the next N events on the shared server calendar, ordered by start time. Use for "qué eventos vienen", "what\'s coming up". Each event includes `when` (`hoy`/`mañana`/`después`) relative to the current CDMX date and `start_at_local` — use those to answer hoy/mañana; do not recompute from `start_at_iso` (an 8pm CDMX event is the next calendar day in UTC).',
+          'List the next N events on the shared server calendar, ordered by start time. Use for "qué eventos vienen", "what\'s coming up", "dónde reservo / cómo me apunto". Each event includes `when` (`hoy`/`mañana`/`después`) relative to the current CDMX date, `start_at_local`, and `discord_event_url` when there is a Discord Eventos RSVP link — use those to answer hoy/mañana/apuntarse; do not recompute from `start_at_iso` (an 8pm CDMX event is the next calendar day in UTC).',
         inputSchema: {
           type: 'object',
           properties: {
@@ -421,7 +426,7 @@ export class CalendarToolSource implements ToolSource {
           const limit = clampInt(obj.limit, 1, 25, 10);
           const rows = this.store.listUpcoming(this.nowMs, limit);
           log.info({ tool: toolName, count: rows.length, ms: Date.now() - t0 }, 'tool_call');
-          return { status: 'success', payload: { events: rows.map((e) => serialize(e, this.nowMs)) } };
+          return { status: 'success', payload: { events: rows.map((e) => serialize(e, this.nowMs, this.options.guildId)) } };
         }
         case 'calendar_search_events': {
           // Tolerant: "*" or empty means "list everything in range" (the store
@@ -432,13 +437,13 @@ export class CalendarToolSource implements ToolSource {
           const limit = clampInt(obj.limit, 1, 25, 10);
           const rows = this.store.search(query, fromMs, toMs, limit);
           log.info({ tool: toolName, query, count: rows.length, ms: Date.now() - t0 }, 'tool_call');
-          return { status: 'success', payload: { events: rows.map((e) => serialize(e, this.nowMs)) } };
+          return { status: 'success', payload: { events: rows.map((e) => serialize(e, this.nowMs, this.options.guildId)) } };
         }
         case 'calendar_get_event': {
           const id = asPositiveInt(obj.id, 'id');
           const row = this.store.get(id);
           if (!row) return { status: 'error', payload: { error: `Event #${id} not found.` } };
-          return { status: 'success', payload: { event: serializeMaster(row) } };
+          return { status: 'success', payload: { event: serializeMaster(row, this.options.guildId) } };
         }
         case 'calendar_create_event':
           return await this.handleCreate(obj, t0);
@@ -1220,7 +1225,13 @@ function describeProblem(r: ChannelResolution): Record<string, unknown> {
   };
 }
 
-function serialize(e: CalendarOccurrence, nowMs: number) {
+function discordEventUrl(guildId: string | undefined, eventId: string | null): string | null {
+  if (!guildId || !eventId) return null;
+  return `https://discord.com/events/${guildId}/${eventId}`;
+}
+
+function serialize(e: CalendarOccurrence, nowMs: number, guildId?: string) {
+  const rsvp = discordEventUrl(guildId, e.discord_event_id);
   return {
     id: e.id,
     title: e.title,
@@ -1242,13 +1253,15 @@ function serialize(e: CalendarOccurrence, nowMs: number) {
     created_by: e.created_by,
     /** Set when this event already has a Discord scheduled event to RSVP to. */
     discord_event_id: e.discord_event_id,
+    ...(rsvp ? { discord_event_url: rsvp } : {}),
   };
 }
 
-function serializeMaster(e: CalendarEvent) {
+function serializeMaster(e: CalendarEvent, guildId?: string) {
   const occurrenceCount = e.recurrence_freq !== null
     ? countOccurrencesUntil(e.start_at, e.recurrence_freq, e.recurrence_until)
     : 1;
+  const rsvp = discordEventUrl(guildId, e.discord_event_id);
   return {
     id: e.id,
     title: e.title,
@@ -1268,6 +1281,7 @@ function serializeMaster(e: CalendarEvent) {
     recurrence_open_ended: e.recurrence_freq !== null && e.recurrence_until === null,
     /** Set when this event already has a Discord scheduled event to RSVP to. */
     discord_event_id: e.discord_event_id,
+    ...(rsvp ? { discord_event_url: rsvp } : {}),
     created_by: e.created_by,
     created_at_iso: new Date(e.created_at).toISOString(),
   };

@@ -226,6 +226,39 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       h.memory.close();
    });
 
+   test("RevZ prompt says events are open and tickets are not the event door (live 2026-08-25)", async () => {
+      // Lugek asked "donde reservo we" and the bot sent them to #ticket for a
+      // "pase". The primer + prompt had told it tickets were how you propose
+      // (and by extension attend) events. Both must stay false.
+      const h = await buildHarness();
+      const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+      expect(turn.system).toContain("1525358955751276544");
+      expect(turn.system).toMatch(/abierto y gratis/i);
+      expect(turn.system).toContain("Eventos ≠ tickets");
+      expect(turn.system).not.toContain("propuestas de evento");
+      expect(turn.system).not.toContain(
+         "agendar un evento se propone abriendo ticket",
+      );
+      expect(turn.system).not.toMatch(
+         /abren un ticket en <#1436255397265670195>/,
+      );
+      h.memory.close();
+   });
+
+   test("event_intake is omitted from the RevZ assistant snapshot", async () => {
+      const h = await buildHarness();
+      h.registry.register(
+         new StubCapability(
+            "event_intake",
+            "Recibe solicitudes de eventos por tickets.",
+         ),
+      );
+      const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+      expect(turn.system).not.toContain("**event_intake**");
+      expect(turn.system).not.toContain("solicitudes de eventos por tickets");
+      h.memory.close();
+   });
+
    test("RevZ prompt names today's CDMX date so 'mañana' is not computed from UTC-6", async () => {
       // NOW = 2026-05-23T18:00:00Z = sábado 23 mayo, 12:00 CDMX.
       const h = await buildHarness();
@@ -247,6 +280,7 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
          "calendar_search_events",
          "server_channel_info",
          "server_list_channels",
+         "server_list_discord_events",
       ]);
       h.memory.close();
    });

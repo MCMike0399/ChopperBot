@@ -23,6 +23,7 @@ import {
    createDiscordDirectoryProvider,
    ServerDirectoryToolSource,
 } from "./server-tools.js";
+import { loadHowToBlock } from "./howto.js";
 
 /** Read-only calendar tools the assistant gets in guilds with a profile, so
  * "¿qué eventos hay esta semana?" is answerable from any channel. Writes stay
@@ -103,10 +104,12 @@ export class GeneralChatCapability implements Capability {
                {
                   include: ASSISTANT_CALENDAR_TOOLS,
                   allowWrite: false,
+                  guildId: ctx.guildId ?? undefined,
                },
             ),
          );
       }
+      let liveHowTo: string | null = null;
       if (profile.serverDirectoryTools && ctx.guildId) {
          const getClient = this.getDiscordClient;
          sources.push(
@@ -118,6 +121,11 @@ export class GeneralChatCapability implements Capability {
                ),
             ),
          );
+         liveHowTo = await loadHowToBlock(
+            () => getClient(),
+            ctx.guildId,
+            ctx.userId,
+         );
       }
       return {
          system: renderAssistantPrompt(
@@ -125,6 +133,7 @@ export class GeneralChatCapability implements Capability {
             ctx.now,
             snapshot,
             this.resolveChannelName(ctx.channelId),
+            liveHowTo,
          ),
          tools: composeToolSources(sources),
       };

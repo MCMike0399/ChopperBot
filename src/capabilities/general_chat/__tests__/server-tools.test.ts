@@ -130,6 +130,50 @@ describe("ServerDirectoryToolSource", () => {
       ).toBe("reacciona 🎓");
    });
 
+   test("server_channel_info includes instructions when the provider has them", async () => {
+      const source = new ServerDirectoryToolSource({
+         listViewableChannels: async () => CHANNELS,
+         getChannelInstructions: async (id) =>
+            id === ID3 ? 'Presiona "Comenzar formulario"' : null,
+      });
+      const res = await source.handle("server_channel_info", {
+         channel: "bienvenidx",
+      });
+      expect(res.status).toBe("success");
+      expect(
+         (res.payload as { instructions?: string }).instructions,
+      ).toContain("Comenzar formulario");
+   });
+
+   test("server_list_discord_events returns RSVP urls and the open-event note", async () => {
+      const source = new ServerDirectoryToolSource({
+         listViewableChannels: async () => CHANNELS,
+         listDiscordEvents: async () => [
+            {
+               id: "DE1",
+               name: "Cooperativas en la praxis",
+               url: "https://discord.com/events/G/DE1",
+               startAtMs: Date.parse("2026-08-26T02:00:00Z"),
+               location: null,
+               channelName: "Sala de Eventos",
+               status: "en_curso",
+            },
+         ],
+      });
+      const res = await source.handle("server_list_discord_events", {});
+      expect(res.status).toBe("success");
+      const payload = res.payload as {
+         note: string;
+         events: Array<{ name: string; url: string; sala?: string }>;
+      };
+      expect(payload.note).toMatch(/no hace falta ticket/i);
+      expect(payload.events[0]).toMatchObject({
+         name: "Cooperativas en la praxis",
+         url: "https://discord.com/events/G/DE1",
+         sala: "Sala de Eventos",
+      });
+   });
+
    test("a hidden-or-missing channel is a single indistinguishable error", async () => {
       const res = await source.handle("server_channel_info", {
          channel: "canal-de-moderacion",

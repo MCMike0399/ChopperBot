@@ -17,9 +17,9 @@ export interface GuildProfile {
    calendarReadTools: boolean;
    /**
     * Whether turns in this guild get the live channel-directory tools
-    * (server_list_channels / server_channel_info). Member-visibility-filtered —
-    * see server-tools.ts. Lets the assistant answer about channels created
-    * after the primer's curated list was written.
+    * (`server_list_channels` / `server_channel_info` / `server_list_discord_events`).
+    * Member-visibility-filtered — see server-tools.ts. Lets the assistant
+    * answer about channels created after the primer's curated list was written.
     */
    serverDirectoryTools: boolean;
    /**
@@ -29,6 +29,13 @@ export interface GuildProfile {
     * leaks) the staff channel's name or link to regular members.
     */
    hiddenBindingCapabilityIds?: readonly string[];
+   /**
+    * Capability ids omitted entirely from the assistant snapshot. Use when
+    * describing the capability at all would send members to the wrong door
+    * (live 2026-08-25: advertising `event_intake` made the model send people
+    * to #ticket to "reservar" an event that was open to everyone).
+    */
+   hiddenCapabilityIds?: readonly string[];
 }
 
 export const REVZ_GUILD_ID = "1435843683541979248";
@@ -51,7 +58,7 @@ Espacio **autogestivo** de formación política y cultural, por y para jóvenes 
 
 # Estructura y vida del servidor
 - **Comisiones** (trabajo horizontal y voluntario; se entra llenando el formulario de <#1519478655875551252> y avisando a administración): Gestión de Eventos, Agitprop (diseño y propaganda), Video (subcomisión) y Moderación.
-- **Clubs**: Cineclub, Club de Poesía, Club de Ajedrez y Juegos, y los Círculos de Estudio — cualquiera puede abrir un círculo con el formulario de <#1525358955751276544>.
+- **Clubs**: Cineclub, Club de Poesía, Club de Ajedrez y Juegos, y los Círculos de Estudio — cualquiera puede **proponer** un círculo o actividad nueva con el formulario de <#1525358955751276544> (no con un ticket).
 - **Zonas geográficas** (Noroeste, Noreste, Occidente, Oriente, Centro-Norte, Centro, Sur, Extranjero) con chat propio para organización local.
 - Los roles (clubs, pronombres, zonas) se auto-asignan en <#1437264181781991484>.
 
@@ -59,7 +66,9 @@ Espacio **autogestivo** de formación política y cultural, por y para jóvenes 
 - <#1435843684628172952> normas-internas — reglas de convivencia
 - <#1499255254309666928> manifiesto — quiénes somos y qué queremos (redacción colectiva)
 - <#1435843684628172953> anuncios — avisos oficiales y eventos del día
-- <#1518328211165941912> calendario — cartelera del mes en imagen + archivo ICS
+- <#1518328211165941912> calendario — cartelera del mes en imagen + archivo ICS (consulta libre)
+- <#1525358955751276544> formulario-circulos — para **proponer** un círculo o actividad nueva (formulario; no es para entrar a un evento)
+- <#1436425455396847646> próximos-círculos-de-estudio — foro para difundir círculos
 - <#1509280346900922378> noticias — noticias y convocatorias de la lucha (monitor de Instagram)
 - <#1437237844966899742> general — el chat principal
 - <#1435843684628172958> fuera-de-tema — cotorreo libre
@@ -69,13 +78,14 @@ Espacio **autogestivo** de formación política y cultural, por y para jóvenes 
 - <#1440168247487102986> chat-poesía · <#1438754421369475163> chat-cineclub · <#1438077566539006132> chat-ajedrez-y-juegos
 - <#1436255754373038140> sugerencias-del-servidor — foro de mejoras
 - <#1438980667957575730> alianzas — servidores aliados
-- <#1436255397265670195> ticket — denuncias, apelaciones, soporte y propuestas de evento (llega a moderación)
+- <#1436255397265670195> ticket — **solo** denuncias, apelaciones y soporte técnico (el tema del canal lo dice: problemáticas del servidor o fallas técnicas). Nunca para entrar a un evento ni para reservar.
 - <#1438782260865273937> votaciones — aquí se vota la peli del cineclub cada semana
 - <#1534976853910229082> bienvenidx (categoría Escuela/trabajo) — reacciona con 🎓 al mensaje de ChopperBot ahí y se te abre un **taller privado**: un canal personal con asistente de IA completo para escuela/chamba (genera Excel/Word/PowerPoint/gráficas de verdad, ejecuta Python, procesa archivos que le subas)
 
-Para agendar un evento, lxs compas abren un ticket en <#1436255397265670195> y la comisión de gestión lo sube al calendario.
+**Asistir a un evento es abierto y gratis para todxs.** No hay reserva, no hay pase, no se abre ticket. Entras a la sala del evento o le das "Me interesa" al evento de Discord (pestaña Eventos / el enlace \`discord.com/events/…\`). La cartelera está en <#1518328211165941912>; el aviso del día, en <#1435843684628172953>.
+**Proponer** un círculo o actividad que aún no existe se hace en <#1525358955751276544>, no en el ticket.
 
-La lista de arriba es la curada de canales clave, no el mapa completo: tienes herramientas (\`server_list_channels\`, \`server_channel_info\`) para consultar EN VIVO cualquier canal del servidor que la persona pueda ver.`;
+La lista de arriba es la curada de canales clave, no el mapa completo: tienes herramientas (\`server_list_channels\`, \`server_channel_info\`, \`server_list_discord_events\`) para consultar EN VIVO cualquier canal o evento de Discord que la persona pueda ver.`;
 
 const PROFILES = new Map<string, GuildProfile>([
    [
@@ -85,10 +95,14 @@ const PROFILES = new Map<string, GuildProfile>([
          primer: REVZ_PRIMER,
          calendarReadTools: true,
          serverDirectoryTools: true,
-         // The calendar capability lives in the Gestión comisión's channel —
-         // staff-only. Members see the PUBLISHED calendar in #calendario and
-         // propose events via ticket; the input channel is never mentioned.
+         // calendar lives in the Gestión comisión's channel (staff-only):
+         // members see the PUBLISHED board in #calendario and propose a new
+         // círculo via #formulario-circulos — never mention the input channel.
          hiddenBindingCapabilityIds: ["calendar"],
+         // event_intake is the staff-side watcher inside tickets opened FROM
+         // the formulario. Advertising it made the model send people to
+         // #ticket to "reservar" an event (live 2026-08-25).
+         hiddenCapabilityIds: ["event_intake"],
       },
    ],
 ]);
