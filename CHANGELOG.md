@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.26.2 — 2026-08-25
+
+🗣️ **El español más limpio**
+
+Sigo con el mismo cotorreo, nada más que sin mezclar inglés a lo tonto. Si me emociono por un evento, estoy emocionado — no "emoción-ed".
+
+---
+
 ## 1.26.1 — 2026-08-25
 
 🗓️ **Ya no me equivoco del día**

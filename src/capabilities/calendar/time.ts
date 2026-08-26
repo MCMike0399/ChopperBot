@@ -53,18 +53,20 @@ export function localDateKey(utcMs: number): string {
 
 /**
  * Where an event's local calendar day sits relative to "now", also in CDMX.
- * The model must not recompute this from `start_at_iso` (an 8pm CDMX event is
- * the next UTC date).
+ * Values are Spanish (`hoy`/`mañana`/`después`) so a Spanish-speaking model
+ * does not get primed into Spanglish by English `today`/`tomorrow` tokens
+ * (live 2026-08-25: "Estoy emoción-ed" in #general). The model must not
+ * recompute this from `start_at_iso` (an 8pm CDMX event is the next UTC date).
  */
-export type RelativeLocalDay = 'past' | 'today' | 'tomorrow' | 'later';
+export type RelativeLocalDay = 'pasado' | 'hoy' | 'mañana' | 'después';
 
 export function relativeLocalDay(eventMs: number, nowMs: number): RelativeLocalDay {
   const eventKey = localDateKey(eventMs);
   const todayKey = localDateKey(nowMs);
-  if (eventKey === todayKey) return 'today';
-  if (eventKey < todayKey) return 'past';
-  if (eventKey === localDateKey(nowMs + DAY_MS)) return 'tomorrow';
-  return 'later';
+  if (eventKey === todayKey) return 'hoy';
+  if (eventKey < todayKey) return 'pasado';
+  if (eventKey === localDateKey(nowMs + DAY_MS)) return 'mañana';
+  return 'después';
 }
 
 /** "martes 25 de agosto de 2026" — weekday + date the model can echo. */

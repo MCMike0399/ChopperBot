@@ -154,7 +154,7 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_list_upcoming',
         description:
-          'List the next N events on the shared server calendar, ordered by start time. Use for "qué eventos vienen", "what\'s coming up". Each event includes `when` (`today`/`tomorrow`/`later`) relative to the current CDMX date and `start_at_local` — use those to answer hoy/mañana; do not recompute from `start_at_iso` (an 8pm CDMX event is the next calendar day in UTC).',
+          'List the next N events on the shared server calendar, ordered by start time. Use for "qué eventos vienen", "what\'s coming up". Each event includes `when` (`hoy`/`mañana`/`después`) relative to the current CDMX date and `start_at_local` — use those to answer hoy/mañana; do not recompute from `start_at_iso` (an 8pm CDMX event is the next calendar day in UTC).',
         inputSchema: {
           type: 'object',
           properties: {
