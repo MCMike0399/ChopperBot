@@ -166,12 +166,32 @@ export function renderAnnounceMentions(tokens: readonly string[]): {
  * heads-up itself (the same "never do worse than the deterministic answer" rule
  * the IG classifier follows).
  */
+/**
+ * The community-facing slice of a calendar description: speaker and topic stay,
+ * production credits do not.
+ *
+ */
+const STAFF_CREDIT_RE =
+  /agitprop|flyer\s+a\s+cargo|comisi[oó]n\s+de\s+agitprop|flyer\s*:\s*har[aá]\s+el\s+solicitante/i;
+
+export function publicEventDescription(description: string | null | undefined): string | null {
+  if (!description) return null;
+  const kept = description
+    .split(/\n+|(?<=[.!?])\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .filter((s) => !STAFF_CREDIT_RE.test(s));
+  const out = kept.join(' ').replace(/\s{2,}/g, ' ').trim();
+  return out || null;
+}
+
 export function renderFallbackAnnouncement(target: AnnounceTarget): string {
   const { occurrence: o } = target;
   const clock = formatLocalClock(o.startAtMs);
   const lines = [`📣 **Hoy: ${o.title}**`, '', `🕗 Hoy a las ${clock} (hora CDMX)`];
   if (o.location) lines.push(`📍 ${o.location}`);
-  if (o.description) lines.push(`📝 ${o.description}`);
+  const details = publicEventDescription(o.description);
+  if (details) lines.push(`📝 ${details}`);
   lines.push('', '¡Ahí nos vemos! 💚');
   return lines.join('\n');
 }
@@ -241,7 +261,7 @@ export function renderAnnouncementPrompt(
 - **Título:** ${o.title}
 - **Cuándo:** ${advance ? `${weekday}` : `hoy ${weekday}`}, a las ${clock} (hora CDMX)${advance ? ' — NO es hoy: falta unos días, y el anuncio tiene que dejar eso claro' : ''}
 - **Lugar:** ${o.location ?? '(no especificado — no lo inventes, mejor no menciones lugar)'}
-- **Detalles del calendario:** ${o.description ?? '(sin detalles extra)'}
+- **Detalles del calendario:** ${publicEventDescription(o.description) ?? '(sin detalles extra)'}
 - Hora local actual: ${formatInTimezone(nowMs)}
 
 ${ANNOUNCEMENT_VOICE_EXAMPLES}
@@ -255,6 +275,7 @@ ${SPANISH_VOICE_RULES}
 - **NO escribas ningún enlace ni URL.** El enlace al evento de Discord se agrega solo al final.
 - **No inventes** nada que no esté arriba: ni ponentes, ni lugar, ni temario. Si no hay lugar, simplemente no hables del lugar.
 - Si los "detalles del calendario" nombran a un ponente, sí puedes nombrarlo en texto (sin @).
+- **No menciones** flyers, diseño, ni la Comisión de Agitprop: eso es chamba interna, no va en un anuncio a la comunidad.
 - Responde SOLO con el texto del anuncio, sin comillas ni preámbulos.`;
 }
 

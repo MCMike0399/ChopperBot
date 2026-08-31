@@ -8,6 +8,7 @@ import {
   nudgeKey,
   nudgesDue,
   prefixMentions,
+  publicEventDescription,
   renderAnnounceMentions,
   renderAnnouncementPrompt,
   renderFallbackAnnouncement,
@@ -165,6 +166,18 @@ describe('message assembly', () => {
     expect(text).toContain('Ponente: Burbuja');
   });
 
+  test('the fallback drops Agitprop/flyer credits from the public details', () => {
+    const text = renderFallbackAnnouncement({
+      ...target,
+      occurrence: occ({
+        description:
+          'Ponente: Mermelada. 🎨 Flyer a cargo de la Comisión de Agitprop.',
+      }),
+    });
+    expect(text).toContain('Ponente: Mermelada');
+    expect(text).not.toMatch(/Agitprop/i);
+  });
+
   test('the event link is appended, once', () => {
     const once = appendEventLink('texto', target.discordEventUrl);
     expect(once).toContain(target.discordEventUrl!);
@@ -221,6 +234,31 @@ describe('renderAnnouncementPrompt', () => {
     );
     expect(p).toMatch(/anuncio del día/);
     expect(p).toMatch(/ocurre HOY/);
+  });
+});
+
+describe('publicEventDescription', () => {
+  test('keeps speaker and topic, drops the Agitprop credit', () => {
+    // The live #37 description that leaked onto the Discord event card.
+    expect(
+      publicEventDescription(
+        'Ponente: Mermelada. Plática sobre la vivencia neurodivergente y el capacitismo. 🎨 Flyer a cargo de la Comisión de Agitprop.',
+      ),
+    ).toBe(
+      'Ponente: Mermelada. Plática sobre la vivencia neurodivergente y el capacitismo.',
+    );
+  });
+
+  test('drops "Flyer: hará el solicitante" the same way', () => {
+    expect(
+      publicEventDescription('Ponentes: Abeja y Luna. Flyer: hará el solicitante.'),
+    ).toBe('Ponentes: Abeja y Luna.');
+  });
+
+  test('null/empty stays null', () => {
+    expect(publicEventDescription(null)).toBeNull();
+    expect(publicEventDescription('')).toBeNull();
+    expect(publicEventDescription('🎨 Flyer a cargo de la Comisión de Agitprop.')).toBeNull();
   });
 });
 

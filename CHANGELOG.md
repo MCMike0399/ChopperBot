@@ -14,6 +14,18 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.28.0 — 2026-08-31
+
+📣 **Si me pides anunciar, anuncio — y en general avisa a Usuarix**
+
+Tres arreglos de cuando Darko pidió anunciar la plática de hoy en general:
+
+- **"Anúncialo" ya es el sí.** No te vuelvo a mostrar un borrador ni te pido otro "¿lo publico así?". Un "sí" / "sip" publica el que ya estaba, no redacto otro.
+- **En general (y en anuncios) pingueo a Usuarix**, el mismo rol del aviso de las 10:00 — no a @everyone. Si pides un post silencioso, dímelo ("sin ping").
+- **Las pláticas van a Sala de Eventos** si no nombraron otra sala (cine y poesía siguen en las suyas). Y la Comisión de Agitprop se queda en el ticket: **ya no sale en la tarjeta del evento ni en el anuncio**.
+
+---
+
 ## 1.27.0 — 2026-08-25
 
 🎟️ **Los eventos son pa todxs — ya no te mando a ticket**

@@ -214,18 +214,47 @@ describe('calendar_draft_announcement', () => {
     expect(posts).toHaveLength(0);
   });
 
-  test('mentions default to nobody, and an unauthorized role is refused', async () => {
+  test('mentions default to nobody on a side channel, and an unauthorized role is refused', async () => {
     const ev = createSeries();
-    const silent = await draft(makeSource(), { event_id: ev.id, channels: ['general'] });
+    const silent = await draft(makeSource(), { event_id: ev.id, channels: ['eventos'] });
     expect(silent.payload.draft).not.toMatch(/<@&/);
 
     const asked = await draft(makeSource(), {
       event_id: ev.id,
-      channels: ['general'],
+      channels: ['eventos'],
       mentions: ['999999999999999999'],
     });
     expect(asked.payload.mentions_refused).toEqual(['<@&999999999999999999>']);
     expect(asked.payload.draft).not.toMatch(/<@&/);
+  });
+
+  test('a post to general pings Usuarix by default (the 10:00 announce role)', async () => {
+    // Live 2026-08-31: Darko’s "anuncia el evento de hoy en general" drafted
+    // with mentions:0. The morning anuncios post had already pinged Usuarix.
+    const ev = createSeries();
+    const { payload: p } = await draft(makeSource(), {
+      event_id: ev.id,
+      channels: ['general'],
+    });
+    expect(String(p.draft).startsWith(`<@&${ANNOUNCE_ROLE}>`)).toBe(true);
+    expect(p.mentions).toEqual([
+      { id: ANNOUNCE_ROLE, mention: `<@&${ANNOUNCE_ROLE}>`, name: 'Usuarix' },
+    ]);
+  });
+
+  test('publish_now posts in the same call — the announce request is the confirmation', async () => {
+    const ev = createSeries();
+    const { status, payload: p } = await draft(makeSource(), {
+      event_id: ev.id,
+      channels: ['general'],
+      publish_now: true,
+    });
+    expect(status).toBe('success');
+    expect(p.posted).toBe(true);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.channelId).toBe(CHANNELS.general!.id);
+    expect(String(posts[0]!.content)).toContain(`<@&${ANNOUNCE_ROLE}>`);
+    expect(String(posts[0]!.content)).not.toMatch(/@everyone/i);
   });
 
   test('an authorized role ping is prefixed to the stored text', async () => {
@@ -413,8 +442,29 @@ describe('calendar_send_announcement', () => {
     expect(new Set(posts.map((p) => p.channelId)).size).toBe(3); // …distinct channels
   });
 
-  test('an unknown token is refused rather than guessed at', async () => {
+  test('a garbage token falls back to the newest pending draft of THIS channel', async () => {
+    // Live 2026-08-31: "si" called send with a token that wasn't the parked
+    // draft, send errored with no tool_call log, and the model drafted again.
     await drafted();
+    const res = await makeSource().handle('calendar_send_announcement', { token: 'zzzzzzzz' });
+    expect(res.status).toBe('success');
+    expect(posts).toHaveLength(3);
+  });
+
+  test('a posted token does not fall through to a different pending draft', async () => {
+    const posted = await drafted();
+    expect((await makeSource().handle('calendar_send_announcement', { token: posted })).status).toBe(
+      'success',
+    );
+    posts.length = 0;
+    await drafted(); // a new pending draft in the same channel
+    const res = await makeSource().handle('calendar_send_announcement', { token: posted });
+    expect(res.status).toBe('error');
+    expect(payload(res).already_posted).toBe(true);
+    expect(posts).toHaveLength(0);
+  });
+
+  test('a garbage token with nothing pending is still refused', async () => {
     const res = await makeSource().handle('calendar_send_announcement', { token: 'zzzzzzzz' });
     expect(res.status).toBe('error');
     expect(posts).toHaveLength(0);

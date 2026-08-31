@@ -8,20 +8,22 @@
  */
 import { describe, test, expect } from 'vitest';
 import {
-  broadcastNonce,
-  broadcastTiming,
-  composeBroadcast,
-  DRAFT_TTL_MS,
-  forumPostTitle,
-  isDraftExpired,
-  LATE_BROADCAST_GRACE_MS,
-  newDraftToken,
+  isCommunityBroadcastChannel,
+  resolveAnnouncementMentions,
+  resolveBroadcastMentions,
   NO_MENTIONS,
   partitionResolutions,
   renderBroadcastMentions,
   renderBroadcastPrompt,
-  resolveBroadcastMentions,
   stripModelMentions,
+  forumPostTitle,
+  broadcastNonce,
+  broadcastTiming,
+  composeBroadcast,
+  DRAFT_TTL_MS,
+  isDraftExpired,
+  LATE_BROADCAST_GRACE_MS,
+  newDraftToken,
   type ChannelResolution,
 } from '../broadcast.js';
 import type { AnnounceTarget } from '../announce.js';
@@ -132,6 +134,97 @@ describe('resolveBroadcastMentions', () => {
       { id: ROLE, name: '💠Usuarix' },
     ]);
     expect(mentions.roleIds).toEqual([ROLE]);
+  });
+});
+
+describe('isCommunityBroadcastChannel', () => {
+  test('matches this guild’s general and anuncios through decoration', () => {
+    expect(isCommunityBroadcastChannel('💬│general')).toBe(true);
+    expect(isCommunityBroadcastChannel('💬│general-revz')).toBe(true);
+    expect(isCommunityBroadcastChannel('📣│anuncios')).toBe(true);
+    expect(isCommunityBroadcastChannel('📅│eventos')).toBe(false);
+    expect(isCommunityBroadcastChannel('🖋│foro-poesía')).toBe(false);
+    expect(isCommunityBroadcastChannel('🗓️│chat-gestión')).toBe(false);
+  });
+});
+
+describe('resolveAnnouncementMentions', () => {
+  const USUARIX = { id: ROLE, name: 'Usuarix' };
+  const general = [{ name: '💬│general' }];
+  const foro = [{ name: '🖋│foro-poesía' }];
+
+  test('a post to general defaults to the 10:00 Usuarix role', () => {
+    // Live 2026-08-31: Darko’s extra general announcement went out silent
+    // while the morning anuncios post had already pinged Usuarix.
+    const { mentions, defaulted } = resolveAnnouncementMentions({
+      requested: [],
+      allowed: [ROLE],
+      knownRoles: [USUARIX],
+      channels: general,
+    });
+    expect(mentions).toEqual({ roleIds: [ROLE], everyone: false });
+    expect(defaulted).toBe(true);
+  });
+
+  test('a foro (or eventos) stays silent unless they asked for a ping', () => {
+    const { mentions, defaulted } = resolveAnnouncementMentions({
+      requested: [],
+      allowed: [ROLE],
+      knownRoles: [USUARIX],
+      channels: foro,
+    });
+    expect(mentions).toEqual(NO_MENTIONS);
+    expect(defaulted).toBe(false);
+  });
+
+  test('a mixed fan-out (general + foro) stays silent — only a community-only post auto-pings', () => {
+    const { mentions, defaulted } = resolveAnnouncementMentions({
+      requested: [],
+      allowed: [ROLE],
+      knownRoles: [USUARIX],
+      channels: [...general, ...foro],
+    });
+    expect(mentions).toEqual(NO_MENTIONS);
+    expect(defaulted).toBe(false);
+  });
+
+  test('"nadie" / "sin ping" opts out of the community default', () => {
+    for (const asked of ['nadie', 'sin ping', 'none']) {
+      const { mentions, defaulted } = resolveAnnouncementMentions({
+        requested: [asked],
+        allowed: [ROLE],
+        knownRoles: [USUARIX],
+        channels: general,
+      });
+      expect({ asked, mentions, defaulted }).toEqual({
+        asked,
+        mentions: NO_MENTIONS,
+        defaulted: false,
+      });
+    }
+  });
+
+  test('the community default never escalates to @everyone even if that token is allowed', () => {
+    const { mentions, defaulted } = resolveAnnouncementMentions({
+      requested: [],
+      allowed: ['everyone', ROLE],
+      knownRoles: [USUARIX],
+      channels: general,
+    });
+    expect(mentions).toEqual({ roleIds: [ROLE], everyone: false });
+    expect(defaulted).toBe(true);
+  });
+
+  test('an explicit usuarix request is honoured, not treated as a default', () => {
+    const { mentions, defaulted, rejected } = resolveAnnouncementMentions({
+      requested: ['usuarix'],
+      allowed: [ROLE],
+      knownRoles: [USUARIX],
+      channels: general,
+    });
+    expect(mentions.roleIds).toEqual([ROLE]);
+    expect(defaulted).toBe(false);
+    expect(rejected).toEqual([]);
   });
 });
 
@@ -364,5 +457,30 @@ describe('renderBroadcastPrompt', () => {
       timing: 'advance',
     });
     expect(prompt).toMatch(/no lo inventes/);
+  });
+
+  test('staff flyer/Agitprop credits are stripped from the writer brief', () => {
+    // Live 2026-08-31: the 10:00 anuncios body named Agitprop because the
+    // calendar description carried "Flyer a cargo de la Comisión de Agitprop".
+    const prompt = renderBroadcastPrompt({
+      target: {
+        ...target,
+        occurrence: {
+          ...target.occurrence,
+          description:
+            'Ponente: Mermelada. Plática sobre capacitismo. 🎨 Flyer a cargo de la Comisión de Agitprop.',
+        },
+      },
+      nowMs: Date.now(),
+      instruction: null,
+      channelNames: ['general'],
+      timing: 'today',
+    });
+    expect(prompt).toContain('Ponente: Mermelada');
+    expect(prompt).toContain(
+      '**Detalles del calendario:** Ponente: Mermelada. Plática sobre capacitismo.',
+    );
+    expect(prompt).not.toMatch(/Flyer a cargo/i);
+    expect(prompt).toMatch(/No menciones.*Agitprop/i);
   });
 });

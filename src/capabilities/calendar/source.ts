@@ -2,6 +2,7 @@ import { log } from '../../log.js';
 import type { ToolHandlerResult, ToolSource, ToolSpec } from '../../tools/source.js';
 import {
   CalendarStore,
+  type AnnouncementDraft,
   type CalendarEvent,
   type CalendarOccurrence,
 } from './store.js';
@@ -18,6 +19,7 @@ import { formatInTimezone, localDateKey, relativeLocalDay } from './time.js';
 import type { CalendarPublisher, PublishSummary } from './publisher.js';
 import type { DiscordEventSyncer, DiscordScheduledEvent } from './discord-events.js';
 import type { AnnounceTarget } from './announce.js';
+import { publicEventDescription } from './announce.js';
 import {
   broadcastTiming,
   composeBroadcast,
@@ -27,7 +29,7 @@ import {
   newDraftToken,
   partitionResolutions,
   renderBroadcastPrompt,
-  resolveBroadcastMentions,
+  resolveAnnouncementMentions,
   type BroadcastMentions,
   type ChannelResolution,
   type NamedBroadcastRole,
@@ -206,8 +208,16 @@ export class CalendarToolSource implements ToolSource {
               description: 'ISO 8601 UTC of the FIRST occurrence. e.g. 8pm CDMX Sat Jun 20 = "2026-06-21T02:00:00Z".',
             },
             end_at_iso: { type: 'string', description: 'Optional ISO 8601 UTC end. Omit for point-in-time.' },
-            description: { type: 'string', description: 'Optional longer details / convocatoria text.' },
-            location: { type: 'string', description: 'Optional place, e.g. "Sala de eventos", "Asamblea-Z".' },
+            description: {
+              type: 'string',
+              description:
+                'Optional public details (speaker, topic). This is what members see on the Discord event card — NEVER flyer/Agitprop credits; those stay in the ticket.',
+            },
+            location: {
+              type: 'string',
+              description:
+                'Room if they named one ("Sala de Eventos", "Asamblea-Z"). For a plática/taller/círculo that is not cine/poesía/asamblea, prefer "Sala de Eventos" rather than leaving it empty.',
+            },
             recurrence_freq: {
               type: 'string',
               enum: [...RECURRENCE_FREQUENCIES],
@@ -351,11 +361,14 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_draft_announcement',
         description:
-          'WRITE (but do NOT post) an announcement for a calendar event, aimed at the channels a mod named. This is step 1 of 2 — it posts nothing; it returns the exact text plus a `token`, and you show that text to the mod and ask for a yes. Step 2 is `calendar_send_announcement` with the token.\n' +
-          'Use this when a mod asks you to announce/publish an event NOW, in channels they name ("anúncialo en eventos, general y foro de poesía", "publica el anuncio del círculo de poesía"). It is NOT needed for the automatic daily announcement — that one fires on its own at the announce hour, in the announce channel only.\n' +
+          'WRITE an announcement for a calendar event, aimed at the channels a mod named.\n' +
+          'When they asked to ANNOUNCE/PUBLISH ("anúncialo en general", "publícalo"), pass `publish_now: true` — that posts in the SAME call. The request IS the confirmation; do NOT show a draft and ask "¿lo publico así?".\n' +
+          'Pass `publish_now: false` (or omit it) ONLY when they asked to see the text first ("redáctame", "enséñame el borrador", "¿cómo quedaría?"). Then show the `draft` and wait; step 2 is `calendar_send_announcement` with the token.\n' +
+          'Live miss 2026-08-31: a mod said "anuncia el evento de hoy en general", then "si", and this tool was called again instead of send — they had to yell QUE SI. Do not do that.\n' +
           '`channels` are the mod\'s own words: channel names, `<#id>` mentions or ids all work, and forum channels are fine too (there the announcement becomes a new forum post). Anything ambiguous or unwritable comes back in `problems` — ask the mod about those instead of guessing or dropping them silently.\n' +
-          'Pass `instruction` with what the mod said they want the announcement to say or sound like ("que diga bandaaaa, para que desempolven sus libretas") — that phrasing is usually the whole reason they asked instead of waiting for the automatic post.\n' +
-          'For a recurring series, pass `occurrence_date_iso` to pick the session; otherwise the next upcoming occurrence is used. Mentions default to NOBODY: only pass `mentions` if the mod explicitly asked for a ping.',
+          'Pass `instruction` with what the mod said they want the announcement to say or sound like ("que diga bandaaaa, para que desempolven sus libretas").\n' +
+          'For a recurring series, pass `occurrence_date_iso` to pick the session; otherwise the next upcoming occurrence is used.\n' +
+          'Mentions: posting to general or anuncios pings Usuarix (the 10:00 announce role) automatically — you do not need to pass `mentions` for that. Pass `mentions: ["nadie"]` only if they asked for a silent post. Pass `mentions` with a role name only if they named a specific ping.',
         inputSchema: {
           type: 'object',
           properties: {
@@ -383,7 +396,12 @@ export class CalendarToolSource implements ToolSource {
               type: 'array',
               items: { type: 'string' },
               description:
-                'ONLY if the mod explicitly asked to ping someone. Role names ("usuarix"), ids, `<@&id>` or "everyone" all work. Anything outside the community\'s configured announce mentions is refused and reported — a name on that list is never refused.',
+                'Optional. Role names ("usuarix"), ids, `<@&id>`, "everyone", or "nadie" to post with no ping. Omit on general/anuncios — Usuarix is added automatically. Anything outside the community\'s configured announce mentions is refused.',
+            },
+            publish_now: {
+              type: 'boolean',
+              description:
+                'true when they already asked to announce/publish — posts this draft immediately. Omit/false only when they asked to see the text first.',
             },
           },
           required: ['event_id', 'channels'],
@@ -392,17 +410,18 @@ export class CalendarToolSource implements ToolSource {
       {
         name: 'calendar_send_announcement',
         description:
-          'POST a drafted announcement — step 2 of 2. Call this ONLY after `calendar_draft_announcement` and only once the mod has said yes ("sí", "publícalo", "así está perfecto, mándalo"). It posts the EXACT text of the draft to the exact channels of the draft; it cannot be edited here, and it cannot be undone (deleting a message does not undo its notification).\n' +
-          'Pass the `token` the draft returned. If the mod wants changes, draft again instead of sending. A token can only be spent once — a second call reports it was already posted rather than posting twice.',
+          'POST a drafted announcement. Call this when they said yes ("sí", "sip", "publícalo", "QUE SI") after seeing a draft — NEVER call calendar_draft_announcement again on a yes (live 2026-08-31: that forced a second confirmation).\n' +
+          'Pass the `token` the draft returned. If you dropped the token, omit it: the newest unposted draft from this channel is used. A garbage token also falls back to that pending draft.\n' +
+          'If they want changes, draft again with a new `instruction` instead of sending. A token can only be spent once — a second call reports it was already posted rather than posting twice.',
         inputSchema: {
           type: 'object',
           properties: {
             token: {
               type: 'string',
-              description: 'The `token` from calendar_draft_announcement. Required.',
+              description:
+                'The `token` from calendar_draft_announcement. Omit if you dropped it — the newest pending draft of this channel is used.',
             },
           },
-          required: ['token'],
         },
       },
     ];
@@ -943,11 +962,12 @@ export class CalendarToolSource implements ToolSource {
       };
     }
 
-    const { mentions, rejected } = resolveBroadcastMentions(
-      asStringArray(obj.mentions, 'mentions'),
-      this.options.allowedMentionTokens ?? [],
-      this.options.allowedMentionRoles ?? [],
-    );
+    const { mentions, rejected, defaulted: mentionsDefaulted } = resolveAnnouncementMentions({
+      requested: asStringArray(obj.mentions, 'mentions'),
+      allowed: this.options.allowedMentionTokens ?? [],
+      knownRoles: this.options.allowedMentionRoles ?? [],
+      channels: resolved,
+    });
 
     // The Discord event: its URL is the RSVP card (Discord's own embed shows
     // the cover — we do not attach the flyer, that duplicated the image). Only
@@ -961,7 +981,7 @@ export class CalendarToolSource implements ToolSource {
       occurrence: {
         id: occurrence.id,
         title: occurrence.title,
-        description: occurrence.description,
+        description: publicEventDescription(occurrence.description),
         location: occurrence.location,
         startAtMs: occurrence.start_at,
       },
@@ -1032,39 +1052,72 @@ export class CalendarToolSource implements ToolSource {
         forums: resolved.filter((c) => c.kind === 'forum').length,
         problems: problems.length,
         mentions: mentions.roleIds.length + (mentions.everyone ? 1 : 0),
+        mentions_defaulted: mentionsDefaulted,
+        publish_now: obj.publish_now === true,
         ms: Date.now() - t0,
       },
       'tool_call',
     );
 
+    const preview = {
+      draft: content,
+      token,
+      posted: false as boolean,
+      event: { id: eventId, title: occurrence.title, start_at_local: formatInTimezone(occurrence.start_at) },
+      channels: resolved.map((c) => ({
+        id: c.id,
+        name: c.name,
+        mention: `<#${c.id}>`,
+        ...(c.kind === 'forum' ? { posts_as: 'nuevo post del foro', post_title: threadTitle } : {}),
+      })),
+      ...(problems.length > 0 ? { problems: problems.map(describeProblem) } : {}),
+      ...(rejected.length > 0 ? { mentions_refused: rejected } : {}),
+      mentions: mentions.roleIds.map((id) => ({
+        id,
+        mention: `<@&${id}>`,
+        name: this.options.allowedMentionRoles?.find((r) => r.id === id)?.name ?? id,
+      })),
+      pings_everyone: mentions.everyone,
+      has_event_link: target.discordEventUrl !== null,
+      attaches_flyer: false,
+    };
+
+    if (obj.publish_now === true) {
+      const parked = this.store.getAnnouncementDraft(token);
+      if (!parked) {
+        return { status: 'error', payload: { error: 'No pude guardar el borrador para publicarlo.' } };
+      }
+      const sent = await this.postParkedDraft(parked, t0);
+      if (sent.status === 'success') {
+        return {
+          status: 'success',
+          payload: {
+            ...preview,
+            ...(sent.payload as Record<string, unknown>),
+            posted: true,
+            next_step:
+              'Ya se publicó. Confirma en una línea nombrando los canales. NO pidas otro sí.',
+          },
+        };
+      }
+      return {
+        status: 'success',
+        payload: {
+          ...preview,
+          posted: false,
+          send_error: sent.payload,
+          next_step:
+            'Redacté el anuncio pero no pude publicarlo. Muestra el texto y, si dicen que sí, llama calendar_send_announcement con el token.',
+        },
+      };
+    }
+
     return {
       status: 'success',
       payload: {
-        /** Show this to the mod verbatim and ask for a yes. Nothing was posted. */
-        draft: content,
-        token,
-        posted: false,
-        event: { id: eventId, title: occurrence.title, start_at_local: formatInTimezone(occurrence.start_at) },
-        channels: resolved.map((c) => ({
-          id: c.id,
-          name: c.name,
-          mention: `<#${c.id}>`,
-          // A forum becomes a new post, not a message — say so while confirming,
-          // since mods scanning the channel for it will look for a thread.
-          ...(c.kind === 'forum' ? { posts_as: 'nuevo post del foro', post_title: threadTitle } : {}),
-        })),
-        ...(problems.length > 0 ? { problems: problems.map(describeProblem) } : {}),
-        ...(rejected.length > 0 ? { mentions_refused: rejected } : {}),
-        mentions: mentions.roleIds.map((id) => ({
-          id,
-          mention: `<@&${id}>`,
-          name: this.options.allowedMentionRoles?.find((r) => r.id === id)?.name ?? id,
-        })),
-        pings_everyone: mentions.everyone,
-        has_event_link: target.discordEventUrl !== null,
-        attaches_flyer: false,
+        ...preview,
         next_step:
-          'Muestra el texto tal cual, di en qué canales va, y pide confirmación. Solo si dicen que sí, llama calendar_send_announcement con el token.',
+          'Muestra el texto tal cual, di en qué canales va, y pide confirmación. Solo si dicen que sí, llama calendar_send_announcement con el token — NO vuelvas a redactar.',
       },
     };
   }
@@ -1079,22 +1132,21 @@ export class CalendarToolSource implements ToolSource {
     obj: Record<string, unknown>,
     t0: number,
   ): Promise<ToolHandlerResult> {
-    const broadcaster = this.options.broadcaster;
-    if (!broadcaster) {
+    if (!this.options.broadcaster) {
       return {
         status: 'error',
         payload: { error: 'No puedo publicar anuncios desde aquí (no tengo el contexto del servidor).' },
       };
     }
     const token = asOptionalString(obj.token);
-    // A token the model forgot to carry is recoverable: the newest unposted
-    // draft from THIS channel is unambiguously the one just confirmed. Scoped
-    // to the channel so a confirmation here can never send another channel's
-    // pending draft.
-    const draft = token
-      ? this.store.getAnnouncementDraft(token)
-      : this.store.latestPendingDraft(this.options.sourceChannelId ?? 'unknown');
+    const fromToken = token ? this.store.getAnnouncementDraft(token) : null;
+    // Live 2026-08-31: Darko said "si" and the model passed a token that
+    // wasn't the parked draft (or drafted again). A missing/garbage token
+    // with a pending draft in THIS channel is a yes, not a new composition.
+    const draft =
+      fromToken ?? this.store.latestPendingDraft(this.options.sourceChannelId ?? 'unknown');
     if (!draft) {
+      log.warn({ token }, 'calendar.broadcast.send_no_draft');
       return {
         status: 'error',
         payload: {
@@ -1104,6 +1156,7 @@ export class CalendarToolSource implements ToolSource {
       };
     }
     if (draft.postedAt !== null) {
+      log.info({ token: draft.token, eventId: draft.eventId }, 'calendar.broadcast.send_already_posted');
       return {
         status: 'error',
         payload: {
@@ -1114,6 +1167,7 @@ export class CalendarToolSource implements ToolSource {
       };
     }
     if (isDraftExpired(draft.createdAt, this.nowMs)) {
+      log.info({ token: draft.token }, 'calendar.broadcast.send_expired');
       return {
         status: 'error',
         payload: {
@@ -1123,11 +1177,24 @@ export class CalendarToolSource implements ToolSource {
         },
       };
     }
+    return this.postParkedDraft(draft, t0);
+  }
 
-    // Burn the token BEFORE sending: if the process dies mid-fan-out, the worst
-    // case is an announcement that reached some channels and won't be retried
-    // automatically (a mod can re-draft), never one that pings the community
-    // twice because a retry looked unposted.
+  /**
+   * Burn the token and fan out. Shared by send and by `publish_now` on draft,
+   * so "anúncialo en general" and "sí, publícalo" hit the same exactly-once path.
+   */
+  private async postParkedDraft(
+    draft: AnnouncementDraft,
+    t0: number,
+  ): Promise<ToolHandlerResult> {
+    const broadcaster = this.options.broadcaster;
+    if (!broadcaster) {
+      return {
+        status: 'error',
+        payload: { error: 'No puedo publicar anuncios desde aquí (no tengo el contexto del servidor).' },
+      };
+    }
     if (!this.store.markDraftPosted(draft.token, [])) {
       return {
         status: 'error',
@@ -1177,7 +1244,6 @@ export class CalendarToolSource implements ToolSource {
         event_id: draft.eventId,
         channels: posted.map((p) => ({ ...p, mention: `<#${p.channel_id}>` })),
         ...(failed.length > 0 ? { failed } : {}),
-        /** Say WHICH channels it landed in; a partial fan-out must not read as full. */
         note:
           failed.length > 0
             ? 'Confirma solo los canales de `channels`; di claramente en cuáles NO se pudo.'

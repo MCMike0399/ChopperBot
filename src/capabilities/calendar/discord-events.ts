@@ -40,6 +40,7 @@ import {
   type GuildScheduledEvent,
 } from 'discord.js';
 import { log } from '../../log.js';
+import { publicEventDescription } from './announce.js';
 
 /** A Discord scheduled event, flattened to what matching + announcing need. */
 export interface DiscordScheduledEvent {
@@ -324,7 +325,7 @@ export async function createScheduledEvent(
   try {
     const created = await guild.scheduledEvents.create({
       name: draft.title.slice(0, 100),
-      description: draft.description?.slice(0, 1000) ?? undefined,
+      description: publicEventDescription(draft.description)?.slice(0, 1000) ?? undefined,
       scheduledStartTime: new Date(draft.startAtMs),
       scheduledEndTime: venueChannel
         ? draft.endAtMs !== null
@@ -644,7 +645,7 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
 
       const venueChannel = await resolveVenue(guild, row.location, row.title);
       const name = row.title.slice(0, 100);
-      const description = row.description?.slice(0, 1000) ?? null;
+      const description = publicEventDescription(row.description)?.slice(0, 1000) ?? null;
       const endAtMs = next.endAtMs ?? (venueChannel ?? existing.channelId ? null : next.startAtMs + DEFAULT_EVENT_DURATION_MS);
 
       const changed: string[] = [];
@@ -790,13 +791,17 @@ interface VenueCandidate {
 }
 
 /**
- * The voice/stage channel for an event, from two signals in priority order:
+ * The voice/stage channel for an event, from three signals in priority order:
  *  1. the explicit free-text `location` a mod typed (containment either way —
  *     "sala de eventos" finds "🎙️ Sala de Eventos 🎙️");
  *  2. the event TITLE, matched on the room's significant phrase ("… | Club de
- *     poesía" → "🫀 Sala de Club de Poesía 🫀"). Conservative by design: the
- *     full significant phrase must appear in the title, and a one-word phrase
- *     must be at least a few letters — a wrong room is worse than none.
+ *     poesía" → "🫀 Sala de Club de Poesía 🫀"). Conservative: the full
+ *     significant phrase must appear in the title, and a one-word phrase must
+ *     be at least a few letters — a wrong club room is worse than none;
+ *  3. **Sala de Eventos** when neither of the above hit. Talks, pláticas and
+ *     círculos in this community live there (ticket-0007 named it out loud and
+ *     the bot still created an EXTERNAL event). A club title still wins in
+ *     step 2, so cine/poesía don't get hijacked.
  * Only rooms the bot can `ViewChannel` are eligible (invisible ones can't host
  * an event we manage anyway).
  */
@@ -840,6 +845,14 @@ async function resolveVenue(
         log.info({ venue: v.name, title }, 'calendar.discord_events.venue_inferred');
         return v;
       }
+    }
+  }
+
+  // Default talk room. Phrase of "🎙️ Sala de Eventos 🎙️" is "eventos".
+  for (const v of venues) {
+    if (venueKeyPhrase(v.name) === 'eventos') {
+      log.info({ venue: v.name, title }, 'calendar.discord_events.venue_defaulted');
+      return v;
     }
   }
   return null;

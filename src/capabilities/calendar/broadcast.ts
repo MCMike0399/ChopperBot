@@ -39,8 +39,13 @@
  */
 import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
 import { normalizeRoleName } from '../../discord/mod-roles.js';
+import { normalizeChannelQuery } from '../general_chat/server-tools.js';
 import { formatInTimezone, formatLocalClock, DEFAULT_TIMEZONE } from './time.js';
-import { ANNOUNCEMENT_VOICE_EXAMPLES, type AnnounceTarget } from './announce.js';
+import {
+  ANNOUNCEMENT_VOICE_EXAMPLES,
+  publicEventDescription,
+  type AnnounceTarget,
+} from './announce.js';
 
 /**
  * Hard cap on how many channels one announcement may fan out to.
@@ -121,13 +126,12 @@ export function partitionResolutions(resolutions: readonly ChannelResolution[]):
 /**
  * The mention policy for an on-demand announcement.
  *
- * Deliberately NOT the daily announcement's configured mention list. That list
- * exists because the morning post to `#anuncios` is a standing, expected
- * broadcast the community opted into; a mod asking for an extra announcement in
- * three channels is asking for a *message*, not for three more pings of the
- * member role. So the default is **ping nobody**, and mentioning is something
- * the mod has to ask for explicitly — which is also the only way the model can
- * ever produce one, since the writer prompt forbids it from typing mentions.
+ * A post to **general** or **anuncios** is a community heads-up, same as the
+ * 10:00 automatic one: it pings the configured announce role  unless the mod asked for silence. Other channels
+ * (a foro, eventos, a club thread) stay silent by default — those are not
+ * a whole-server page. The writer prompt still forbids the model from typing
+ * mentions; this prefix is the only place they come from.
+ *
  */
 export interface BroadcastMentions {
   roleIds: string[];
@@ -141,6 +145,70 @@ export interface NamedBroadcastRole {
 }
 
 export const NO_MENTIONS: BroadcastMentions = { roleIds: [], everyone: false };
+
+/**
+ * Whether posting here is a community-wide heads-up (general / anuncios) rather
+ * than a side channel. Matched through the same decoration fold as the channel
+ * resolver, so `💬│general` and `📣│anuncios` both count.
+ */
+export function isCommunityBroadcastChannel(name: string): boolean {
+  const n = normalizeChannelQuery(name);
+  return /(^|-)(general|anuncios)(-|$)/.test(n);
+}
+
+function isSilentMentionToken(token: string): boolean {
+  const key = normalizeRoleName(token);
+  return (
+    key === 'none' ||
+    key === 'nadie' ||
+    key === 'silent' ||
+    key === 'sin ping' ||
+    key === 'sin mencion' ||
+    key === 'sin menciones'
+  );
+}
+
+/**
+ * Mention policy for one draft: explicit request, explicit silence, or the
+ * community default (the 10:00 announce-mentions list) when posting to
+ * general/anuncios and the model passed nothing.
+ */
+export function resolveAnnouncementMentions(input: {
+  requested: readonly string[];
+  allowed: readonly string[];
+  knownRoles?: readonly NamedBroadcastRole[];
+  channels: readonly { name: string }[];
+}): { mentions: BroadcastMentions; rejected: string[]; defaulted: boolean } {
+  const requested = input.requested.map((t) => t.trim()).filter(Boolean);
+  const silent = requested.some(isSilentMentionToken);
+  const explicit = requested.filter((t) => !isSilentMentionToken(t));
+  if (silent && explicit.length === 0) {
+    return { mentions: NO_MENTIONS, rejected: [], defaulted: false };
+  }
+  if (explicit.length > 0) {
+    const { mentions, rejected } = resolveBroadcastMentions(
+      explicit,
+      input.allowed,
+      input.knownRoles ?? [],
+    );
+    return { mentions, rejected, defaulted: false };
+  }
+  const community =
+    input.channels.length > 0 &&
+    input.channels.every((c) => isCommunityBroadcastChannel(c.name));
+  if (!community) {
+    return { mentions: NO_MENTIONS, rejected: [], defaulted: false };
+  }
+  // Same list the 10:00 post uses (live: Usuarix `1436225305898389604`) — never
+  // escalate an extra general post to `@everyone` even if that token is allowed.
+  const defaultTokens = input.allowed.filter((t) => !isEveryoneToken(t));
+  const { mentions, rejected } = resolveBroadcastMentions(
+    defaultTokens,
+    input.allowed,
+    input.knownRoles ?? [],
+  );
+  return { mentions, rejected, defaulted: true };
+}
 
 /**
  * Resolve a mod's mention request against what they're actually allowed to
@@ -410,7 +478,7 @@ export function renderBroadcastPrompt(input: {
 - **Título:** ${o.title}
 - **Cuándo:** ${today ? `HOY ${weekday}` : weekday}, a las ${clock} (hora CDMX)
 - **Lugar:** ${o.location ?? '(no especificado — no lo inventes, mejor no menciones lugar)'}
-- **Detalles del calendario:** ${o.description ?? '(sin detalles extra)'}
+- **Detalles del calendario:** ${publicEventDescription(o.description) ?? '(sin detalles extra)'}
 - Hora local actual: ${formatInTimezone(input.nowMs)}
 - Se va a publicar en: ${input.channelNames.length > 0 ? input.channelNames.map((n) => `#${n}`).join(', ') : '(canales de la comunidad)'}
 
@@ -433,5 +501,6 @@ ${SPANISH_VOICE_RULES}
 - **NO escribas menciones** de nadie: ni \`@everyone\`, ni \`@here\`, ni roles (\`<@&…>\`), ni usuarixs. Si hay que mencionar, se agrega solo.
 - **NO escribas ningún enlace ni URL.** El enlace al evento de Discord se agrega solo al final.
 - **No inventes** nada que no esté arriba. Si no hay lugar, no hables del lugar.
+- **No menciones** flyers, diseño, ni la Comisión de Agitprop: eso es chamba interna, no va en un anuncio a la comunidad.
 - Responde SOLO con el texto del anuncio, sin comillas ni preámbulos.`;
 }

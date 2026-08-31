@@ -263,17 +263,42 @@ describe('sync — create', () => {
     expect(out.ok && out.venue).toEqual({ kind: 'stage', name: '🫀 Sala de Club de Poesía 🫀' });
   });
 
-  test('a conservative title match does NOT grab a room on a weak overlap', async () => {
+  test('a roomless talk defaults to Sala de Eventos when that room exists', async () => {
+    // Live ticket-0007: they said "sala de eventos", the model created without
+    // location, title inference missed, Discord event landed EXTERNAL.
     const { client, calls } = makeClient({
       venues: [
         { id: 'GESTION', name: 'VC gestión', type: ChannelType.GuildVoice },
         { id: 'EVENTOS', name: '🎙️ Sala de Eventos 🎙️', type: ChannelType.GuildStageVoice },
       ],
     });
-    // No full significant phrase of either room appears in this title.
+    const store = makeStore([row({ title: 'Charla: organización comunitaria' })]);
+    await makeSyncer(client, store).sync(1);
+    expect(calls.create[0]!.channel).toBe('EVENTOS');
+  });
+
+  test('a conservative title match does NOT grab a club room on a weak overlap', async () => {
+    const { client, calls } = makeClient({
+      venues: [
+        { id: 'GESTION', name: 'VC gestión', type: ChannelType.GuildVoice },
+        { id: 'POESIA', name: '🫀 Sala de Club de Poesía 🫀', type: ChannelType.GuildStageVoice },
+      ],
+    });
     const store = makeStore([row({ title: 'Charla: organización comunitaria' })]);
     await makeSyncer(client, store).sync(1);
     expect(calls.create[0]!.channel).toBeUndefined();
+  });
+
+  test('Discord event description drops Agitprop/flyer credits', async () => {
+    const { client, calls } = makeClient({ venues: [] });
+    const store = makeStore([
+      row({
+        description:
+          'Ponente: Mermelada. Plática sobre capacitismo. 🎨 Flyer a cargo de la Comisión de Agitprop.',
+      }),
+    ]);
+    await makeSyncer(client, store).sync(1);
+    expect(calls.create[0]!.description).toBe('Ponente: Mermelada. Plática sobre capacitismo.');
   });
 
   test('sets the cover image when one is offered', async () => {
