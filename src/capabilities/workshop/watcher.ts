@@ -23,6 +23,7 @@ import {
 type GatewayMessage = OmitPartialGroupDMChannel<Message>;
 import { basename, join } from "node:path";
 import { existsSync, readdirSync, rmSync } from "node:fs";
+import { textBrainDisplayName } from "../../config.js";
 import { log } from "../../log.js";
 import { ask, TurnAbortedError } from "../../llm/client.js";
 import { reportSpanishStyle } from "../../lang/report.js";
@@ -61,6 +62,7 @@ import { compactConversation, shouldCompact } from "./compact.js";
 import {
    renderPanelContent,
    renderSessionIntro,
+   renderWelcomeMessage,
    renderWorkshopPrompt,
 } from "./preamble.js";
 
@@ -152,12 +154,25 @@ export class WorkshopWatcher {
          return;
       }
       const emoji = this.deps.reactionEmoji();
+      const body = renderWelcomeMessage(emoji, textBrainDisplayName());
 
       if (settings.welcome_message_id) {
          const existing = await channel.messages
             .fetch(settings.welcome_message_id)
             .catch(() => null);
          if (existing) {
+            if (existing.content !== body) {
+               const edited = await existing.edit(body).catch((err) => {
+                  log.warn({ err }, "workshop.welcome.edit_failed");
+                  return null;
+               });
+               if (edited) {
+                  log.info(
+                     { messageId: existing.id },
+                     "workshop.welcome.updated",
+                  );
+               }
+            }
             // Re-add our own reaction if it got cleared (it's the visible button).
             if (!existing.reactions.cache.get(emoji)?.me) {
                await existing.react(emoji).catch(() => {});
@@ -171,14 +186,7 @@ export class WorkshopWatcher {
       }
 
       const posted = await channel
-         .send(
-            `## 🎓 Talleres de escuela y trabajo\n` +
-               `Reacciona con ${emoji} a este mensaje y te abro un **canal privado** (solo tú y la moderación lo ven) con un asistente de IA completo para tu escuela o tu chamba:\n` +
-               `- Crea **Excel, Word, PowerPoint y gráficas** de verdad, listas para descargar\n` +
-               `- Ejecuta **código Python** y analiza los datos o archivos que le subas\n` +
-               `- Explica temas, revisa ensayos, prepara exámenes, arma CVs\n\n` +
-               `Cuando termines, cierras tu taller desde su panel y listo. 🚀`,
-         )
+         .send(body)
          .catch((err) => {
             log.error({ err }, "workshop.welcome.post_failed");
             return null;

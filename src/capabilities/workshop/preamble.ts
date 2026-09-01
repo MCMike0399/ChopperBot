@@ -112,6 +112,18 @@ ${filesBlock}${uploadsLine}
 - Respuestas concretas; usa formato Markdown con moderación (Discord).`;
 }
 
+/** Welcome post in `#bienvenidx` — the 🎓 reaction target. */
+export function renderWelcomeMessage(emoji: string, textBrain: string): string {
+   return (
+      `## 🎓 Talleres de escuela y trabajo\n` +
+      `Reacciona con ${emoji} a este mensaje y te abro un **canal privado** (solo tú y la moderación lo ven) con un asistente de IA completo para tu escuela o tu chamba. El modelo es **${textBrain}**:\n` +
+      `- Crea **Excel, Word, PowerPoint y gráficas** de verdad, listas para descargar\n` +
+      `- Ejecuta **código Python** y analiza los datos o archivos que le subas\n` +
+      `- Explica temas, revisa ensayos, prepara exámenes, arma CVs\n\n` +
+      `Cuando termines, cierras tu taller desde su panel y listo. 🚀`
+   );
+}
+
 /** Intro posted in a freshly created session channel (before the panel pin). */
 export function renderSessionIntro(userId: string): string {
    return (
