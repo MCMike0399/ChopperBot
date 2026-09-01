@@ -636,6 +636,16 @@ export const textBackend: TextBackend =
            maxConcurrent: config.KIMI_MAX_CONCURRENT,
         };
 
+/** Community-facing name of the live text brain. Not the wire model id. */
+export function textBrainDisplayName(): string {
+   switch (textBackend.provider) {
+      case "deepseek":
+         return "DeepSeek V4 Flash";
+      case "kimi":
+         return "Kimi";
+   }
+}
+
 let cachedChannels: Set<string> | null = null;
 let cachedCapabilityMap: Map<string, string> | null = null;
 

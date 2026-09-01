@@ -26,6 +26,7 @@ import {
 } from "../src/users/store.js";
 import { InstagramMonitorStore } from "../src/capabilities/instagram_monitor/store.js";
 import { ask } from "../src/llm/client.js";
+import { textBackend, textBrainDisplayName } from "../src/config.js";
 import type { CapabilityInitDeps } from "../src/capabilities/capability.js";
 import type { ComposedTools } from "../src/tools/source.js";
 import type { Turn } from "../src/discord/history.js";
@@ -219,11 +220,16 @@ console.log(
 
 // ── Scene 3: "which model does it think with" — must not name legacy Sonnet ──
 console.log(
-   '\n── Scene 3: "¿con qué modelo piensa?" → Kimi (texto) + Nova (imágenes) ──',
+   `\n── Scene 3: "¿con qué modelo piensa?" → ${textBrainDisplayName()} (texto) + Nova (imágenes) ──`,
 );
 {
    const { reply } = await say("¿con qué modelo piensa ChopperBot?");
-   check(/kimi/i.test(reply), "nombró Kimi para texto");
+   const brain = textBrainDisplayName();
+   check(
+      new RegExp(textBackend.provider, "i").test(reply) ||
+         new RegExp(brain.replace(/\s+/g, "\\s+"), "i").test(reply),
+      `nombró ${brain} para texto`,
+   );
    check(/nova/i.test(reply), "nombró Nova para imágenes");
    check(
       !/sonnet|claude-3|anthropic\.claude/i.test(reply),

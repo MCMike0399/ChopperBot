@@ -10,6 +10,9 @@
  * publish state. `bot_info` also reported `BEDROCK_MODEL_ID` as "the model",
  * which has been **legacy and off every hot path** since the 2026-07-13 repoint
  * to Kimi — i.e. the console confidently named a model the bot never calls.
+ * The same class of lie came back after the 2026-08-13 DeepSeek cutover:
+ * `health`/`bot_info` hardcoded Kimi even while `LLM_TEXT_BACKEND=deepseek`.
+ * Both now report `textBackend` (provider + model id + display name).
  *
  * Every block is **best-effort and independently guarded**: this is a diagnostic,
  * so one missing table or un-migrated capability must degrade to
@@ -19,7 +22,7 @@
 import { statSync } from "node:fs";
 import type Database from "better-sqlite3";
 import type { Client } from "discord.js";
-import { config } from "../../config.js";
+import { config, textBackend, textBrainDisplayName } from "../../config.js";
 import { llmHealth, type LlmHealthSnapshot } from "../../llm/health.js";
 import type { CapabilityRegistry } from "../registry.js";
 import type { MutableCapabilityRouter } from "../routing.js";
@@ -140,16 +143,17 @@ export function collectHealth(deps: HealthDeps): HealthReport {
    const llmSnapshot: LlmHealthSnapshot = llmHealth.snapshot();
    const llm = {
       text: {
-         backend: "kimi",
-         model: config.KIMI_MODEL_ID,
-         base_url: config.KIMI_BASE_URL,
+         backend: textBackend.provider,
+         model: textBackend.modelId,
+         display_name: textBrainDisplayName(),
+         base_url: textBackend.baseUrl,
          note: "Todo el texto (chat, calendario, event_intake, decisión del clasificador de IG).",
       },
       vision: {
          backend: "bedrock",
          model: config.BEDROCK_MODEL_LOW,
          region: config.AWS_REGION,
-         note: "SÓLO imágenes (Kimi 2.7 Thinking es text-only).",
+         note: "SÓLO imágenes (el cerebro de texto no ve imágenes).",
       },
       max_output_tokens: config.MAX_OUTPUT_TOKENS,
       max_tool_iterations: config.MAX_TOOL_ITERATIONS,

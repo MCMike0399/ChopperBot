@@ -1,6 +1,7 @@
 import { describe, test, expect } from "vitest";
 import {
    renderWorkshopPrompt,
+   renderWelcomeMessage,
    type WorkshopPromptContext,
 } from "../preamble.js";
 import type { WorkspaceFile } from "../workspace.js";
@@ -68,5 +69,15 @@ describe("renderWorkshopPrompt", () => {
    test("no deliveredPaths → every generated file shows as not delivered", () => {
       const prompt = renderWorkshopPrompt(ctx({ files: [file("nuevo.docx")] }));
       expect(prompt).toContain("nuevo.docx (100 B) — ⚠️ NO entregado");
+   });
+});
+
+describe("renderWelcomeMessage", () => {
+   test("names the live text brain so the 🎓 post stays truthful", () => {
+      const msg = renderWelcomeMessage("🎓", "DeepSeek V4 Flash");
+      expect(msg).toContain("DeepSeek V4 Flash");
+      expect(msg).toContain("Reacciona con 🎓");
+      expect(msg).toContain("canal privado");
+      expect(msg).not.toContain("Kimi");
    });
 });

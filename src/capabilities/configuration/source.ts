@@ -2,7 +2,7 @@ import { statSync } from "node:fs";
 import type Database from "better-sqlite3";
 import type { Client, Guild, GuildBasedChannel } from "discord.js";
 import { ChannelType, PermissionsBitField } from "discord.js";
-import { config } from "../../config.js";
+import { config, textBackend, textBrainDisplayName } from "../../config.js";
 import { log } from "../../log.js";
 import type {
    ToolHandlerResult,
@@ -487,11 +487,15 @@ export class ConfigurationToolSource implements ToolSource {
             uptime_ms: uptimeMs,
             uptime_human: humanDuration(uptimeMs),
             node_version: process.version,
-            // The bot runs TWO backends: Kimi for all text, Nova Lite for images
-            // only. `BEDROCK_MODEL_ID` (Sonnet) has been legacy and off every hot
-            // path since 2026-07-13 — reporting it as "the model" told operators the
-            // bot ran on something it never calls, so it is deliberately not here.
-            text_model: config.KIMI_MODEL_ID,
+            // The bot runs TWO backends: the selected text brain for all text,
+            // Nova Lite for images only. `BEDROCK_MODEL_ID` (Sonnet) has been
+            // legacy and off every hot path since 2026-07-13 — reporting it as
+            // "the model" told operators the bot ran on something it never
+            // calls, so it is deliberately not here. Do not hardcode Kimi:
+            // live has been DeepSeek V4 Flash since 2026-08-13.
+            text_backend: textBackend.provider,
+            text_model: textBackend.modelId,
+            text_model_name: textBrainDisplayName(),
             vision_model: config.BEDROCK_MODEL_LOW,
             aws_region: config.AWS_REGION,
             max_output_tokens: config.MAX_OUTPUT_TOKENS,

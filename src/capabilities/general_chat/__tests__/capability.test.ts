@@ -14,6 +14,7 @@ import { ConfigurationCapability } from "../../configuration/capability.js";
 import { GeneralChatCapability } from "../capability.js";
 import { GENERAL_CHAT_CAPABILITY_ID } from "../constants.js";
 import { REVZ_GUILD_ID } from "../profile.js";
+import { textBrainDisplayName } from "../../../config.js";
 import {
    FRAMEWORK_CAPABILITY_ID,
    USERS_MIGRATIONS,
@@ -223,6 +224,8 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       expect(turn.system).toContain("Asamblea Popular");
       expect(turn.system).toContain("Cero tolerancia");
       expect(turn.system).not.toContain("modo chat general");
+      expect(turn.system).toContain(textBrainDisplayName());
+      expect(turn.system).toContain("Amazon Nova Lite");
       h.memory.close();
    });
 

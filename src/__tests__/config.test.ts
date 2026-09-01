@@ -256,11 +256,12 @@ describe("boot validation (LLM text backend + AWS credential pair)", () => {
       process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
       delete process.env.DEEP_SEEK_API_KEY;
 
-      const { textBackend } = await import("../config.js");
+      const { textBackend, textBrainDisplayName } = await import("../config.js");
       expect(textBackend.provider).toBe("deepseek");
       expect(textBackend.apiKey).toBe("sk-deepseek-test");
       expect(textBackend.baseUrl).toBe("https://api.deepseek.com/v1");
       expect(textBackend.modelId).toBe("deepseek-v4-flash");
+      expect(textBrainDisplayName()).toBe("DeepSeek V4 Flash");
       // ONE model for every text tier — no second, pricier id. V4-Pro measured
       // identical to Flash on the tool battery while being slower and 3.1×.
       expect(textBackend.supportsThinkingSwitch).toBe(true);
@@ -291,11 +292,12 @@ describe("boot validation (LLM text backend + AWS credential pair)", () => {
       // Mirror the KIMI_ vars rather than the schema defaults: vitest.setup.ts
       // pre-fills KIMI_MODEL_ID, so asserting the literal default would pin the
       // test harness instead of the resolver.
-      const { config, textBackend } = await import("../config.js");
+      const { config, textBackend, textBrainDisplayName } = await import("../config.js");
       expect(textBackend.provider).toBe("kimi");
       expect(textBackend.apiKey).toBe("sk-kimi-test");
       expect(textBackend.baseUrl).toBe(config.KIMI_BASE_URL);
       expect(textBackend.modelId).toBe(config.KIMI_MODEL_ID);
+      expect(textBrainDisplayName()).toBe("Kimi");
       // Moonshot 400s on unexpected params (it already does for `temperature`),
       // so the DeepSeek-only `thinking` switch must never be sent there.
       expect(textBackend.supportsThinkingSwitch).toBe(false);

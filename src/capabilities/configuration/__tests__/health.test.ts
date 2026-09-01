@@ -11,7 +11,7 @@ import { CapabilityRegistry } from "../../registry.js";
 import { buildRouter } from "../../routing.js";
 import { collectHealth, humanAge, type HealthDeps } from "../health.js";
 import { llmHealth } from "../../../llm/health.js";
-import { config } from "../../../config.js";
+import { config, textBackend, textBrainDisplayName } from "../../../config.js";
 import { CALENDAR_MIGRATIONS, CalendarStore } from "../../calendar/store.js";
 import {
    INSTAGRAM_MONITOR_MIGRATIONS,
@@ -122,10 +122,12 @@ describe("collectHealth", () => {
    test("reports the ACTUAL two backends, not the legacy Bedrock model", async () => {
       const { memory, deps } = await healthyDeps();
       const llm = collectHealth(deps).llm as {
-         text: { backend: string; model: string };
+         text: { backend: string; model: string; display_name: string };
          vision: { backend: string; model: string };
       };
-      expect(llm.text.backend).toBe("kimi");
+      expect(llm.text.backend).toBe(textBackend.provider);
+      expect(llm.text.model).toBe(textBackend.modelId);
+      expect(llm.text.display_name).toBe(textBrainDisplayName());
       expect(llm.vision.backend).toBe("bedrock");
       // The legacy Sonnet id must not be presented as the model in use anywhere.
       expect(JSON.stringify(llm)).not.toContain("anthropic.claude");

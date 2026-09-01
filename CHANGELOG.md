@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.28.1 — 2026-08-31
+
+🧠 **El modelo que uso es DeepSeek V4 Flash**
+
+Si preguntas con qué IA corro, ya no te suelto un nombre viejo: el texto va con **DeepSeek V4 Flash**. Las imágenes las sigue leyendo Amazon Nova Lite. El mensaje de los talleres en bienvenidx también lo nombra.
+
+---
+
 ## 1.28.0 — 2026-08-31
 
 📣 **Si me pides anunciar, anuncio — y en general avisa a Usuarix**
