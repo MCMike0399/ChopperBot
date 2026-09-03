@@ -282,7 +282,7 @@ describe("ask — routing between Kimi (text) and Bedrock (vision)", () => {
    });
 
    describe("Bedrock vision path (images, or effort low)", () => {
-      test("an attached image routes to Bedrock as a Converse image block", async () => {
+      test("an attached image on the vision tier routes to Bedrock as a Converse image block", async () => {
          sendMock.mockResolvedValueOnce(bedrockEnd("I see a red square."));
          const tools = fakeTools();
          const img = new ImageAttachable(
@@ -297,6 +297,7 @@ describe("ask — routing between Kimi (text) and Bedrock (vision)", () => {
                { role: "user", content: "What is this?", attachments: [img] },
             ],
             tools,
+            effort: "low",
          });
          expect(out).toBe("I see a red square.");
          expect(sendMock).toHaveBeenCalledTimes(1);
@@ -365,7 +366,7 @@ describe("ask — routing between Kimi (text) and Bedrock (vision)", () => {
          expect(kimiReqAt(0).model).toBe(config.KIMI_MODEL_ID);
       });
 
-      test("any image routes to Bedrock Nova Lite regardless of effort (Kimi is text-only)", async () => {
+      test("image + high/medium is two-stage: Nova transcribes, then the text brain runs", async () => {
          const img = () =>
             new ImageAttachable(
                "x.png",
@@ -376,16 +377,55 @@ describe("ask — routing between Kimi (text) and Bedrock (vision)", () => {
          for (const effort of ["high", "medium"] as const) {
             sendMock.mockReset();
             kimiMock.mockReset();
-            sendMock.mockResolvedValueOnce(bedrockEnd("e"));
-            await ask({
+            sendMock.mockResolvedValueOnce(
+               bedrockEnd("Cartel: Cabaret, hoy 8pm"),
+            );
+            kimiMock.mockResolvedValueOnce(kimiEnd("Listo, lo anuncio."));
+            const out = await ask({
                system: "p",
-               messages: [{ role: "user", content: "x", attachments: [img()] }],
+               messages: [
+                  {
+                     role: "user",
+                     content: "anuncia esto",
+                     attachments: [img()],
+                  },
+               ],
                tools: fakeTools(),
                effort,
             });
+            expect(out).toBe("Listo, lo anuncio.");
+            expect(sendMock).toHaveBeenCalledTimes(1);
             expect(bedrockReqAt(0).modelId).toBe(config.BEDROCK_MODEL_LOW);
-            expect(kimiMock).not.toHaveBeenCalled();
+            expect(bedrockReqAt(0).toolConfig).toBeUndefined();
+            expect(kimiMock).toHaveBeenCalledTimes(1);
+            const user = kimiReqAt(0).messages.find((m) => m.role === "user");
+            expect(String(user?.content)).toContain("Cartel: Cabaret");
+            expect(String(user?.content)).toContain("anuncia esto");
          }
+      });
+
+      test("a failed Nova transcription still strips the image and lets the text brain answer", async () => {
+         const img = new ImageAttachable(
+            "x.png",
+            "image/png",
+            new Uint8Array([1, 2]),
+            "png",
+         );
+         sendMock.mockRejectedValueOnce(new Error("nova down"));
+         kimiMock.mockResolvedValueOnce(kimiEnd("va sin la imagen"));
+         const out = await ask({
+            system: "p",
+            messages: [
+               { role: "user", content: "anuncia esto", attachments: [img] },
+            ],
+            tools: fakeTools(),
+            effort: "high",
+         });
+         expect(out).toBe("va sin la imagen");
+         expect(kimiMock).toHaveBeenCalledTimes(1);
+         expect(String(kimiReqAt(0).messages[1].content)).toContain(
+            "no pude leerla",
+         );
       });
    });
 
@@ -408,10 +448,13 @@ describe("ask — routing between Kimi (text) and Bedrock (vision)", () => {
          }
       });
 
-      test("image turn still routes to Nova Lite even in bedrock text mode", async () => {
+      test("image turn in bedrock text mode: Nova transcribes, then BEDROCK_MODEL_ID runs the tools", async () => {
          config.LLM_TEXT_BACKEND = "bedrock";
+         config.BEDROCK_MODEL_ID = "test-text-model";
          try {
-            sendMock.mockResolvedValueOnce(bedrockEnd("vision"));
+            sendMock
+               .mockResolvedValueOnce(bedrockEnd("flyer text"))
+               .mockResolvedValueOnce(bedrockEnd("vision"));
             const img = new ImageAttachable(
                "x.png",
                "image/png",
@@ -424,6 +467,7 @@ describe("ask — routing between Kimi (text) and Bedrock (vision)", () => {
                tools: fakeTools(),
             });
             expect(bedrockReqAt(0).modelId).toBe(config.BEDROCK_MODEL_LOW);
+            expect(bedrockReqAt(1).modelId).toBe("test-text-model");
             expect(kimiMock).not.toHaveBeenCalled();
          } finally {
             config.LLM_TEXT_BACKEND = "kimi";

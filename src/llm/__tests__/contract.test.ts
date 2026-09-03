@@ -236,6 +236,7 @@ describe("Bedrock wire contract (vision path)", () => {
             { role: "user", content: "see this", attachments: [img()] },
          ],
          tools: toolsWithSample(),
+         effort: "low",
       });
       const req = reqAt(0);
       expect(req.system).toEqual([{ text: "YOU ARE A BOT" }]);
@@ -255,6 +256,7 @@ describe("Bedrock wire contract (vision path)", () => {
          system: "s",
          messages: [{ role: "user", content: "q", attachments: [img()] }],
          tools: toolsWithSample(),
+         effort: "low",
       });
       const req = reqAt(0);
       expect(req.modelId).toBe(config.BEDROCK_MODEL_LOW);
@@ -274,6 +276,7 @@ describe("Bedrock wire contract (vision path)", () => {
          system: "s",
          messages: [{ role: "user", content: "q", attachments: [img()] }],
          tools: toolsWithSample(),
+         effort: "low",
       });
       const tc = reqAt(0).toolConfig as {
          tools: Array<Record<string, unknown>>;

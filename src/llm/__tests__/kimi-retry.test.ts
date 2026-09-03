@@ -73,4 +73,25 @@ describe("askKimi — empty-response retry", () => {
       // 1 initial + 2 retries.
       expect(createMock).toHaveBeenCalledTimes(3);
    });
+
+   test("empty length-cap after retries runs a tools-free forcing pass", async () => {
+      // Live 2026-09-02 workshop: finish_reason `length` with empty content
+      // (thinking ate the budget) used to fall through to the Spanish
+      // fallback because the forcing pass only ran for tool_calls.
+      createMock
+         .mockResolvedValueOnce(kimiResponse("", "length"))
+         .mockResolvedValueOnce(kimiResponse("", "length"))
+         .mockResolvedValueOnce(kimiResponse("", "length"))
+         .mockResolvedValueOnce(kimiResponse("Aquí la respuesta."));
+      const out = await ask(baseInput());
+      expect(out).toBe("Aquí la respuesta.");
+      // 1 initial + 2 empty retries + 1 forcing pass.
+      expect(createMock).toHaveBeenCalledTimes(4);
+      const forcing = createMock.mock.calls[3][0];
+      expect(forcing.tools).toBeUndefined();
+      expect(forcing.messages.at(-1)).toMatchObject({
+         role: "user",
+         content: expect.stringContaining("sin llamar herramientas"),
+      });
+   });
 });

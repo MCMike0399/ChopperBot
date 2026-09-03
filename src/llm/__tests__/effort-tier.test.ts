@@ -119,6 +119,21 @@ describe("effort tier selects the thinking mode, not a model", () => {
       expect(bodyOf(1).thinking).toEqual({ type: "disabled" });
    });
 
+   test("empty length-cap on high disables thinking for the retry", async () => {
+      // Live 2026-09-02 workshop: thinking-on burned 3×16384 output tokens
+      // with finish_reason `length` and empty content. The retry must flip
+      // the switch off or it just empties the budget again.
+      createMock
+         .mockResolvedValueOnce({
+            choices: [{ finish_reason: "length", message: { content: "" } }],
+            usage: { prompt_tokens: 10, completion_tokens: 16384 },
+         })
+         .mockResolvedValueOnce(reply("ya"));
+      await ask({ ...baseInput(), effort: "high" });
+      expect(bodyOf(0).thinking).toEqual({ type: "enabled" });
+      expect(bodyOf(1).thinking).toEqual({ type: "disabled" });
+   });
+
    // The other direction, on a fresh module graph: Moonshot 400s on unexpected
    // params, so a `thinking` key leaking onto a kimi deployment would break
    // EVERY text turn. Worth a real request-shape assertion, not just the config

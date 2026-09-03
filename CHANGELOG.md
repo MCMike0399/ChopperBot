@@ -14,6 +14,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 1.28.2 — 2026-09-03
+
+🖼️ **Si me mandas una imagen y me pides que haga algo, ya no me trabo**
+
+Había un bug: cuando adjuntabas una foto (el flyer de la peli, por ejemplo) y me pedías anunciarla o agendarla, me ponía a repetir la misma acción hasta quedarme mudo y te contestaba "inténtalo de nuevo" — y a veces el anuncio sí salía, más de una vez. Ahora leo la imagen y hago el trabajo una sola vez.
+
+En el taller pasaba algo parecido con preguntas largas de investigación: me quedaba pensando hasta agotar el cupo y no te contestaba. Eso también ya lo reintento.
+
+---
+
 ## 1.28.1 — 2026-08-31
 
 🧠 **El modelo que uso es DeepSeek V4 Flash**
