@@ -12,10 +12,11 @@ import { log } from "../log.js";
 import { Semaphore } from "./gate.js";
 import { isContentFilterRejection, llmHealth } from "./health.js";
 import type { Turn } from "../discord/history.js";
-import type {
-   ComposedTools,
-   ToolHandlerResult,
-   ToolSpec,
+import {
+   composeToolSources,
+   type ComposedTools,
+   type ToolHandlerResult,
+   type ToolSpec,
 } from "../tools/source.js";
 
 // ── Two backends, chosen per turn ────────────────────────────────────────────
@@ -26,14 +27,22 @@ import type {
 // Kimi is text-only, so a turn carrying an attachment goes to Amazon Nova Lite
 // (the effort `low` tier). The routing rule:
 //
-//   has an image OR effort 'low'     → Bedrock (Amazon Nova Lite) — images only
+//   effort 'low' (vision tier)       → Bedrock (Amazon Nova Lite) — images, or
+//                                      the IG-classifier transcription call
+//   has an image AND effort high/med → TWO-STAGE: Nova transcribes, then the
+//                                      text brain runs the tool loop (pixels
+//                                      never reach Kimi/DeepSeek)
 //   text + LLM_TEXT_BACKEND=kimi     → Kimi 2.7 Thinking
 //   text + LLM_TEXT_BACKEND=deepseek → DeepSeek V4-Flash (same wire shape)
 //   text + LLM_TEXT_BACKEND=bedrock  → Bedrock Converse (BEDROCK_MODEL_ID)
 //
 // Nova is NOT optional and cannot be consolidated away: neither text brain can
 // see images. DeepSeek V4 rejects `image_url` with a 400 at the deserialization
-// layer on both Flash and Pro (probed 2026-08-10).
+// layer on both Flash and Pro (probed 2026-08-10). The two-stage split is the
+// same pattern the IG classifier has used since 2026-07-15 — it became the
+// generic image-turn rule on 2026-09-03 after Nova Lite, handed the calendar
+// tool bundle because a flyer was attached, looped `calendar_draft_announcement`
+// ten times and then 400'd the forcing pass.
 //
 // The bedrock text mode exists for AWS-native deploys:
 // no external LLM API key is available there, so text runs on the same Bedrock
@@ -83,10 +92,11 @@ const bedrock = new BedrockRuntimeClient({
  * Effort tier. Since the 2026-07-13 Kimi repoint, `high` and `medium` are both
  * text → Kimi; `low` is the Nova Lite vision tier. Bedrock (Nova Lite) is used
  * ONLY for image turns — see the routing rule in ask().
- *   high   — chat + calendar + event-intake (Kimi 2.7 Thinking).
- *   medium — IG classifier (Kimi for the caption text; Nova Lite when the flyer
- *            image is attached, via the images-always-go-to-Nova rule).
- *   low    — the vision tier: Amazon Nova Lite (images).
+ *   high   — chat + calendar + event-intake (text brain, thinking on).
+ *   medium — IG classifier decision + conversational turns (text brain, thinking off).
+ *   low    — the vision tier: Amazon Nova Lite (images / transcription).
+ * Image turns at high/medium are two-stage: Nova transcribes, then this tier
+ * runs on the text brain.
  */
 export type Effort = "high" | "medium" | "low";
 
@@ -100,8 +110,9 @@ export interface AskInput {
    system: string;
    messages: Turn[];
    tools: ComposedTools;
-   /** Model tier. Defaults to 'high' (Kimi). Images always route to Nova Lite
-    * regardless of tier; 'low' also forces Nova Lite. */
+   /** Model tier. Defaults to 'high' (text brain, thinking on). Effort 'low'
+    * is the vision tier (Nova Lite). Other image turns transcribe via Nova
+    * then continue on the text brain. */
    effort?: Effort;
    /** Optional progress hook for user-visible status (see {@link AskPhase}). */
    onPhase?: (phase: AskPhase, detail?: string) => void;
@@ -199,16 +210,27 @@ export const CONTENT_FILTER_FALLBACK =
    "El filtro del proveedor del modelo bloqueó esa pregunta, así que no me llega la respuesta. Si la planteas de otra forma le entro sin problema.";
 
 /**
- * Entry point. Bedrock (Amazon Nova Lite) serves image turns always: route
- * there when the turn carries an image, or when effort 'low' (the vision tier)
- * is requested explicitly. Text turns go to Kimi by default, or to Bedrock
- * (BEDROCK_MODEL_ID) when LLM_TEXT_BACKEND=bedrock (AWS-native deploys with no
- * external LLM key). Both run the same multi-turn agent loop contract; the wire
- * shape differs by backend.
+ * Entry point. Effort `low` is the vision tier and always runs on Nova Lite
+ * (the IG classifier's flyer transcription, plus any caller that wants pixels
+ * in / text out with no tool loop). Every other image turn is TWO-STAGE: Nova
+ * transcribes/describes the attachments, that text is inlined, and the selected
+ * text brain runs the tool loop. Text-only turns go to Kimi/DeepSeek by
+ * default, or to Bedrock (`BEDROCK_MODEL_ID`) when `LLM_TEXT_BACKEND=bedrock`.
  */
 export async function ask(input: AskInput): Promise<string> {
    const { messages, effort = "high" } = input;
    const hasImages = messages.some((m) => (m.attachments?.length ?? 0) > 0);
+
+   // Image + not the vision tier: Nova *reads*, the text brain *acts*. Live
+   // 2026-09-03: a calendar flyer turn sent the full tool bundle to Nova Lite,
+   // which looped `calendar_draft_announcement` ten times (three real
+   // publishes) and then the Converse forcing pass 400'd because it omitted
+   // `toolConfig` while history still had toolUse/toolResult blocks.
+   if (hasImages && effort !== "low") {
+      const inlined = await inlineImageTranscriptions(messages);
+      return ask({ ...input, messages: inlined });
+   }
+
    if (hasImages || effort === "low") {
       return askBedrock({ ...input, effort });
    }
@@ -221,6 +243,69 @@ export async function ask(input: AskInput): Promise<string> {
       if (!(err instanceof ContentFilterRejection)) throw err;
       return recoverFromContentFilter(input, err);
    }
+}
+
+const NO_TOOLS: ComposedTools = composeToolSources([]);
+const MAX_VISION_TRANSCRIPTION_CHARS = 8_000;
+const VISION_TRANSCRIBE_SYSTEM =
+   "Transcribe y describe las imágenes. Incluye TODO el texto visible, literal, y un resumen breve de lo visual (personas, objetos, contexto). Responde en español. Sin preámbulo ni comentarios.";
+
+/**
+ * Replace image attachments with a Nova transcription so the text brain can
+ * run the tool loop. A failed/empty transcription still strips the pixels
+ * (otherwise we'd recurse into this function forever) and tells the model
+ * it couldn't see — tools keep working, just without the flyer.
+ */
+async function inlineImageTranscriptions(messages: Turn[]): Promise<Turn[]> {
+   const imageTurns = messages.filter((m) => (m.attachments?.length ?? 0) > 0);
+   if (imageTurns.length === 0) return messages;
+
+   let transcription = "";
+   try {
+      const raw = (
+         await askBedrock({
+            system: VISION_TRANSCRIBE_SYSTEM,
+            messages: imageTurns.map((m) => ({
+               role: "user" as const,
+               content: m.content?.trim()
+                  ? `El usuario escribió:\n${m.content}\n\nTranscribe y describe las imágenes adjuntas.`
+                  : "Transcribe y describe las imágenes adjuntas.",
+               attachments: m.attachments,
+            })),
+            tools: NO_TOOLS,
+            effort: "low",
+         })
+      ).trim();
+      if (raw && raw !== EMPTY_RESPONSE_FALLBACK) {
+         transcription =
+            raw.length > MAX_VISION_TRANSCRIPTION_CHARS
+               ? raw.slice(0, MAX_VISION_TRANSCRIPTION_CHARS) + "…"
+               : raw;
+      }
+   } catch (err) {
+      log.warn({ err }, "llm.vision_transcribe_failed");
+   }
+
+   log.info(
+      { chars: transcription.length, images: imageTurns.length },
+      "llm.vision_inlined",
+   );
+
+   const lastImageIdx = messages.reduce(
+      (acc, m, i) => ((m.attachments?.length ?? 0) > 0 ? i : acc),
+      -1,
+   );
+
+   return messages.map((m, i) => {
+      if (!m.attachments?.length) return m;
+      const extra =
+         i === lastImageIdx
+            ? transcription
+               ? `\n\n[Imagen(es) adjunta(s) — transcripción/descripción]:\n${transcription}`
+               : "\n\n[Imagen adjunta: no pude leerla; responde solo con el texto del usuario.]"
+            : "";
+      return { role: m.role, content: `${m.content}${extra}` };
+   });
 }
 
 /**
@@ -293,6 +378,17 @@ const MAX_EMPTY_RESPONSE_RETRIES = 2;
 export const EMPTY_RESPONSE_FALLBACK =
    "No pude generar una respuesta esta vez — inténtalo de nuevo en un momento.";
 
+/** Prose nudge on the tools-free forcing pass (both backends). */
+const FORCING_NUDGE =
+   "Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. " +
+   "Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea. " +
+   "NUNCA afirmes haber enviado archivos ni haber completado acciones que no ejecutaste con herramientas en esta vuelta: " +
+   'si un archivo quedó generado pero sin enviar, dilo explícitamente ("quedó listo pero no alcancé a adjuntarlo — pídeme que lo envíe").';
+
+const FORCING_NUDGE_RETRY =
+   "Último intento: NO uses herramientas, ya no están disponibles. " +
+   "Escribe la respuesta para el usuario como texto normal, aunque sea parcial.";
+
 type ChatMessage =
    | { role: "system"; content: string }
    | { role: "user"; content: string }
@@ -312,8 +408,8 @@ type ChatMessage =
  * Multi-turn agent loop against Moonshot Kimi 2.7 Thinking (OpenAI-compatible
  * chat completions). Each iteration sends the current message list; if the
  * model emits tool_calls, we run them and append role:'tool' messages for the
- * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Text-only — image
- * turns never reach here (see ask()).
+ * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Image turns
+ * reach here only after Nova transcription inlined the pixels as text (see ask()).
  */
 async function askKimi({
    system,
@@ -338,16 +434,15 @@ async function askKimi({
    // with no loss of tool-calling — the right default for conversational turns,
    // which are essentially all the volume. Omitted entirely on providers that
    // don't support the switch, so their request shape is unchanged.
-   const thinking = textBackend.supportsThinkingSwitch
-      ? {
-           thinking: {
-              type:
-                 effort === "high"
-                    ? ("enabled" as const)
-                    : ("disabled" as const),
-           },
-        }
-      : {};
+   let thinking:
+      { thinking: { type: "enabled" | "disabled" } } | Record<string, never> =
+      textBackend.supportsThinkingSwitch
+         ? {
+              thinking: {
+                 type: effort === "high" ? "enabled" : "disabled",
+              },
+           }
+         : {};
    const convo: ChatMessage[] = [
       { role: "system", content: system },
       ...messages.map((m): ChatMessage =>
@@ -462,6 +557,17 @@ async function askKimi({
                   { finishReason: lastFinishReason, attempt: emptyRetries },
                   "Kimi returned empty text on a non-tool finish — retrying",
                );
+               // Live 2026-09-02 workshop: DeepSeek `high` burned the entire
+               // output budget on reasoning (finish_reason `length`, 3×16384
+               // tokens, 0 tools) and the thinking-on retry emptied out again.
+               // Flip thinking off so the retry can emit visible text.
+               if (
+                  lastFinishReason === "length" &&
+                  textBackend.supportsThinkingSwitch
+               ) {
+                  thinking = { thinking: { type: "disabled" } };
+                  log.warn("llm.thinking_disabled_after_length_cap");
+               }
                continue;
             }
          }
@@ -534,22 +640,27 @@ async function askKimi({
    // nudge came back `finish_reason: 'tool_calls'` again (Kimi keeps calling
    // tools from history even with none advertised) and the user got the empty
    // fallback. One bounded retry covers a forcing pass that still misfires.
-   if (!finalText && (lastFinishReason === "tool_calls" || degenerate)) {
+   if (
+      !finalText &&
+      (lastFinishReason === "tool_calls" ||
+         lastFinishReason === "length" ||
+         degenerate)
+   ) {
       log.info(
          {
             iterations: trace.iterations,
             toolCalls: trace.toolCalls.length,
             degenerate,
+            finishReason: lastFinishReason,
          },
          "Forcing final answer without tools",
       );
+      if (lastFinishReason === "length" && textBackend.supportsThinkingSwitch) {
+         thinking = { thinking: { type: "disabled" } };
+      }
       convo.push({
          role: "user",
-         content:
-            "Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. " +
-            "Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea. " +
-            "NUNCA afirmes haber enviado archivos ni haber completado acciones que no ejecutaste con herramientas en esta vuelta: " +
-            'si un archivo quedó generado pero sin enviar, dilo explícitamente ("quedó listo pero no alcancé a adjuntarlo — pídeme que lo envíe").',
+         content: FORCING_NUDGE,
       });
       for (let attempt = 1; attempt <= 2 && !finalText; attempt++) {
          safePhase(onPhase, "thinking");
@@ -588,9 +699,7 @@ async function askKimi({
                );
                convo.push({
                   role: "user",
-                  content:
-                     "Último intento: NO uses herramientas, ya no están disponibles. " +
-                     "Escribe la respuesta para el usuario como texto normal, aunque sea parcial.",
+                  content: FORCING_NUDGE_RETRY,
                });
             }
          } catch (err) {
@@ -785,31 +894,52 @@ async function askBedrock({
       convo.push({ role: "user", content: resultBlocks });
    }
 
-   // Forcing pass without toolConfig (iteration cap hit while still calling tools).
+   // Forcing pass. Converse REJECTS a request whose messages contain
+   // toolUse/toolResult unless `toolConfig` is also set (ValidationException,
+   // live 2026-09-03 calendar image turn). Omitting toolConfig is the
+   // OpenAI-style "force prose" trick and is illegal here, so flatten those
+   // blocks into text first, then omit it. A bounded retry covers a pass
+   // that still comes back empty.
    if (!finalText && lastStopReason === "tool_use") {
       log.info(
          { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
          "Forcing final answer without tools (iteration cap reached)",
       );
-      try {
-         const forced = await observedCompletion(() =>
-            bedrock.send(
-               new ConverseCommand({
-                  modelId,
-                  system: systemBlocks,
-                  messages: convo.slice(),
-                  inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
-               }),
-            ),
-         );
-         if (forced.usage) {
-            trace.inputTokens += forced.usage.inputTokens ?? 0;
-            trace.outputTokens += forced.usage.outputTokens ?? 0;
+      let forceConvo = appendUserText(
+         flattenBedrockMessagesForForcing(convo),
+         FORCING_NUDGE,
+      );
+      for (let attempt = 1; attempt <= 2 && !finalText; attempt++) {
+         try {
+            const forced = await observedCompletion(() =>
+               bedrock.send(
+                  new ConverseCommand({
+                     modelId,
+                     system: systemBlocks,
+                     messages: forceConvo,
+                     inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
+                  }),
+               ),
+            );
+            if (forced.usage) {
+               trace.inputTokens += forced.usage.inputTokens ?? 0;
+               trace.outputTokens += forced.usage.outputTokens ?? 0;
+            }
+            lastStopReason = forced.stopReason ?? lastStopReason;
+            finalText = extractTextBlocks(
+               forced.output?.message?.content ?? [],
+            );
+            if (!finalText && attempt < 2) {
+               log.warn(
+                  { stopReason: lastStopReason, attempt },
+                  "Forcing pass returned no usable text — retrying",
+               );
+               forceConvo = appendUserText(forceConvo, FORCING_NUDGE_RETRY);
+            }
+         } catch (err) {
+            log.error({ err }, "Forcing pass failed");
+            break;
          }
-         lastStopReason = forced.stopReason ?? lastStopReason;
-         finalText = extractTextBlocks(forced.output?.message?.content ?? []);
-      } catch (err) {
-         log.error({ err }, "Forcing pass failed");
       }
    }
 
@@ -942,6 +1072,73 @@ function buildMessage(turn: Turn): Message {
       });
    }
    return { role: "user", content };
+}
+
+/**
+ * Rewrite a Converse conversation so it no longer contains toolUse/toolResult
+ * blocks. Required before a tools-free forcing pass: AWS 400s
+ * "The toolConfig field must be defined when using toolUse and toolResult
+ * content blocks." Consecutive same-role messages are merged (Converse
+ * requires strict user/assistant alternation).
+ *
+ * Exported for the contract test that pins the live 2026-09-03 failure shape.
+ */
+export function flattenBedrockMessagesForForcing(
+   messages: Message[],
+): Message[] {
+   const flattened: Message[] = [];
+   for (const msg of messages) {
+      const kept: ContentBlock[] = [];
+      const notes: string[] = [];
+      for (const b of msg.content ?? []) {
+         if ("toolUse" in b && b.toolUse) {
+            const tu = b.toolUse;
+            notes.push(
+               `Llamé ${tu.name ?? "?"}(${JSON.stringify(tu.input ?? {})})`,
+            );
+         } else if ("toolResult" in b && b.toolResult) {
+            notes.push(`Resultado: ${toolResultBody(b)}`);
+         } else {
+            kept.push(b);
+         }
+      }
+      if (notes.length > 0) kept.push({ text: notes.join("\n") });
+      if (kept.length === 0) continue;
+      const last = flattened[flattened.length - 1];
+      if (last && last.role === msg.role) {
+         last.content = [...(last.content ?? []), ...kept];
+      } else {
+         flattened.push({ role: msg.role, content: kept });
+      }
+   }
+   return flattened;
+}
+
+function toolResultBody(block: ContentBlock): string {
+   if (!("toolResult" in block) || !block.toolResult) return "ok";
+   const tr = block.toolResult;
+   const parts: string[] = [];
+   for (const c of tr.content ?? []) {
+      if ("text" in c && c.text) parts.push(c.text);
+      else if ("json" in c) parts.push(JSON.stringify(c.json));
+   }
+   return parts.join("\n") || tr.status || "ok";
+}
+
+/** Append a user text block, merging into the last message when it's already
+ * a user turn (Converse forbids two user messages in a row). */
+function appendUserText(messages: Message[], text: string): Message[] {
+   const out: Message[] = messages.map((m) => ({
+      role: m.role,
+      content: [...(m.content ?? [])],
+   }));
+   const last = out[out.length - 1];
+   if (last?.role === "user") {
+      last.content = [...(last.content ?? []), { text }];
+   } else {
+      out.push({ role: "user", content: [{ text }] });
+   }
+   return out;
 }
 
 function buildToolConfig(specs: ToolSpec[]): ToolConfiguration | undefined {
