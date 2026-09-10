@@ -79,7 +79,7 @@ UPDATE instagram_monitor_accounts
 
 `last_post_id = ''` is deliberately odd and load-bearing: `NULL` takes the `first_poll_seed` branch (pushes nothing), whereas a non-NULL value **absent from the returned window** falls through to `ordered.filter(p => p.takenAtMs > last_post_at)` — the strict capture-time gate — and pushes everything newer than the cutoff. Expect one `instagram_monitor.anchor_missing.time_gated` per account; that warning is the recipe working. The fan-out still honours `MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL` (5), and because the drip returns one account per tick, a fleet-wide window backfill lands gradually over ≈10 min × account count rather than as a burst.
 
-**Triage order when the channel is quiet — do these before touching anything** (they answer stopped / seeding / waiting-on-cadence in seconds):
+**Triage when the channel is quiet — do this before touching anything.** `npx tsx scripts/ig-monitor-status.ts` (read-only) prints the kill-switch state, scheduler heartbeat, unseeded/due-now counts, the next-poll ETA and the last 30 min of pushes, then names **which of the three states above you are in** plus the remedy. The raw queries it wraps, if you prefer them by hand:
 
 ```bash
 sqlite3 data/chopperbot.db "SELECT global_stop, requests_24h, heartbeat_at FROM instagram_monitor_runtime;"
