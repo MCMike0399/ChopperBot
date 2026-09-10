@@ -10,6 +10,7 @@ import { InstagramMonitorScheduler } from "../scheduler.js";
 import {
    InstagramAuthError,
    InstagramHardAccountError,
+   InstagramHtmlFeedError,
    InstagramRateLimitError,
    type InstagramFetcher,
    type RecentPost,
@@ -742,7 +743,7 @@ describe("InstagramMonitorScheduler — guardrails", () => {
       mem.close();
    });
 
-   test("a second 429 within the window trips the persistent breaker", async () => {
+   test("a second 429 within the window does NOT trip the breaker", async () => {
       const { store, mem } = await newStore();
       const now = Date.now();
       const a = store.upsertAccount({ username: "foo", added_by: "U" });
@@ -762,7 +763,120 @@ describe("InstagramMonitorScheduler — guardrails", () => {
          fetchCover: async () => null,
       });
       await sch.tickOnce();
+      expect(store.isGlobalStopped()).toBe(false);
+      mem.close();
+   });
+
+   test("a third 429 within the window trips the persistent breaker", async () => {
+      const { store, mem } = await newStore();
+      const now = Date.now();
+      const a = store.upsertAccount({ username: "foo", added_by: "U" });
+      store.markPollSuccess(a.account.id, now - 25 * 60 * 60 * 1000, "P0");
+      store.record429Event(now - 120_000);
+      store.record429Event(now - 60_000);
+      const sch = new InstagramMonitorScheduler({
+         store,
+         fetcher: spyFetcher(
+            new InstagramRateLimitError("throttled (HTTP 429)"),
+         ),
+         client: fakeClient,
+         getBoundChannels: ONE_CHANNEL,
+         classify: vi.fn(),
+         publish: vi.fn() as unknown as (
+            ...args: unknown[]
+         ) => Promise<PublishResult>,
+         fetchCover: async () => null,
+      });
+      await sch.tickOnce();
       expect(store.isGlobalStopped()).toBe(true);
+      mem.close();
+   });
+
+   test("HTML on a JSON API cools the whole fleet without tripping the breaker", async () => {
+      const { store, mem } = await newStore();
+      const now = Date.now();
+      const a = store.upsertAccount({ username: "aaa", added_by: "U" });
+      const b = store.upsertAccount({ username: "bbb", added_by: "U" });
+      store.markPollSuccess(a.account.id, now - 25 * 60 * 60 * 1000, "A0");
+      store.markPollSuccess(b.account.id, now - 24 * 60 * 60 * 1000, "B0");
+      const fetcher = {
+         async fetchRecentPosts(u: string) {
+            if (u === "aaa") {
+               throw new InstagramHtmlFeedError(
+                  "Instagram returned HTML instead of JSON on feed/user/1",
+               );
+            }
+            return [];
+         },
+      };
+      const sch = new InstagramMonitorScheduler({
+         store,
+         fetcher,
+         client: fakeClient,
+         getBoundChannels: ONE_CHANNEL,
+         classify: vi.fn(),
+         publish: vi.fn() as unknown as (
+            ...args: unknown[]
+         ) => Promise<PublishResult>,
+         fetchCover: async () => null,
+      });
+      await sch.tickOnce(); // aaa → HTML → 6h cooldown
+      await sch.tickOnce(); // skipped by cooldown
+      expect(store.isGlobalStopped()).toBe(false);
+      expect(store.getAccount("bbb")?.last_post_id).toBe("B0");
+      mem.close();
+   });
+
+   test("resume drip spaces polls after a long outage", async () => {
+      const { store, mem } = await newStore();
+      const now = Date.now();
+      const a = store.upsertAccount({ username: "aaa", added_by: "U" });
+      const b = store.upsertAccount({ username: "bbb", added_by: "U" });
+      store.markPollSuccess(a.account.id, now - 25 * 60 * 60 * 1000, "A0");
+      store.markPollSuccess(b.account.id, now - 24 * 60 * 60 * 1000, "B0");
+      const fetcher = spyFetcher();
+      const sch = new InstagramMonitorScheduler({
+         store,
+         fetcher,
+         client: fakeClient,
+         getBoundChannels: ONE_CHANNEL,
+         classify: vi.fn(),
+         publish: vi.fn() as unknown as (
+            ...args: unknown[]
+         ) => Promise<PublishResult>,
+         fetchCover: async () => null,
+         resumeDripStaleMs: 60 * 60 * 1000,
+         resumeDripGapMs: 60 * 60 * 1000,
+      });
+      await sch.tickOnce(); // first poll always goes through
+      await sch.tickOnce(); // fleet still stale + gap not elapsed → drip
+      expect(fetcher.calls()).toBe(1);
+      mem.close();
+   });
+
+   test("start() seeds the drip clock so a restart does not poll immediately", async () => {
+      const { store, mem } = await newStore();
+      const now = Date.now();
+      const a = store.upsertAccount({ username: "aaa", added_by: "U" });
+      store.markPollSuccess(a.account.id, now - 25 * 60 * 60 * 1000, "A0");
+      const fetcher = spyFetcher();
+      const sch = new InstagramMonitorScheduler({
+         store,
+         fetcher,
+         client: fakeClient,
+         getBoundChannels: ONE_CHANNEL,
+         classify: vi.fn(),
+         publish: vi.fn() as unknown as (
+            ...args: unknown[]
+         ) => Promise<PublishResult>,
+         fetchCover: async () => null,
+         resumeDripStaleMs: 60 * 60 * 1000,
+         resumeDripGapMs: 60 * 60 * 1000,
+      });
+      sch.start();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(fetcher.calls()).toBe(0);
+      await sch.dispose();
       mem.close();
    });
 

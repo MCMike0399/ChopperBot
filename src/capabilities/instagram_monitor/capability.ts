@@ -23,7 +23,11 @@ import {
    type InstagramFetchHints,
 } from "./fetcher.js";
 import { isModTurn } from "../mod-authority.js";
-import { InstagramMonitorScheduler } from "./scheduler.js";
+import {
+   InstagramMonitorScheduler,
+   RESUME_DRIP_GAP_MS,
+   RESUME_DRIP_STALE_MS,
+} from "./scheduler.js";
 import { InstagramMonitorToolSource } from "./source.js";
 import { setIgCdnUserAgent, configureIgCdn } from "./publisher.js";
 import { renderInstagramMonitorPrompt } from "./preamble.js";
@@ -68,12 +72,13 @@ export class InstagramMonitorCapability implements Capability {
       // browser the cookies came from; unset falls back to the built-in default.
       if (config.IG_USER_AGENT) setIgCdnUserAgent(config.IG_USER_AGENT);
       const hints = storeFetchHints(this.store);
-      // 0.8 warmup: a logged-in browser almost always loads the HTML profile
-      // before the feed XHR. 0.5 left a coin-flip of API-only polls, which is
-      // the scraper signature IG already flagged us for.
+      // Always HTML-warmup: a logged-in browser loads the profile page before
+      // the feed XHR. 0.5 was a coin-flip of API-only polls (scraper tell);
+      // 0.8 still skipped 1 in 5 — the first resume poll after the 2026-09-02
+      // kill-switch was one of those skips and came back HTML 404 not-logged-in.
       const fetcher = new DirectInstagramFetcher(
          auth,
-         0.8,
+         1,
          config.IG_USER_AGENT,
          hints,
       );
@@ -129,6 +134,8 @@ export class InstagramMonitorCapability implements Capability {
             ),
          dailyRequestBudget: config.IG_DAILY_REQUEST_BUDGET,
          tickSkipProbability: TICK_SKIP_PROBABILITY,
+         resumeDripStaleMs: RESUME_DRIP_STALE_MS,
+         resumeDripGapMs: RESUME_DRIP_GAP_MS,
       });
       this.scheduler.start();
       log.info(
