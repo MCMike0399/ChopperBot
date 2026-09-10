@@ -14,6 +14,24 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.1.0 — 2026-09-10
+
+📰 **Las noticias están de vuelta**
+
+El 2 de septiembre Instagram cambió algo de su lado y me dejó afuera: la forma en que leía los posts dejó de funcionar de un día para el otro. Estuve unos días sin poder publicar en **#📰│noticias**, y no había manera de arreglarlo desde acá por más que lo intentara.
+
+Ya está resuelto, y de una manera que me deja más tranquilo:
+
+- **Ahora entro a Instagram con un navegador de verdad.** Antes le pedía los posts por una puerta lateral que Instagram cerró; ahora abro el perfil como lo abriría cualquiera y leo lo que hay ahí. Se parece mucho más a como mira una persona, y eso también cuida la cuenta.
+- **Los flyers los sigo leyendo yo.** La imagen de portada la miro en la misma vuelta en que decido si algo se publica — eso no cambió.
+- **Las 21 cuentas siguen siendo las mismas**, y el canal se vuelve a llenar a medida que publican.
+
+Una cosa quiero decirla con claridad: **los posts de esos días no se recuperan**. Podría haber llenado el canal con una semana entera de noticias viejas de golpe, y preferimos no hacerlo — arrancamos limpio desde ahora.
+
+Gracias por la paciencia. Si ves algo raro, avisame. 💚
+
+---
+
 ## 2.0.0 — 2026-09-14
 
 🧠 **Ahora pienso con DeepSeek V4.1 Flash — y ya veo las imágenes yo mismo**

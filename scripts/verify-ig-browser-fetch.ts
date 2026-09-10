@@ -14,6 +14,7 @@
 //
 // Run: npx tsx scripts/verify-ig-browser-fetch.ts [username]
 import "dotenv/config";
+import { Client, GatewayIntentBits } from "discord.js";
 import { config } from "../src/config.js";
 import {
    BrowserInstagramFetcher,
@@ -21,7 +22,11 @@ import {
 } from "../src/capabilities/instagram_monitor/browser-fetcher.js";
 import type { InstagramAuth } from "../src/capabilities/instagram_monitor/fetcher.js";
 import { classifyPost } from "../src/capabilities/instagram_monitor/classifier.js";
-import { configureIgCdn, fetchCover } from "../src/capabilities/instagram_monitor/publisher.js";
+import {
+   configureIgCdn,
+   fetchCover,
+   publishPost,
+} from "../src/capabilities/instagram_monitor/publisher.js";
 import { sniffImageFormat } from "../src/attachments/attachable.js";
 
 const username = process.argv[2] ?? "revueltasperiodico";
@@ -92,12 +97,13 @@ try {
    console.log(`   ok: ${format}`);
    failures = 0;
 
+   let verdict: Awaited<ReturnType<typeof classifyPost>> | null = null;
    if (skipVision) {
       console.log("\n4) vision classify … SKIPPED (--no-vision)");
    } else {
       console.log("\n4) vision classify (one real LLM call) …");
       const mimeType = format === "jpeg" ? "image/jpeg" : `image/${format}`;
-      const verdict = await classifyPost(username, newest, {
+      verdict = await classifyPost(username, newest, {
          cover: { bytes, mimeType, format },
          nowMs: Date.now(),
       });
@@ -106,6 +112,29 @@ try {
       if (typeof verdict.relevant !== "boolean") {
          throw new Error("classifier did not return a boolean relevance verdict");
       }
+   }
+
+   // 5) Optional: exercise the real Discord card render + send. Pass an ADMIN
+   // channel id, never a community one — this posts a genuine-looking card and
+   // is meant to prove the last link of the chain without pinging the server.
+   const publishTo = process.argv
+      .find((a) => a.startsWith("--publish-to="))
+      ?.split("=")[1];
+   if (publishTo) {
+      if (!verdict) throw new Error("--publish-to needs the vision step (drop --no-vision)");
+      console.log(`\n5) publish card to channel ${publishTo} …`);
+      const client = new Client({
+         intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
+      });
+      await new Promise<void>((res, rej) => {
+         client.once("clientReady", () => res());
+         client.once("error", rej);
+         void client.login(config.DISCORD_TOKEN).catch(rej);
+      });
+      const result = await publishPost(client, publishTo, username, newest, verdict, bytes);
+      await client.destroy();
+      console.log(`   ok: ${JSON.stringify(result)}`);
+      if (!result.ok) throw new Error(`publishPost failed: ${result.reason}`);
    }
 
    console.log("\n✅ ALL CHECKS PASSED");
