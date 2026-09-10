@@ -28,6 +28,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `minutas` — voice/stage recording (slash commands, mod-gated), per-speaker whisper.cpp transcription, LLM minutes, MinIO drafts                                                                                                                                                                                                                                   | [docs/capabilities/minutas.md](docs/capabilities/minutas.md)                     |
 | `configuration` — admin console, `config_system action:health`, per-capability admin sources                                                                                                                                                                                                                                                                      | [docs/capabilities/configuration.md](docs/capabilities/configuration.md)         |
 | Pi deployment, systemd unit, alert surfaces, crash-restart detection, logs — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo)                                                                                                                                                                                                     | [docs/deployment.md](docs/deployment.md)                                         |
+| **Working from the Mac and shipping to the Pi** — clone-drift check, what can and cannot be tested locally, the push → pull → build-on-Pi → restart sequence, verification gates, rollback — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo)                                                                                     | [docs/remote-dev.md](docs/remote-dev.md)                                         |
 | Any env var, config seeding rules, AWS account wiring — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo)                                                                                                                                                                                                                          | [docs/environment.md](docs/environment.md)                                       |
 
 ## Commands
@@ -75,6 +76,19 @@ pnpm run release 1.0.1 --commit --push               # publish, THEN git add -A 
 ## Deployment — summary
 
 The live deployment is a **Raspberry Pi** and **this repo directory IS that deployment**; a systemd **user** unit `chopperbot.service` runs `node dist/index.js` (`Restart=always`, boot autostart via linger). **Edits go live only after `pnpm run build` + `systemctl --user restart chopperbot.service`.** The unit is generated from `deploy/systemd/chopperbot.service` — keep that template in sync. Discord-facing alerts (IG monitor, LLM health, crash-restart detection) post to the config channel; there are no log files, everything is `journalctl --user -u chopperbot`. Full details (alert surface, lifecycle, macOS rollback artifacts, observability recipes): [docs/deployment.md](docs/deployment.md).
+
+## Remote development — when you are on the Mac, not the Pi
+
+**The paragraph above is written from the deployment's point of view, and on the Mac it is false.** This clone at `~/Developer/ChopperBot` is **not** a deployment: no service runs here, `dist/` is only a build artifact, and nothing you edit is live until it reaches the Pi. The live bot is the Pi's working tree at `/home/burbujamc/Documentos/ChopperBot`, supervised by `chopperbot.service`.
+
+An agent working here therefore has to reach the Pi over `ssh pi` to test anything real and to ship. The load-bearing rules:
+
+1. **Check drift before you read code.** This clone drifts behind `origin/main`, and the Pi's tree may hold uncommitted in-flight work. Run `git fetch origin && git status -sb`, then `ssh pi "cd /home/burbujamc/Documentos/ChopperBot && git status -sb"`. Reasoning about a stale clone is the most common way a Mac-side agent ships a regression.
+2. **Test locally, but know the ceiling.** `pnpm run typecheck` + `npx vitest run` + `pnpm run build` are necessary and *not* sufficient: real Discord, MinIO/`workshop`, IG polling, `minutas` transcription and the untracked `calendar/*.pdf` templates exist only on the Pi.
+3. **Deploy = push → pull on the Pi → build on the Pi → restart → verify.** Build on the Pi (aarch64, native `better-sqlite3`); never ship the Mac's `dist/`. Verify with `systemctl --user status` reading `active (running)` **and** observed behavior — green tests are not proof.
+4. **Never** `rsync --delete`, `git reset --hard` or `git checkout .` against the Pi's tree — it may hold the only copy of in-flight work.
+
+Full workflow, verification gates, rollback and the failure-mode table: [docs/remote-dev.md](docs/remote-dev.md) — **local-only/untracked** (on the Mac + Pi working trees, not in the public repo).
 
 ## Architecture
 

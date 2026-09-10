@@ -22,6 +22,7 @@ calendar/*.pdf
 docs/revolucion-z-capabilities.md
 docs/deployment.md
 docs/environment.md
+docs/remote-dev.md
 deploy/bin/
 deploy/launchd/
 
