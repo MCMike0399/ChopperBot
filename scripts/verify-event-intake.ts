@@ -2,10 +2,13 @@
 //   1. fetch a real Ticket Tool form message,
 //   2. run the detector + parser on it,
 //   3. build the proposal prompt + a READ-ONLY calendar tool bundle over the
-//      live DB and call real Bedrock to produce the proposal (conflict check
-//      included).
+//      live DB and call the real backend — DeepSeek V4.1 Flash (`deepseek-flash`)
+//      at effort `high`, the same tier the watcher's proposal turn declares — to
+//      produce the proposal (conflict check included).
 // Posts NOTHING to Discord and creates NO calendar event. Spends a little
-// Bedrock budget (like the other smoke scripts). Logs out cleanly.
+// DeepSeek budget (like the other smoke scripts). Logs out cleanly.
+//
+// Effort is `low | high | max` (plus `medium` as a legacy alias for `high`).
 //
 //   npx tsx scripts/verify-event-intake.ts [channelId]
 import "dotenv/config";
@@ -115,7 +118,7 @@ async function main(): Promise<void> {
       );
 
       console.log(
-         "\n--- generating proposal (real Bedrock, conflict-checks live calendar) ---\n",
+         "\n--- generating proposal (real DeepSeek, conflict-checks live calendar) ---\n",
       );
       const proposal = await ask({
          system: renderProposalPrompt(new Date(), parsed, requesterId),
@@ -126,6 +129,9 @@ async function main(): Promise<void> {
             },
          ],
          tools: composeToolSources([source]),
+         // Mirrors src/capabilities/event_intake/watcher.ts: a mis-read
+         // date/time propagates straight into the calendar a mod approves.
+         effort: "high",
       });
       console.log(proposal);
       db.close();

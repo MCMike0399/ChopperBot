@@ -7,7 +7,6 @@ import {
 } from "../../attachments/attachable.js";
 import type { Turn } from "../../discord/history.js";
 import type { RecentPost } from "./fetcher.js";
-
 export type ClassificationType =
    | "evento"
    | "convocatoria"
@@ -67,11 +66,11 @@ IMPORTANTE para \`when\` y \`where\`: cuando no apliquen, usa el valor JSON \`nu
 
 Si el post no es relevante, igual devuelve un objeto válido con \`relevant: false\` y \`type: "otro"\` y deja \`title\`/\`summary\` vacíos o muy breves. No expliques tu razonamiento fuera del JSON.`;
 
-/** System prompt for the vision (Nova Lite) transcription stage. Nova ONLY
- * reads the flyer here — it never decides relevance. Keeping the decision off
- * the weaker vision model is deliberate: Nova regularly mangled the JSON schema
- * (e.g. emitting the string "null" for `when`), whereas reading text off a
- * flyer is "not a model differentiator" (Nova does it reliably). */
+/** System prompt for the image-reading path. Kept exported (the dev scripts
+ * import it) and still useful on its own: it is the prompt that makes the model
+ * transcribe a flyer rather than summarize it. The classifier itself no longer
+ * runs a separate transcription stage — see `classifyPost` — but a caller that
+ * only wants the text off an image can use this. */
 export const TRANSCRIBE_SYSTEM_PROMPT = `Eres un transcriptor de imágenes. Te doy la imagen de portada de un post de Instagram — normalmente un flyer de un colectivo activista mexicano.
 
 Transcribe TODO el texto visible en la imagen, en español, tal como aparece: títulos, fechas, horas, lugares, nombres, convocatorias, hashtags, datos de contacto. Conserva el orden de lectura de arriba a abajo. Si la imagen tiene poco o ningún texto, describe en 1-2 líneas qué se ve.
@@ -79,37 +78,42 @@ Transcribe TODO el texto visible en la imagen, en español, tal como aparece: t�
 Responde SOLO con el texto transcrito (o la breve descripción). Sin comentarios, sin encabezados, sin formato adicional.`;
 
 export interface ClassifierOptions {
-   /** Optional cover image as raw bytes — read by the Nova transcription stage. */
+   /** Optional cover image as raw bytes. Since the 2026-09-14 v4.1 migration this
+    * goes straight to the model as an image part — the same call that decides. */
    cover?: { bytes: Uint8Array; mimeType: string; format: ImageFormat };
    nowMs: number;
 }
 
 /**
- * Two-stage classification (2026-07-15). Kimi is the text BRAIN and makes every
- * relevance/type/date decision; Amazon Nova Lite is used ONLY as the eyes:
+ * ONE call, image included (v4.1 migration, 2026-09-14).
  *
- *   1. VISION (Nova Lite) — if the post has a cover, transcribe the flyer's
- *      visible text. Failure is non-fatal (we fall back to caption-only).
- *   2. TEXT (Kimi) — classify from the caption + the transcribed flyer text.
+ * History, because this function has been through three shapes and why each
+ * earlier one was abandoned still matters:
  *
- * This replaced the single image-carrying `ask()` that routed the WHOLE
- * decision to Nova (the routing rule sends any image turn to Bedrock). Nova
- * doing the decision was the root cause of the string-"null" / lower-quality
- * classifications seen after the 2026-07-13 Kimi repoint. Returns a parsed
- * Classification, or — on parse/call failure — a non-relevant one with a
- * `reason` set, so the caller never has to handle a null.
+ *   1. Until 2026-07-15 — one `ask()` with the cover attached, which the routing
+ *      rule sent to Amazon Nova Lite. Nova is a weak DECIDER: it intermittently
+ *      emitted the JSON schema wrong (`"when": "null"` as a STRING, printed
+ *      literally as `Cuándo: null` on the card).
+ *   2. 2026-07-15 → 2026-09-14 — TWO stages: Nova transcribed the flyer at
+ *      `effort: 'low'`, then the text brain decided from caption + transcription.
+ *      That split existed ONLY because the text brain was blind.
+ *   3. Now — one call again, and it is NOT a regression to shape 1: the reader
+ *      and the decider are the same frontier model, and V4.1 Flash reads images
+ *      natively. The old failure came from handing the DECISION to a small
+ *      vision-only model, not from attaching an image.
+ *
+ * `parseClassificationReply` still folds nullish string tokens, and the prompt
+ * still demands a JSON literal: that guard was written for Nova's sloppiness but
+ * costs nothing and keeps a future regression caught.
+ *
+ * Returns a parsed Classification, or — on parse/call failure — a non-relevant
+ * one with a `reason` set, so the caller never has to handle a null.
  */
 export async function classifyPost(
    account: string,
    post: RecentPost,
    opts: ClassifierOptions,
 ): Promise<Classification> {
-   // Stage 1 (vision, Nova Lite): read the flyer. Non-fatal on failure.
-   const flyerText = opts.cover
-      ? await transcribeFlyer(account, post, opts.cover)
-      : null;
-
-   // Stage 2 (text brain, Kimi): decide relevance/type/date from caption + flyer text.
    const takenIso = new Date(post.takenAtMs).toISOString();
    const userText = [
       `Cuenta: @${account}`,
@@ -119,32 +123,49 @@ export async function classifyPost(
       "",
       "Caption:",
       post.caption || "(sin caption)",
-      ...(flyerText
+      ...(opts.cover
          ? [
               "",
-              "Texto de la imagen (portada), transcrito por un lector de imágenes. Úsalo JUNTO " +
-                 "con el caption para clasificar y resumir — muchos flyers ponen el qué/cuándo/dónde " +
-                 "SOLO en la imagen, no en el caption:",
-              flyerText,
+              "La portada del post va adjunta como imagen. Léela JUNTO con el caption para clasificar " +
+                 "y resumir — muchos flyers ponen el qué/cuándo/dónde SOLO en la imagen, no en el caption.",
            ]
          : []),
    ].join("\n");
 
+   const attachment = opts.cover
+      ? new ImageAttachable(
+           `post-${post.shortcode}.${opts.cover.format === "jpeg" ? "jpg" : opts.cover.format}`,
+           opts.cover.mimeType,
+           opts.cover.bytes,
+           opts.cover.format,
+        )
+      : undefined;
+
    const tools = composeToolSources([]);
    let raw = "";
    try {
-      // No attachment here → routes to Kimi (the text brain). The flyer's text is
-      // already inlined above, so this stage never needs vision.
-      const turn: Turn = { role: "user", content: userText };
+      const turn: Turn = {
+         role: "user",
+         content: userText,
+         ...(attachment ? { attachments: [attachment] } : {}),
+      };
+      // `low` = thinking OFF. Classification is a single-shot read-and-decide task
+      // on essentially all the IG volume, so it takes the cheapest tier; the vision
+      // read rides the same request at no extra call.
       raw = await ask({
          system: SYSTEM_PROMPT,
          messages: [turn],
          tools,
-         effort: "medium",
+         effort: "low",
       });
    } catch (err) {
       log.warn(
-         { err, account, shortcode: post.shortcode },
+         {
+            err,
+            account,
+            shortcode: post.shortcode,
+            had_cover: Boolean(opts.cover),
+         },
          "classifier ask() failed",
       );
       return failClassification(
@@ -161,49 +182,6 @@ export async function classifyPost(
       return failClassification("parse_error");
    }
    return parsed;
-}
-
-/**
- * Stage 1: ask Nova Lite (the vision backend) to transcribe the flyer's visible
- * text. Returns the transcription, or null if there's no usable text or the
- * vision call fails — the caller then classifies caption-only, so a bad/missing
- * cover never drops a post (the "never do worse than caption-only" guarantee).
- */
-async function transcribeFlyer(
-   account: string,
-   post: RecentPost,
-   cover: NonNullable<ClassifierOptions["cover"]>,
-): Promise<string | null> {
-   const attachment = new ImageAttachable(
-      `post-${post.shortcode}.${cover.format === "jpeg" ? "jpg" : cover.format}`,
-      cover.mimeType,
-      cover.bytes,
-      cover.format,
-   );
-   const tools = composeToolSources([]);
-   const turn: Turn = {
-      role: "user",
-      content: `Transcribe el texto visible en esta imagen (portada del post de @${account}).`,
-      attachments: [attachment],
-   };
-   try {
-      // Image attached → ask() routes to Nova Lite. effort 'low' is the vision
-      // tier (the attachment alone already forces Bedrock, but be explicit).
-      const raw = await ask({
-         system: TRANSCRIBE_SYSTEM_PROMPT,
-         messages: [turn],
-         tools,
-         effort: "low",
-      });
-      const text = raw.trim();
-      return text.length > 0 ? text : null;
-   } catch (err) {
-      log.warn(
-         { err, account, shortcode: post.shortcode },
-         "flyer transcription (Nova) failed — classifying caption-only",
-      );
-      return null;
-   }
 }
 
 /** A non-relevant Classification carrying a failure `reason`, so callers never

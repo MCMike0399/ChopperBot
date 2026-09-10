@@ -12,7 +12,10 @@
  * to Kimi — i.e. the console confidently named a model the bot never calls.
  * The same class of lie came back after the 2026-08-13 DeepSeek cutover:
  * `health`/`bot_info` hardcoded Kimi even while `LLM_TEXT_BACKEND=deepseek`.
- * Both now report `textBackend` (provider + model id + display name).
+ * Both now report `textBackend` (provider + model id + display name) — and since
+ * the 2026-09-14 v4.1 migration there is only ONE backend and one model for
+ * text and images alike, so the `vision` block mirrors `text` rather than
+ * naming Amazon Nova.
  *
  * Every block is **best-effort and independently guarded**: this is a diagnostic,
  * so one missing table or un-migrated capability must degrade to
@@ -139,7 +142,7 @@ export function collectHealth(deps: HealthDeps): HealthReport {
    if (uptimeMs < 10 * 60_000)
       problems.push(`Reinicio reciente: lleva ${humanAge(uptimeMs)} arriba.`);
 
-   // ── LLM (the actual two backends, not the legacy field) ───────────────────
+   // ── LLM (one backend for everything since the v4.1 migration) ────────────
    const llmSnapshot: LlmHealthSnapshot = llmHealth.snapshot();
    const llm = {
       text: {
@@ -149,13 +152,15 @@ export function collectHealth(deps: HealthDeps): HealthReport {
          base_url: textBackend.baseUrl,
          note: "Todo el texto (chat, calendario, event_intake, decisión del clasificador de IG).",
       },
+      // V4.1 Flash is natively multimodal, so images ride the SAME model and the
+      // same request as the tools. Kept as its own key because operators ask
+      // "what reads the flyers?" — the answer is now just the model above.
       vision: {
-         backend: "bedrock",
-         model: config.BEDROCK_MODEL_LOW,
-         region: config.AWS_REGION,
-         note: "SÓLO imágenes (el cerebro de texto no ve imágenes).",
+         backend: textBackend.provider,
+         model: textBackend.modelId,
+         note: "Las imágenes van al MISMO modelo que el texto (multimodal nativo).",
       },
-      max_output_tokens: config.MAX_OUTPUT_TOKENS,
+      max_output_tokens: textBackend.maxOutputTokens,
       max_tool_iterations: config.MAX_TOOL_ITERATIONS,
       health: llmSnapshot,
    };

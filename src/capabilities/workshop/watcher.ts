@@ -541,11 +541,13 @@ export class WorkshopWatcher {
             system,
             messages: turns,
             tools,
-            // High tier (2026-08-13): a workshop turn is the longest tool loop in
-            // the bot — sandboxed Python, doc indexing, file send — and it runs up
-            // to MAX_TOOL_ITERATIONS. Weak tool-calling here burns the whole
-            // iteration budget and lands the member on the forcing-pass fallback.
-            effort: "high",
+            // MAX tier (v4.1 migration, 2026-09-14): a workshop turn is the longest
+            // and most tool-dense loop in the bot — sandboxed Python, doc indexing,
+            // file send — and it runs up to MAX_TOOL_ITERATIONS. Weak tool-calling
+            // here burns the whole iteration budget and lands the member on the
+            // forcing-pass fallback, so it gets the top reasoning budget. It is the
+            // ONLY capability on `max`: everything else that thinks uses `high`.
+            effort: "max",
             onPhase: (phase, detail) => presenter.onPhase(phase, detail),
             shouldAbort: () => abortFlag.aborted,
          });

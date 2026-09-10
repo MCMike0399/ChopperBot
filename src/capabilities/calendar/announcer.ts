@@ -354,7 +354,9 @@ export class CalendarAnnouncer {
         system: renderMatchPrompt(occ, enriched),
         messages: [{ role: 'user', content: 'Decide.' }],
         tools: NO_TOOLS,
-        effort: 'medium',
+        // Single-shot pick from a short candidate list, no tools: `low`
+        // (thinking OFF) is the right tier and the cheapest.
+        effort: 'low',
       });
       const parsed = parseMatchReply(reply, enriched.map((c) => c.discordEventId));
       chosen = parsed.discordEventId;
@@ -572,6 +574,10 @@ export class CalendarAnnouncer {
           system: renderAnnouncementPrompt(target, nowMs),
           messages: [{ role: 'user', content: 'Escribe el anuncio de hoy.' }],
           tools: NO_TOOLS,
+          // Prose written from facts the deterministic path already gathered — no
+          // tools, no multi-step plan, nothing to reason about. `low` keeps the
+          // daily announcement, which runs unattended every day, cheap.
+          effort: 'low',
         })
       ).trim();
       // A model that returns nothing (or a refusal-length stub) must not become

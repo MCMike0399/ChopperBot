@@ -1,104 +1,81 @@
 import OpenAI from "openai";
-import {
-   BedrockRuntimeClient,
-   ConverseCommand,
-   type ContentBlock,
-   type Message,
-   type Tool,
-   type ToolConfiguration,
-} from "@aws-sdk/client-bedrock-runtime";
 import { config, textBackend } from "../config.js";
 import { log } from "../log.js";
 import { Semaphore } from "./gate.js";
 import { isContentFilterRejection, llmHealth } from "./health.js";
 import type { Turn } from "../discord/history.js";
 import {
-   composeToolSources,
    type ComposedTools,
    type ToolHandlerResult,
    type ToolSpec,
 } from "../tools/source.js";
 
-// ── Two backends, chosen per turn ────────────────────────────────────────────
-// DEFAULT (LLM_TEXT_BACKEND=kimi, self-hosted/Pi): EVERY text turn — Discord
-// chat, calendar/config tool-calling, event-intake proposals, and the IG
-// classifier's caption-only fallback — runs on Moonshot Kimi 2.7 Thinking via
-// the OpenAI-compatible chat-completions API. Bedrock serves ONLY images there:
-// Kimi is text-only, so a turn carrying an attachment goes to Amazon Nova Lite
-// (the effort `low` tier). The routing rule:
+// ── One brain, one loop (v4.1 migration, 2026-09-14) ─────────────────────────
+// Every turn — Discord chat, calendar/config tool-calling, event-intake
+// proposals, the IG classifier, and anything carrying an image — runs on
+// **DeepSeek-V4.1-Flash** (`deepseek-flash`) through the OpenAI-compatible
+// chat-completions API. This replaced BOTH previous backends:
 //
-//   effort 'low' (vision tier)       → Bedrock (Amazon Nova Lite) — images, or
-//                                      the IG-classifier transcription call
-//   has an image AND effort high/med → TWO-STAGE: Nova transcribes, then the
-//                                      text brain runs the tool loop (pixels
-//                                      never reach Kimi/DeepSeek)
-//   text + LLM_TEXT_BACKEND=kimi     → Kimi 2.7 Thinking
-//   text + LLM_TEXT_BACKEND=deepseek → DeepSeek V4-Flash (same wire shape)
-//   text + LLM_TEXT_BACKEND=bedrock  → Bedrock Converse (BEDROCK_MODEL_ID)
+//   • Amazon Bedrock / Nova Lite — the old images-only vision path. V4.1 Flash
+//     is natively multimodal (released 2026-09-10), so the two-stage "Nova
+//     transcribes, the text brain acts" split was deleted along with its whole
+//     Converse agent loop. Images now ride the same request as the tools.
+//   • Moonshot Kimi — the old alternate text brain, retired with it.
 //
-// Nova is NOT optional and cannot be consolidated away: neither text brain can
-// see images. DeepSeek V4 rejects `image_url` with a 400 at the deserialization
-// layer on both Flash and Pro (probed 2026-08-10). The two-stage split is the
-// same pattern the IG classifier has used since 2026-07-15 — it became the
-// generic image-turn rule on 2026-09-03 after Nova Lite, handed the calendar
-// tool bundle because a flyer was attached, looped `calendar_draft_announcement`
-// ten times and then 400'd the forcing pass.
+// Effort no longer selects a backend or a model. There is ONE model; `effort`
+// picks a thinking MODE plus DeepSeek's `reasoning_effort`:
 //
-// The bedrock text mode exists for AWS-native deploys:
-// no external LLM API key is available there, so text runs on the same Bedrock
-// client, authenticated by the task role. The Kimi coding endpoint gates by
-// client fingerprint: requests with the default openai-node User-Agent get a
-// 403 ("Kimi For Coding is currently only available for Coding Agents…").
-// `claude-cli/1.0.0` is empirically on the allowlist; override via
-// KIMI_USER_AGENT if it changes. The client is constructed LAZILY — in bedrock
-// text mode no API key exists and no OpenAI-compatible client is needed.
+//   'low'  → thinking DISABLED — conversational turns, classification, summaries
+//   'high' → thinking enabled, `reasoning_effort: 'high'` — the tool-loop caps
+//   'max'  → thinking enabled, `reasoning_effort: 'max'`  — the workshop only
 //
-// Which provider fills this slot is config, not code: `textBackend` resolves
-// LLM_TEXT_BACKEND=kimi|deepseek into one {apiKey, baseUrl, modelId} shape.
-// Both speak chat-completions and both return `reasoning_content`, so the loop
-// below is identical for either.
-const kimi = textBackend.apiKey
+// `'medium'` is still accepted as a LEGACY alias for `'high'`, because that is
+// exactly what it meant on the old backend (thinking on) and stored config or a
+// capability that has not been migrated must not silently lose thinking.
+//
+// READ BEFORE CHANGING THE EFFORT HANDLING — docs/llm.md carries the measured
+// history. Summary of the two live probes (2026-09-14, on this exact model):
+// `thinking.type` is load-bearing and reliable (disabled ⇒ 0 reasoning tokens);
+// `reasoning_effort` is documented (low/high/max) but measured INERT — medians
+// of 257 / 244 / 186 reasoning tokens for low/high/max, overlapping, with `max`
+// landing lowest, and the control value "banana" returning 200 rather than an
+// error. We still send it because it is the documented API, it costs nothing,
+// and it becomes correct the day DeepSeek wires it up server-side. Do not
+// "fix" the tiers by inventing a client-side approximation of depth.
+
+const client = textBackend.apiKey
    ? new OpenAI({
         apiKey: textBackend.apiKey,
         baseURL: textBackend.baseUrl,
-        defaultHeaders: {
-           "User-Agent": textBackend.userAgent,
-        },
      })
    : null;
 
-// Bedrock client (vision path always; text path when LLM_TEXT_BACKEND=bedrock).
-// Credentials: the short ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env when
-// set (NOT the AWS_-prefixed standard names, so a stray AWS CLI credential on
-// the host can't shadow them); otherwise the AWS default credential chain
-// (ECS task role, instance profile, or AWS_PROFILE). Region defaults to
-// us-east-1.
-const bedrock = new BedrockRuntimeClient({
-   region: config.AWS_REGION,
-   ...(config.ACCESS_KEY_ID && config.SECRET_ACCESS_KEY
-      ? {
-           credentials: {
-              accessKeyId: config.ACCESS_KEY_ID,
-              secretAccessKey: config.SECRET_ACCESS_KEY,
-              ...(config.AWS_SESSION_TOKEN
-                 ? { sessionToken: config.AWS_SESSION_TOKEN }
-                 : {}),
-           },
-        }
-      : {}),
-});
+/**
+ * Effort tier — a thinking mode on the one model, never a different model.
+ *   low  — thinking disabled. Conversational turns and every classification /
+ *          summary surface: essentially all the volume.
+ *   high — thinking enabled at DeepSeek's `high`. The capabilities that drive
+ *          multi-turn tool loops where a wrong call writes state.
+ *   max  — thinking enabled at DeepSeek's `max`. Reserved for the workshop, the
+ *          bot's longest and most tool-dense loop.
+ */
+export type Effort = "low" | "high" | "max";
 
 /**
- * Effort tier. Since the 2026-07-13 Kimi repoint, `high` and `medium` are both
- * text → Kimi; `low` is the Nova Lite vision tier. Bedrock (Nova Lite) is used
- * ONLY for image turns — see the routing rule in ask().
- *   high   — chat + calendar + event-intake (text brain, thinking on).
- *   medium — IG classifier decision + conversational turns (text brain, thinking off).
- *   low    — the vision tier: Amazon Nova Lite (images / transcription).
- * Image turns at high/medium are two-stage: Nova transcribes, then this tier
- * runs on the text brain.
+ * Legacy tier from the pre-v4.1 world. `'medium'` meant "thinking OFF" on the
+ * old DeepSeek backend but "the IG classifier's text tier"; capabilities that
+ * still declare it are normalised to `'high'` (thinking ON) because that is the
+ * conservative direction — a turn that used to reason must not silently stop.
  */
-export type Effort = "high" | "medium" | "low";
+export type LegacyEffort = "medium";
+
+/** Normalise a declared tier, honouring the legacy `'medium'` spelling. */
+export function normalizeEffort(
+   effort: Effort | LegacyEffort | undefined,
+): Effort {
+   if (effort === "medium") return "high";
+   return effort ?? "high";
+}
 
 /** Progress signal emitted by the agent loop: `thinking` right before each
  * model request, `tool` right before each tool handler runs (with the tool's
@@ -110,10 +87,8 @@ export interface AskInput {
    system: string;
    messages: Turn[];
    tools: ComposedTools;
-   /** Model tier. Defaults to 'high' (text brain, thinking on). Effort 'low'
-    * is the vision tier (Nova Lite). Other image turns transcribe via Nova
-    * then continue on the text brain. */
-   effort?: Effort;
+   /** Thinking tier. Defaults to `'high'`. See {@link Effort}. */
+   effort?: Effort | LegacyEffort;
    /** Optional progress hook for user-visible status (see {@link AskPhase}). */
    onPhase?: (phase: AskPhase, detail?: string) => void;
    /**
@@ -136,12 +111,12 @@ export class TurnAbortedError extends Error {
 }
 
 /**
- * Gate on concurrent Kimi HTTP requests (NOT whole turns — two agent loops
+ * Gate on concurrent DeepSeek HTTP requests (NOT whole turns — two agent loops
  * interleave their requests, so multi-user chat stays responsive while the
- * provider never sees more than KIMI_MAX_CONCURRENT requests in flight). See
- * gate.ts for the live failure this fixes.
+ * provider never sees more than DEEPSEEK_MAX_CONCURRENT requests in flight).
+ * See gate.ts for the live failure this fixes.
  */
-const kimiGate = new Semaphore(textBackend.maxConcurrent);
+const deepseekGate = new Semaphore(textBackend.maxConcurrent);
 
 interface AgentTrace {
    iterations: number;
@@ -152,6 +127,7 @@ interface AgentTrace {
    }>;
    inputTokens: number;
    outputTokens: number;
+   reasoningTokens: number;
 }
 
 /** Run one LLM call, reporting its outcome to the LLM health watchdog
@@ -170,9 +146,9 @@ async function observedCompletion<T>(call: () => Promise<T>): Promise<T> {
 
 /**
  * Same as observedCompletion, but re-labels a provider moderation refusal as a
- * ContentFilterRejection so ask() can recover from it (retry, then the other
- * backend) instead of surfacing an error to the member. `toolCallsExecuted` is
- * read at throw time: it's what makes the retry decision safe.
+ * ContentFilterRejection so ask() can recover from it (one retry) instead of
+ * surfacing an error to the member. `toolCallsExecuted` is read at throw time:
+ * it's what makes the retry decision safe.
  */
 async function observedTextCompletion<T>(
    call: () => Promise<T>,
@@ -189,9 +165,9 @@ async function observedTextCompletion<T>(
 }
 
 /**
- * Thrown by askKimi when the provider's risk/moderation filter refused the
- * request (see isContentFilterRejection). Carries how many tool calls the loop
- * had already executed, because that decides whether retrying is safe.
+ * Thrown when the provider's risk/moderation filter refused the request (see
+ * isContentFilterRejection). Carries how many tool calls the loop had already
+ * executed, because that decides whether retrying is safe.
  */
 class ContentFilterRejection extends Error {
    constructor(
@@ -203,114 +179,41 @@ class ContentFilterRejection extends Error {
    }
 }
 
-/** Last resort when both backends refuse the turn. Spanish + in-voice: the
- * member should learn the provider blocked it, not read a stack-trace hint.
+/** Last resort when the retry is refused too. Spanish + in-voice: the member
+ * should learn the provider blocked it, not read a stack-trace hint.
  * Exported for history filtering (see EMPTY_RESPONSE_FALLBACK). */
 export const CONTENT_FILTER_FALLBACK =
    "El filtro del proveedor del modelo bloqueó esa pregunta, así que no me llega la respuesta. Si la planteas de otra forma le entro sin problema.";
 
 /**
- * Entry point. Effort `low` is the vision tier and always runs on Nova Lite
- * (the IG classifier's flyer transcription, plus any caller that wants pixels
- * in / text out with no tool loop). Every other image turn is TWO-STAGE: Nova
- * transcribes/describes the attachments, that text is inlined, and the selected
- * text brain runs the tool loop. Text-only turns go to Kimi/DeepSeek by
- * default, or to Bedrock (`BEDROCK_MODEL_ID`) when `LLM_TEXT_BACKEND=bedrock`.
+ * Entry point. ONE path: the selected effort tier is normalised, the turn
+ * (images included) goes to DeepSeek, and a provider moderation refusal is
+ * retried once before falling back to a Spanish message.
  */
 export async function ask(input: AskInput): Promise<string> {
-   const { messages, effort = "high" } = input;
-   const hasImages = messages.some((m) => (m.attachments?.length ?? 0) > 0);
-
-   // Image + not the vision tier: Nova *reads*, the text brain *acts*. Live
-   // 2026-09-03: a calendar flyer turn sent the full tool bundle to Nova Lite,
-   // which looped `calendar_draft_announcement` ten times (three real
-   // publishes) and then the Converse forcing pass 400'd because it omitted
-   // `toolConfig` while history still had toolUse/toolResult blocks.
-   if (hasImages && effort !== "low") {
-      const inlined = await inlineImageTranscriptions(messages);
-      return ask({ ...input, messages: inlined });
-   }
-
-   if (hasImages || effort === "low") {
-      return askBedrock({ ...input, effort });
-   }
-   if (config.LLM_TEXT_BACKEND === "bedrock") {
-      return askBedrock({ ...input, effort, modelId: config.BEDROCK_MODEL_ID });
-   }
+   const effort = normalizeEffort(input.effort);
    try {
-      return await askKimi(input);
+      return await askDeepSeek({ ...input, effort });
    } catch (err) {
       if (!(err instanceof ContentFilterRejection)) throw err;
-      return recoverFromContentFilter(input, err);
+      return recoverFromContentFilter({ ...input, effort }, err);
    }
 }
 
-const NO_TOOLS: ComposedTools = composeToolSources([]);
-const MAX_VISION_TRANSCRIPTION_CHARS = 8_000;
-const VISION_TRANSCRIBE_SYSTEM =
-   "Transcribe y describe las imágenes. Incluye TODO el texto visible, literal, y un resumen breve de lo visual (personas, objetos, contexto). Responde en español. Sin preámbulo ni comentarios.";
+/** Prose nudge on the tools-free forcing pass. */
+const FORCING_NUDGE =
+   "Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. " +
+   "Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea. " +
+   "NUNCA afirmes haber enviado archivos ni haber completado acciones que no ejecutaste con herramientas en esta vuelta: " +
+   'si un archivo quedó generado pero sin enviar, dilo explícitamente ("quedó listo pero no alcancé a adjuntarlo — pídeme que lo envíe").';
+
+const FORCING_NUDGE_RETRY =
+   "Último intento: NO uses herramientas, ya no están disponibles. " +
+   "Escribe la respuesta para el usuario como texto normal, aunque sea parcial.";
 
 /**
- * Replace image attachments with a Nova transcription so the text brain can
- * run the tool loop. A failed/empty transcription still strips the pixels
- * (otherwise we'd recurse into this function forever) and tells the model
- * it couldn't see — tools keep working, just without the flyer.
- */
-async function inlineImageTranscriptions(messages: Turn[]): Promise<Turn[]> {
-   const imageTurns = messages.filter((m) => (m.attachments?.length ?? 0) > 0);
-   if (imageTurns.length === 0) return messages;
-
-   let transcription = "";
-   try {
-      const raw = (
-         await askBedrock({
-            system: VISION_TRANSCRIBE_SYSTEM,
-            messages: imageTurns.map((m) => ({
-               role: "user" as const,
-               content: m.content?.trim()
-                  ? `El usuario escribió:\n${m.content}\n\nTranscribe y describe las imágenes adjuntas.`
-                  : "Transcribe y describe las imágenes adjuntas.",
-               attachments: m.attachments,
-            })),
-            tools: NO_TOOLS,
-            effort: "low",
-         })
-      ).trim();
-      if (raw && raw !== EMPTY_RESPONSE_FALLBACK) {
-         transcription =
-            raw.length > MAX_VISION_TRANSCRIPTION_CHARS
-               ? raw.slice(0, MAX_VISION_TRANSCRIPTION_CHARS) + "…"
-               : raw;
-      }
-   } catch (err) {
-      log.warn({ err }, "llm.vision_transcribe_failed");
-   }
-
-   log.info(
-      { chars: transcription.length, images: imageTurns.length },
-      "llm.vision_inlined",
-   );
-
-   const lastImageIdx = messages.reduce(
-      (acc, m, i) => ((m.attachments?.length ?? 0) > 0 ? i : acc),
-      -1,
-   );
-
-   return messages.map((m, i) => {
-      if (!m.attachments?.length) return m;
-      const extra =
-         i === lastImageIdx
-            ? transcription
-               ? `\n\n[Imagen(es) adjunta(s) — transcripción/descripción]:\n${transcription}`
-               : "\n\n[Imagen adjunta: no pude leerla; responde solo con el texto del usuario.]"
-            : "";
-      return { role: m.role, content: `${m.content}${extra}` };
-   });
-}
-
-/**
- * Recovery for a moderated prompt: retry Kimi once, then hand the turn to
- * Bedrock, then give up with a Spanish message.
+ * Recovery for a moderated prompt: retry once, then give up with a Spanish
+ * message.
  *
  * Why a retry at all — the filter is probabilistic, not a verdict on the text:
  * the prompt that broke on 2026-08-06 ("¿qué deberíamos hacer con las personas
@@ -318,22 +221,19 @@ async function inlineImageTranscriptions(messages: Turn[]): Promise<Turn[]> {
  * the same question about Israel. So the cheapest correct recovery is to ask
  * again.
  *
- * Why Bedrock second — this is the ONE exception to "Nova Lite is for images
- * only". RevZ is a political community whose own Estatutos are explicitly
- * anti-imperialist and anti-Zionist, so its members WILL keep hitting a Chinese
- * provider's risk filter on exactly the subjects the assistant exists to
- * discuss. Answering in Nova's weaker voice beats refusing the community's
- * actual questions. It is rare (2 rejections in the first day of general_chat
- * v1.10.0), so the metered cost stays a rounding error.
+ * The old second leg of this ladder — failing over to Amazon Nova — is GONE
+ * with the Bedrock backend. Note the measured upside: DeepSeek does NOT refuse
+ * RevZ-shaped political prompts (0/4 refusals where Moonshot 400'd), it deflects
+ * in-band with HTTP 200 instead, so this path fires rarely.
  */
 async function recoverFromContentFilter(
    input: AskInput,
    first: ContentFilterRejection,
 ): Promise<string> {
-   // Both recovery paths restart the agent loop from scratch. That is only safe
-   // before any tool has run: retrying after e.g. calendar_create_event would
-   // create the event a second time. A rejection on the first request — the
-   // common case — has executed nothing.
+   // The retry restarts the agent loop from scratch. That is only safe before
+   // any tool has run: retrying after e.g. calendar_create_event would create
+   // the event a second time. A rejection on the first request — the common
+   // case — has executed nothing.
    if (first.toolCallsExecuted > 0) {
       log.warn(
          { toolCallsExecuted: first.toolCallsExecuted, err: first.message },
@@ -342,24 +242,17 @@ async function recoverFromContentFilter(
       return CONTENT_FILTER_FALLBACK;
    }
 
-   log.warn({ err: first.message }, "llm.content_filter.retrying_kimi");
+   log.warn({ err: first.message }, "llm.content_filter.retrying");
    try {
-      return await askKimi(input);
+      return await askDeepSeek(input);
    } catch (err) {
       if (!(err instanceof ContentFilterRejection)) throw err;
-      if (err.toolCallsExecuted > 0) return CONTENT_FILTER_FALLBACK;
-   }
-
-   log.warn("llm.content_filter.falling_back_to_bedrock");
-   try {
-      return await askBedrock({ ...input, effort: "low" });
-   } catch (err) {
-      log.error({ err }, "llm.content_filter.bedrock_fallback_failed");
+      log.warn("llm.content_filter.retry_refused");
       return CONTENT_FILTER_FALLBACK;
    }
 }
 
-// ── Kimi (OpenAI-compatible chat completions) ────────────────────────────────
+// ── DeepSeek (OpenAI-compatible chat completions) ────────────────────────────
 
 type ToolCall = {
    id: string;
@@ -378,40 +271,39 @@ const MAX_EMPTY_RESPONSE_RETRIES = 2;
 export const EMPTY_RESPONSE_FALLBACK =
    "No pude generar una respuesta esta vez — inténtalo de nuevo en un momento.";
 
-/** Prose nudge on the tools-free forcing pass (both backends). */
-const FORCING_NUDGE =
-   "Responde AHORA al usuario en prosa, en español, sin llamar herramientas y sin describir llamadas a herramientas. " +
-   "Resume lo que ya lograste con las herramientas y, si algo quedó pendiente, dilo en una línea. " +
-   "NUNCA afirmes haber enviado archivos ni haber completado acciones que no ejecutaste con herramientas en esta vuelta: " +
-   'si un archivo quedó generado pero sin enviar, dilo explícitamente ("quedó listo pero no alcancé a adjuntarlo — pídeme que lo envíe").';
-
-const FORCING_NUDGE_RETRY =
-   "Último intento: NO uses herramientas, ya no están disponibles. " +
-   "Escribe la respuesta para el usuario como texto normal, aunque sea parcial.";
-
 type ChatMessage =
    | { role: "system"; content: string }
-   | { role: "user"; content: string }
+   | { role: "user"; content: string | OpenAiContentPart[] }
    | {
         role: "assistant";
         content: string | null;
         tool_calls?: ToolCall[];
-        // Kimi-specific: in thinking mode every assistant turn (including
-        // tool_calls turns) comes back with reasoning_content, and the gateway
-        // rejects follow-up requests that don't echo it back. Optional on OpenAI
-        // proper, which ignores unknown fields.
+        // DeepSeek thinking mode returns reasoning_content on every assistant
+        // turn, and the docs REQUIRE it be echoed back on subsequent requests
+        // whenever the request carries `tools` ("If your code does not correctly
+        // pass back reasoning_content, the API will return a 400 error"). Probed
+        // 2026-09-14: omitting it happened to still return 200, so the echo is
+        // belt-and-braces — keep it, the docs are explicit and the failure mode
+        // is a hard 400 mid-tool-loop.
         reasoning_content?: string;
      }
    | { role: "tool"; tool_call_id: string; content: string };
 
+/** OpenAI-style multimodal content part. Images are supported in `user`
+ * messages ONLY — DeepSeek 400s "Image in assistant message is not supported"
+ * (probed), which is why historical turns stay text-only (see buildHistory). */
+type OpenAiContentPart =
+   | { type: "text"; text: string }
+   | { type: "image_url"; image_url: { url: string; detail?: string } };
+
 /**
- * Multi-turn agent loop against Moonshot Kimi 2.7 Thinking (OpenAI-compatible
- * chat completions). Each iteration sends the current message list; if the
- * model emits tool_calls, we run them and append role:'tool' messages for the
- * next iteration. Caps at MAX_TOOL_ITERATIONS to bound cost. Image turns
- * reach here only after Nova transcription inlined the pixels as text (see ask()).
+ * Multi-turn agent loop against DeepSeek V4.1 Flash. Each iteration sends the
+ * current message list; if the model emits tool_calls, we run them and append
+ * role:'tool' messages for the next iteration. Caps at MAX_TOOL_ITERATIONS to
+ * bound cost. Image turns use the SAME loop — attachments are inlined as
+ * `image_url` data URLs into the user turn as part of building the convo.
  */
-async function askKimi({
+async function askDeepSeek({
    system,
    messages,
    tools,
@@ -419,37 +311,19 @@ async function askKimi({
    onPhase,
    shouldAbort,
 }: AskInput): Promise<string> {
-   if (!kimi) {
+   if (!client) {
       throw new Error(
-         `${textBackend.provider} text backend selected but no API key is set — set ${textBackend.provider === "deepseek" ? "DEEPSEEK_API_KEY" : "KIMI_API_KEY"}, or LLM_TEXT_BACKEND=bedrock for AWS-native runs`,
+         "no DeepSeek API key is set — set DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY)",
       );
    }
-   // ONE text model — effort no longer buys a pricier one (V4-Pro measured
-   // identical to Flash on the tool battery while being slower and 3.1× the
-   // price). `low` never reaches here: ask() routes it to Nova, images-only.
+   // ONE model. Effort never buys a pricier one (V4-Pro measured identical to
+   // Flash on the tool battery while being ~48% slower and 3.1× the price).
    const modelId = textBackend.modelId;
-   // Effort selects the THINKING MODE instead. `high` = reason before acting,
-   // for the multi-turn tool loops that plan across calls. `medium` = answer
-   // directly, which measured ~2.2× fewer billed output tokens and ~30% faster
-   // with no loss of tool-calling — the right default for conversational turns,
-   // which are essentially all the volume. Omitted entirely on providers that
-   // don't support the switch, so their request shape is unchanged.
-   let thinking:
-      { thinking: { type: "enabled" | "disabled" } } | Record<string, never> =
-      textBackend.supportsThinkingSwitch
-         ? {
-              thinking: {
-                 type: effort === "high" ? "enabled" : "disabled",
-              },
-           }
-         : {};
+   const tier = normalizeEffort(effort);
+   let thinking = buildThinkingParam(tier);
    const convo: ChatMessage[] = [
       { role: "system", content: system },
-      ...messages.map((m): ChatMessage =>
-         m.role === "assistant"
-            ? { role: "assistant", content: m.content }
-            : { role: "user", content: m.content },
-      ),
+      ...messages.map(buildChatMessage),
    ];
 
    const trace: AgentTrace = {
@@ -457,13 +331,15 @@ async function askKimi({
       toolCalls: [],
       inputTokens: 0,
       outputTokens: 0,
+      reasoningTokens: 0,
    };
    let finalText = "";
    let lastFinishReason: string | undefined;
-   // K2.7 Thinking occasionally spends every output token on reasoning_content
-   // and returns empty `content` with finish_reason 'stop' (observed live
-   // 2026-08-05: the user got the fallback string as the reply). Retry the
-   // completion a bounded number of times before giving up.
+   // Thinking mode can spend every output token on reasoning_content and return
+   // empty `content` with finish_reason 'stop' or 'length' (observed live
+   // 2026-08-05; again 2026-09-02 in the workshop, where 3×16384 output tokens
+   // produced no visible text at all). Retry the completion a bounded number of
+   // times before giving up.
    let emptyRetries = 0;
    /** Set when visible text was discarded as scaffolding — forces a clean pass. */
    let degenerate = false;
@@ -476,15 +352,17 @@ async function askKimi({
 
    for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
       trace.iterations = i + 1;
-      if (shouldAbort?.()) throw abortTurn(trace, "kimi");
+      if (shouldAbort?.()) throw abortTurn(trace, "deepseek");
 
       safePhase(onPhase, "thinking");
-      // No `temperature`: the kimi-for-coding endpoint rejects any value except 1
-      // (400 "only 1 is allowed for this model"). Omitting takes the server default.
+      // No `temperature` / `top_p` / penalties: thinking mode ignores temperature
+      // and the penalty params entirely (DeepSeek deprecated them), and top_p is
+      // clamped to >= 0.95. Sending them would be noise; the contract test pins
+      // that we don't.
       const response = await observedTextCompletion(
          () =>
-            kimiGate.run(() =>
-               kimi.chat.completions.create({
+            deepseekGate.run(() =>
+               client.chat.completions.create({
                   model: modelId,
                   messages: convo.slice() as never,
                   tools:
@@ -498,14 +376,11 @@ async function askKimi({
          trace,
       );
 
-      if (response.usage) {
-         trace.inputTokens += response.usage.prompt_tokens ?? 0;
-         trace.outputTokens += response.usage.completion_tokens ?? 0;
-      }
+      accumulateUsage(trace, response.usage);
 
       const choice = response.choices?.[0];
       if (!choice) {
-         log.warn("Kimi returned no choices");
+         log.warn("DeepSeek returned no choices");
          break;
       }
       lastFinishReason = choice.finish_reason ?? undefined;
@@ -513,9 +388,20 @@ async function askKimi({
       if (!assistantMsg) {
          log.warn(
             { finishReason: lastFinishReason },
-            "Kimi returned no message",
+            "DeepSeek returned no message",
          );
          break;
+      }
+
+      // The provider's own filter omitted the content but returned HTTP 200
+      // (`finish_reason: 'content_filter'`). That is semantically the same event
+      // as the 400-shaped refusal isContentFilterRejection catches, so route it
+      // through the same one-retry ladder instead of returning an empty reply.
+      if (lastFinishReason === "content_filter") {
+         throw new ContentFilterRejection(
+            new Error("finish_reason: content_filter"),
+            trace.toolCalls.length,
+         );
       }
 
       const toolCalls = (assistantMsg.tool_calls ?? []) as ToolCall[];
@@ -555,17 +441,17 @@ async function askKimi({
             if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
                log.warn(
                   { finishReason: lastFinishReason, attempt: emptyRetries },
-                  "Kimi returned empty text on a non-tool finish — retrying",
+                  "DeepSeek returned empty text on a non-tool finish — retrying",
                );
-               // Live 2026-09-02 workshop: DeepSeek `high` burned the entire
-               // output budget on reasoning (finish_reason `length`, 3×16384
-               // tokens, 0 tools) and the thinking-on retry emptied out again.
-               // Flip thinking off so the retry can emit visible text.
+               // Live 2026-09-02 workshop: `high` burned the entire output budget
+               // on reasoning (finish_reason `length`, 3×16384 tokens, 0 tools)
+               // and the thinking-on retry emptied out again. Flip thinking off so
+               // the retry can emit visible text.
                if (
                   lastFinishReason === "length" &&
                   textBackend.supportsThinkingSwitch
                ) {
-                  thinking = { thinking: { type: "disabled" } };
+                  thinking = buildThinkingParam("low");
                   log.warn("llm.thinking_disabled_after_length_cap");
                }
                continue;
@@ -577,7 +463,7 @@ async function askKimi({
       // Run every tool_call, then append one role:'tool' message per result
       // (OpenAI's contract: one message per tool result).
       for (const tc of toolCalls) {
-         if (shouldAbort?.()) throw abortTurn(trace, "kimi");
+         if (shouldAbort?.()) throw abortTurn(trace, "deepseek");
          const name = tc.function?.name;
          const rawArgs = tc.function?.arguments ?? "{}";
          if (!tc.id || !name) {
@@ -637,9 +523,14 @@ async function askKimi({
    // tool-call protocol and emitted scaffolding as text (removing the tools is
    // exactly what un-sticks that). The prose nudge goes in EVERY time — live
    // 2026-08-06 (workshop, whole-book summary): a cap-reached force with no
-   // nudge came back `finish_reason: 'tool_calls'` again (Kimi keeps calling
+   // nudge came back `finish_reason: 'tool_calls'` again (a model keeps calling
    // tools from history even with none advertised) and the user got the empty
    // fallback. One bounded retry covers a forcing pass that still misfires.
+   //
+   // DeepSeek accepts this shape: probed 2026-09-14 (§5d), a history still
+   // carrying reasoning_content + tool_calls sends fine with no `tools` key.
+   // (The AWS Converse backend 400'd on the equivalent request, which is why the
+   // deleted Bedrock loop had to flatten tool blocks into text first.)
    if (
       !finalText &&
       (lastFinishReason === "tool_calls" ||
@@ -656,7 +547,7 @@ async function askKimi({
          "Forcing final answer without tools",
       );
       if (lastFinishReason === "length" && textBackend.supportsThinkingSwitch) {
-         thinking = { thinking: { type: "disabled" } };
+         thinking = buildThinkingParam("low");
       }
       convo.push({
          role: "user",
@@ -666,8 +557,8 @@ async function askKimi({
          safePhase(onPhase, "thinking");
          try {
             const forced = await observedCompletion(() =>
-               kimiGate.run(() =>
-                  kimi.chat.completions.create({
+               deepseekGate.run(() =>
+                  client.chat.completions.create({
                      model: modelId,
                      messages: convo.slice() as never,
                      max_tokens: textBackend.maxOutputTokens,
@@ -677,10 +568,7 @@ async function askKimi({
                   } as never),
                ),
             );
-            if (forced.usage) {
-               trace.inputTokens += forced.usage.prompt_tokens ?? 0;
-               trace.outputTokens += forced.usage.completion_tokens ?? 0;
-            }
+            accumulateUsage(trace, forced.usage);
             lastFinishReason =
                forced.choices?.[0]?.finish_reason ?? lastFinishReason;
             const forcedContent = forced.choices?.[0]?.message?.content;
@@ -703,6 +591,7 @@ async function askKimi({
                });
             }
          } catch (err) {
+            if (err instanceof ContentFilterRejection) throw err;
             log.error({ err }, "Forcing pass failed");
             break;
          }
@@ -712,7 +601,7 @@ async function askKimi({
    if (!finalText) {
       log.warn(
          { finishReason: lastFinishReason, iterations: trace.iterations },
-         "Kimi loop ended without final text",
+         "DeepSeek loop ended without final text",
       );
       finalText = EMPTY_RESPONSE_FALLBACK;
    }
@@ -720,19 +609,90 @@ async function askKimi({
    log.info(
       {
          backend: textBackend.provider,
-         effort,
+         effort: tier,
          model: modelId,
          iterations: trace.iterations,
          toolCalls: trace.toolCalls.length,
          tools: trace.toolCalls.map((t) => t.name),
          inputTokens: trace.inputTokens,
          outputTokens: trace.outputTokens,
+         reasoningTokens: trace.reasoningTokens,
          stopReason: lastFinishReason,
       },
       "agent_turn",
    );
 
    return finalText;
+}
+
+/**
+ * The thinking half of the request. `low` disables thinking outright; `high`
+ * and `max` enable it and pass the tier through as `reasoning_effort`.
+ *
+ * On providers without the switch this is empty — today that is nobody, but the
+ * flag keeps the escape hatch in one place.
+ */
+function buildThinkingParam(
+   tier: Effort,
+):
+   | { thinking: { type: "enabled"; reasoning_effort: Effort } }
+   | { thinking: { type: "disabled" } }
+   | Record<string, never> {
+   if (!textBackend.supportsThinkingSwitch) return {};
+   if (tier === "low") return { thinking: { type: "disabled" } };
+   return { thinking: { type: "enabled", reasoning_effort: tier } };
+}
+
+/**
+ * Turn one history `Turn` into the wire message. User turns carrying images
+ * become a content-part array: a text part followed by one `image_url` part per
+ * attachment, base64-inlined as a data URL (the Discord CDN URL is signed and
+ * short-lived, so handing DeepSeek the URL would be a flaky second fetch).
+ *
+ * Probed 2026-09-14: `deepseek-flash` accepts JPEG/PNG/GIF/WebP up to 32 MiB
+ * this way — including several images in one turn — and rejects a degenerate
+ * 1×1 PNG with "You have uploaded an unsupported image", which is a decode
+ * error rather than a capability gap. Images in assistant/system messages 400.
+ */
+function buildChatMessage(m: Turn): ChatMessage {
+   if (m.role === "assistant") {
+      return { role: "assistant", content: m.content };
+   }
+   const attachments = m.attachments ?? [];
+   if (attachments.length === 0) {
+      return { role: "user", content: m.content };
+   }
+   const parts: OpenAiContentPart[] = [{ type: "text", text: m.content }];
+   for (const att of attachments) {
+      parts.push({
+         type: "image_url",
+         image_url: { url: toDataUrl(att.mimeType, att.bytes) },
+      });
+   }
+   return { role: "user", content: parts };
+}
+
+/** base64 `data:` URL for an inline image part. */
+function toDataUrl(mimeType: string, bytes: Uint8Array): string {
+   return `data:${mimeType};base64,${Buffer.from(bytes).toString("base64")}`;
+}
+
+function accumulateUsage(
+   trace: AgentTrace,
+   usage:
+      | {
+           prompt_tokens?: number;
+           completion_tokens?: number;
+           completion_tokens_details?: { reasoning_tokens?: number };
+        }
+      | undefined,
+): void {
+   if (!usage) return;
+   trace.inputTokens += usage.prompt_tokens ?? 0;
+   trace.outputTokens += usage.completion_tokens ?? 0;
+   // Reasoning bills at the OUTPUT rate, so it is tracked explicitly: it is the
+   // single biggest cost lever the effort tier controls.
+   trace.reasoningTokens += usage.completion_tokens_details?.reasoning_tokens ?? 0;
 }
 
 function buildOpenAiTools(specs: ToolSpec[]): unknown[] {
@@ -744,229 +704,6 @@ function buildOpenAiTools(specs: ToolSpec[]): unknown[] {
          parameters: t.inputSchema,
       },
    }));
-}
-
-// ── Bedrock (Converse) — the vision backend ──────────────────────────────────
-
-/**
- * Multi-turn agent loop against Amazon Bedrock via the Converse API. Serves the
- * image path on Amazon Nova Lite (BEDROCK_MODEL_LOW, the default `modelId`) and,
- * when LLM_TEXT_BACKEND=bedrock, the text path on BEDROCK_MODEL_ID. On
- * `stopReason === 'tool_use'` we run the tools and append a user turn carrying
- * one `toolResult` block per call. Caps at MAX_TOOL_ITERATIONS.
- */
-async function askBedrock({
-   system,
-   messages,
-   tools,
-   effort = "low",
-   modelId = config.BEDROCK_MODEL_LOW,
-   onPhase,
-   shouldAbort,
-}: AskInput & { modelId?: string }): Promise<string> {
-   const convo: Message[] = messages.map(buildMessage);
-
-   const trace: AgentTrace = {
-      iterations: 0,
-      toolCalls: [],
-      inputTokens: 0,
-      outputTokens: 0,
-   };
-   let finalText = "";
-   let lastStopReason: string | undefined;
-   let emptyRetries = 0;
-
-   const toolCache = new Map<string, ToolHandlerResult>();
-   const toolConfig = buildToolConfig(tools.tools);
-   const systemBlocks = system ? [{ text: system }] : undefined;
-
-   for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
-      trace.iterations = i + 1;
-      if (shouldAbort?.()) throw abortTurn(trace, "bedrock");
-
-      safePhase(onPhase, "thinking");
-      const response = await observedCompletion(() =>
-         bedrock.send(
-            new ConverseCommand({
-               modelId,
-               system: systemBlocks,
-               // Snapshot the array — we mutate `convo` after this call returns.
-               messages: convo.slice(),
-               ...(toolConfig ? { toolConfig } : {}),
-               inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
-            }),
-         ),
-      );
-
-      if (response.usage) {
-         trace.inputTokens += response.usage.inputTokens ?? 0;
-         trace.outputTokens += response.usage.outputTokens ?? 0;
-      }
-
-      lastStopReason = response.stopReason;
-      const assistantMsg = response.output?.message;
-      if (!assistantMsg) {
-         log.warn(
-            { stopReason: lastStopReason },
-            "Bedrock returned no message",
-         );
-         break;
-      }
-
-      // Echo the assistant turn back verbatim — Converse requires the toolUse
-      // blocks be present in history for the matching toolResult to validate.
-      convo.push({ role: "assistant", content: assistantMsg.content ?? [] });
-
-      const blocks = assistantMsg.content ?? [];
-      const toolUses = blocks.filter(
-         (b): b is ContentBlock.ToolUseMember => "toolUse" in b,
-      );
-
-      if (response.stopReason !== "tool_use" || toolUses.length === 0) {
-         finalText = extractTextBlocks(blocks);
-         if (!finalText) {
-            // Empty content on a non-tool finish — Nova sometimes closes the loop
-            // with `end_turn` and no text block at all once the tool results land
-            // (observed live 2026-08-13: a calendar turn created + synced +
-            // published the event, then ended textless and the user got the
-            // fallback). Same policy as the Kimi path: drop the empty assistant
-            // echo so the retry resends the same convo, and give the model
-            // another shot. The retry carries toolConfig, but an identical
-            // duplicate call is served from the per-turn toolCache and does NOT
-            // re-execute — so a write can't be doubled by the retry itself.
-            convo.pop();
-            emptyRetries += 1;
-            if (emptyRetries <= MAX_EMPTY_RESPONSE_RETRIES) {
-               log.warn(
-                  { stopReason: lastStopReason, attempt: emptyRetries },
-                  "Bedrock returned empty text on a non-tool finish — retrying",
-               );
-               continue;
-            }
-         }
-         break;
-      }
-
-      const resultBlocks: ContentBlock[] = [];
-      for (const { toolUse } of toolUses) {
-         if (shouldAbort?.()) throw abortTurn(trace, "bedrock");
-         const id = toolUse.toolUseId;
-         const name = toolUse.name;
-         const input = toolUse.input ?? {};
-         if (!id || !name) {
-            resultBlocks.push({
-               toolResult: {
-                  toolUseId: id ?? "unknown",
-                  content: [
-                     {
-                        text: JSON.stringify({
-                           error: "Malformed tool_use (missing id or name).",
-                        }),
-                     },
-                  ],
-                  status: "error",
-               },
-            });
-            continue;
-         }
-
-         const cacheKey = `${name}:${stableStringify(input)}`;
-         let result: ToolHandlerResult;
-         const cached = toolCache.get(cacheKey);
-         if (cached) {
-            log.info({ tool: name, cached: true }, "tool_call_cached");
-            result = cached;
-         } else {
-            safePhase(onPhase, "tool", name);
-            result = await tools.handle(name, input);
-            if (result.status === "success") toolCache.set(cacheKey, result);
-         }
-         trace.toolCalls.push({ name, input, status: result.status });
-
-         resultBlocks.push({
-            toolResult: {
-               toolUseId: id,
-               content: [{ text: JSON.stringify(result.payload ?? null) }],
-               status: result.status === "error" ? "error" : "success",
-            },
-         });
-      }
-      convo.push({ role: "user", content: resultBlocks });
-   }
-
-   // Forcing pass. Converse REJECTS a request whose messages contain
-   // toolUse/toolResult unless `toolConfig` is also set (ValidationException,
-   // live 2026-09-03 calendar image turn). Omitting toolConfig is the
-   // OpenAI-style "force prose" trick and is illegal here, so flatten those
-   // blocks into text first, then omit it. A bounded retry covers a pass
-   // that still comes back empty.
-   if (!finalText && lastStopReason === "tool_use") {
-      log.info(
-         { iterations: trace.iterations, toolCalls: trace.toolCalls.length },
-         "Forcing final answer without tools (iteration cap reached)",
-      );
-      let forceConvo = appendUserText(
-         flattenBedrockMessagesForForcing(convo),
-         FORCING_NUDGE,
-      );
-      for (let attempt = 1; attempt <= 2 && !finalText; attempt++) {
-         try {
-            const forced = await observedCompletion(() =>
-               bedrock.send(
-                  new ConverseCommand({
-                     modelId,
-                     system: systemBlocks,
-                     messages: forceConvo,
-                     inferenceConfig: { maxTokens: config.MAX_OUTPUT_TOKENS },
-                  }),
-               ),
-            );
-            if (forced.usage) {
-               trace.inputTokens += forced.usage.inputTokens ?? 0;
-               trace.outputTokens += forced.usage.outputTokens ?? 0;
-            }
-            lastStopReason = forced.stopReason ?? lastStopReason;
-            finalText = extractTextBlocks(
-               forced.output?.message?.content ?? [],
-            );
-            if (!finalText && attempt < 2) {
-               log.warn(
-                  { stopReason: lastStopReason, attempt },
-                  "Forcing pass returned no usable text — retrying",
-               );
-               forceConvo = appendUserText(forceConvo, FORCING_NUDGE_RETRY);
-            }
-         } catch (err) {
-            log.error({ err }, "Forcing pass failed");
-            break;
-         }
-      }
-   }
-
-   if (!finalText) {
-      log.warn(
-         { stopReason: lastStopReason, iterations: trace.iterations },
-         "Bedrock loop ended without final text",
-      );
-      finalText = EMPTY_RESPONSE_FALLBACK;
-   }
-
-   log.info(
-      {
-         backend: "bedrock",
-         effort,
-         model: modelId,
-         iterations: trace.iterations,
-         toolCalls: trace.toolCalls.length,
-         tools: trace.toolCalls.map((t) => t.name),
-         inputTokens: trace.inputTokens,
-         outputTokens: trace.outputTokens,
-         stopReason: lastStopReason,
-      },
-      "agent_turn",
-   );
-
-   return finalText;
 }
 
 /** Log + build the abort error (the turn's partial work is already durable —
@@ -996,20 +733,11 @@ function safePhase(
    }
 }
 
-/** Concatenate all `text` blocks in a Converse message, then strip reasoning. */
-function extractTextBlocks(blocks: ContentBlock[]): string {
-   const text = blocks
-      .filter((b): b is ContentBlock.TextMember => "text" in b)
-      .map((b) => b.text)
-      .join("");
-   return extractText(text);
-}
-
 /** Strip any `<thinking>…</thinking>` / `<think>…</think>` reasoning a model
- * inlines into visible text (some models — e.g. Amazon Nova — leak it) so raw
- * chain-of-thought never reaches Discord, then trim. Kimi returns reasoning in a
- * separate `reasoning_content` field, so its visible content is already clean —
- * this is defensive. `<tool_call>` blocks are stripped for the same reason: a
+ * inlines into visible text so raw chain-of-thought never reaches Discord.
+ * DeepSeek returns reasoning in a separate `reasoning_content` field, so its
+ * visible content is already clean — this is defensive (it was written for Nova,
+ * which leaked). `<tool_call>` blocks are stripped for the same reason: a
  * confused model sometimes writes the call as TEXT instead of emitting it. */
 function extractText(text: string): string {
    return (
@@ -1030,7 +758,7 @@ function extractText(text: string): string {
 /**
  * Whether visible model text is DEGENERATE — self-directed scaffolding rather
  * than an answer for the user. Live 2026-08-06: after a 147k-input-token turn,
- * Kimi lost the tool-call protocol and posted ~8 Discord messages of
+ * the model lost the tool-call protocol and posted ~8 Discord messages of
  * "Use the tool. Done. Now. {"name": "workshop_read_file", "arguments": …}"
  * into a member's private taller. Such text must never be shown; the caller
  * retries and then forces a tools-free pass to get real prose.
@@ -1059,101 +787,6 @@ export function isDegenerateOutput(text: string): boolean {
    const hits = tells.reduce((acc, re) => acc + (t.match(re)?.length ?? 0), 0);
    // Loop-y self-talk repeats its tells many times; prose does not.
    return hits >= 5;
-}
-
-function buildMessage(turn: Turn): Message {
-   if (turn.role === "assistant") {
-      return { role: "assistant", content: [{ text: turn.content }] };
-   }
-   const content: ContentBlock[] = [{ text: turn.content }];
-   for (const att of turn.attachments ?? []) {
-      content.push({
-         image: { format: att.format, source: { bytes: att.bytes } },
-      });
-   }
-   return { role: "user", content };
-}
-
-/**
- * Rewrite a Converse conversation so it no longer contains toolUse/toolResult
- * blocks. Required before a tools-free forcing pass: AWS 400s
- * "The toolConfig field must be defined when using toolUse and toolResult
- * content blocks." Consecutive same-role messages are merged (Converse
- * requires strict user/assistant alternation).
- *
- * Exported for the contract test that pins the live 2026-09-03 failure shape.
- */
-export function flattenBedrockMessagesForForcing(
-   messages: Message[],
-): Message[] {
-   const flattened: Message[] = [];
-   for (const msg of messages) {
-      const kept: ContentBlock[] = [];
-      const notes: string[] = [];
-      for (const b of msg.content ?? []) {
-         if ("toolUse" in b && b.toolUse) {
-            const tu = b.toolUse;
-            notes.push(
-               `Llamé ${tu.name ?? "?"}(${JSON.stringify(tu.input ?? {})})`,
-            );
-         } else if ("toolResult" in b && b.toolResult) {
-            notes.push(`Resultado: ${toolResultBody(b)}`);
-         } else {
-            kept.push(b);
-         }
-      }
-      if (notes.length > 0) kept.push({ text: notes.join("\n") });
-      if (kept.length === 0) continue;
-      const last = flattened[flattened.length - 1];
-      if (last && last.role === msg.role) {
-         last.content = [...(last.content ?? []), ...kept];
-      } else {
-         flattened.push({ role: msg.role, content: kept });
-      }
-   }
-   return flattened;
-}
-
-function toolResultBody(block: ContentBlock): string {
-   if (!("toolResult" in block) || !block.toolResult) return "ok";
-   const tr = block.toolResult;
-   const parts: string[] = [];
-   for (const c of tr.content ?? []) {
-      if ("text" in c && c.text) parts.push(c.text);
-      else if ("json" in c) parts.push(JSON.stringify(c.json));
-   }
-   return parts.join("\n") || tr.status || "ok";
-}
-
-/** Append a user text block, merging into the last message when it's already
- * a user turn (Converse forbids two user messages in a row). */
-function appendUserText(messages: Message[], text: string): Message[] {
-   const out: Message[] = messages.map((m) => ({
-      role: m.role,
-      content: [...(m.content ?? [])],
-   }));
-   const last = out[out.length - 1];
-   if (last?.role === "user") {
-      last.content = [...(last.content ?? []), { text }];
-   } else {
-      out.push({ role: "user", content: [{ text }] });
-   }
-   return out;
-}
-
-function buildToolConfig(specs: ToolSpec[]): ToolConfiguration | undefined {
-   if (specs.length === 0) return undefined;
-   const tools: Tool[] = specs.map((t): Tool.ToolSpecMember => ({
-      toolSpec: {
-         name: t.name,
-         description: t.description,
-         // inputSchema.json is a Smithy `DocumentType` (recursive JSON value);
-         // a JSON-Schema object is a valid document but `Record<string, unknown>`
-         // doesn't structurally match the strict union, so cast at this boundary.
-         inputSchema: { json: t.inputSchema as never },
-      },
-   }));
-   return { tools };
 }
 
 /**

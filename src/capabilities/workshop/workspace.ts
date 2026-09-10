@@ -27,7 +27,7 @@ import { join, resolve, sep, normalize, dirname } from "node:path";
  * & friends follow symlinks. Sandboxed python cannot read `/home` — but it can
  * write `os.symlink('../../../../.env', '/workspace/loot.pdf')` inside its own
  * mount, and then ask for `loot.pdf` back through `workshop_send_file`
- * (→ DISCORD_TOKEN, KIMI_API_KEY, the Bedrock keys straight into a Discord
+ * (→ DISCORD_TOKEN, DEEPSEEK_API_KEY, the MinIO keys straight into a Discord
  * channel) or overwrite `dist/index.js` through `workshop_write_file`. So every
  * path is ALSO checked component-by-component for symlinks
  * ({@link assertNoSymlink}), and the actual open uses `O_NOFOLLOW`.

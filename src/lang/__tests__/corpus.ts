@@ -17,7 +17,7 @@ export interface CorpusReply {
    /** UTC timestamp as printed by dump-channel.ts. */
    at: string;
    /** Backend that produced it, per the journal's agent_turn line. */
-   backend: "kimi" | "deepseek" | "bedrock";
+   backend: "kimi" | "deepseek";
    text: string;
 }
 

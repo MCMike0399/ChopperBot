@@ -4,6 +4,7 @@ import {
    renderWelcomeMessage,
    type WorkshopPromptContext,
 } from "../preamble.js";
+import { textBrainDisplayName } from "../../../config.js";
 import type { WorkspaceFile } from "../workspace.js";
 
 function ctx(
@@ -73,11 +74,17 @@ describe("renderWorkshopPrompt", () => {
 });
 
 describe("renderWelcomeMessage", () => {
-   test("names the live text brain so the 🎓 post stays truthful", () => {
-      const msg = renderWelcomeMessage("🎓", "DeepSeek V4 Flash");
-      expect(msg).toContain("DeepSeek V4 Flash");
+   test("names the live brain so the 🎓 post stays truthful", () => {
+      // Pass the REAL display name, not a literal: this post is the one place a
+      // member reads the model name out of Discord, so the assertion must fail
+      // when `textBrainDisplayName()` changes — as it did in the v4.1 migration,
+      // where the previous literal silently stopped testing anything.
+      const msg = renderWelcomeMessage("🎓", textBrainDisplayName());
+      expect(textBrainDisplayName()).toBe("DeepSeek V4.1 Flash");
+      expect(msg).toContain(textBrainDisplayName());
       expect(msg).toContain("Reacciona con 🎓");
       expect(msg).toContain("canal privado");
       expect(msg).not.toContain("Kimi");
+      expect(msg).not.toContain("Nova");
    });
 });

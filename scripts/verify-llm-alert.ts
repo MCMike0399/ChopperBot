@@ -1,8 +1,17 @@
 // One-off verification: drive the LLM-health alert end-to-end so the operator
-// can confirm it lands in the admin channel without waiting for a real Bedrock
+// can confirm it lands in the admin channel without waiting for a real DeepSeek
 // outage. Exercises the EXACT production path: LlmHealthMonitor with the same
 // sendAdminAlert sink app.ts wires, fed a synthetic deterministic error and
 // then a success (so both the failure alert and the recovery notice post).
+//
+// The synthetic error is DeepSeek-SHAPED: the OpenAI SDK carries the HTTP status
+// on `.status`, and a rejected key arrives as a 401 whose message is
+// "Authentication Fails, Your api key is invalid". `classifyLlmError` must call
+// that deterministic, so the FIRST failure alerts (no need to trip the
+// 3-consecutive-transient threshold). DeepSeek's other common deterministic
+// shapes are the same idea: 402 insufficient balance, 422 invalid parameter.
+// A content-filter rejection (400 "considered high risk") must NOT alert — see
+// scripts/simulate-content-filter.ts for that side.
 //
 // Run:  npx tsx scripts/verify-llm-alert.ts
 //
@@ -40,9 +49,9 @@ monitor.setSink((lines) => {
 
 const syntheticError = Object.assign(
    new Error(
-      "400 SYNTHETIC TEST (verify-llm-alert.ts) — not a real Bedrock failure. If you can read this in the admin channel, the LLM-health alert works end to end.",
+      "401 SYNTHETIC TEST (verify-llm-alert.ts) — Authentication Fails, Your api key is invalid. Not a real DeepSeek failure. If you can read this in the admin channel, the LLM-health alert works end to end.",
    ),
-   { status: 400 },
+   { status: 401 },
 );
 monitor.reportFailure(syntheticError);
 monitor.reportSuccess(); // also exercises the recovery notice

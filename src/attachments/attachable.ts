@@ -2,10 +2,15 @@ export type ImageFormat = "png" | "jpeg" | "gif" | "webp";
 
 /**
  * A provider-neutral image attachment. The LLM client (src/llm/client.ts) is
- * the only place that knows how to wrap this into its provider's wire shape
- * (Bedrock Converse: an `{ image: { format, source: { bytes } } }` content
- * block). The Bedrock Converse API accepts raw image bytes — only images are
- * supported here (documents/PDFs are dropped upstream in resolveAttachments).
+ * the only place that knows how to wrap this into its provider's wire shape —
+ * since the 2026-09-14 v4.1 migration that is an OpenAI-style
+ * `{ type: 'image_url', image_url: { url: 'data:<mime>;base64,…' } }` content
+ * part, previously an Amazon Bedrock Converse
+ * `{ image: { format, source: { bytes } } }` block.
+ *
+ * Only images are supported here (documents/PDFs are dropped upstream in
+ * resolveAttachments); the bytes are kept raw so the wire shape stays the
+ * client's business.
  */
 export interface Attachable {
    readonly kind: "image";
@@ -30,8 +35,7 @@ export class ImageAttachable implements Attachable {
  * Detect an image format from its leading magic bytes — used when bytes arrive
  * without a trustworthy content-type (e.g. the IG cover fetched by the monitor,
  * which we feed to the vision classifier). Returns null for anything we don't
- * recognize, so callers can fall back to text-only instead of mislabeling bytes
- * and getting them rejected by Bedrock on a format mismatch.
+ * recognize, so callers can fall back to text-only instead of mislabeling bytes.
  */
 export function sniffImageFormat(bytes: Uint8Array): ImageFormat | null {
    const b = bytes;

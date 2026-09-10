@@ -1,34 +1,46 @@
 /**
- * Live end-to-end smoke test against real Amazon Bedrock (Converse API).
+ * Live end-to-end smoke of the NEW vision path — DeepSeek V4.1 Flash.
  *
- * Validates the full production LLM path:
- *   1. src/llm/client.ts authenticates to Bedrock with ACCESS_KEY_ID /
- *      SECRET_ACCESS_KEY / AWS_REGION and a plain no-tools turn returns text.
- *   2. A multi-step tool-calling turn: the model emits a tool_use, the loop
- *      runs the handler, sends the toolResult back, and the model synthesizes
- *      a final answer (this is the calendar/config agent loop in miniature).
- *   3. An image attachment is accepted (vision) — the IG flyer path.
- *   4. The REAL IG post classifier (classifyPost) returns valid JSON for both
- *      a relevant convocatoria and an irrelevant meme — exercising the exact
- *      code that runs in the Instagram monitor.
+ * Before the 2026-09-14 v4.1 migration this file smoked the Amazon Bedrock/Nova
+ * vision path. Both are gone: V4.1 Flash is natively multimodal and is the ONLY
+ * backend, so an image rides the SAME chat-completions request as the tools —
+ * no separate vision call, no two-stage "transcribe first, then decide". What it
+ * proves, live:
  *
- * Usage:  npx tsx scripts/live-bedrock-smoke.ts
+ *   1. src/llm/client.ts reaches DeepSeek (DEEPSEEK_API_KEY / DEEP_SEEK_API_KEY,
+ *      DEEPSEEK_BASE_URL, model id `deepseek-flash`) and a plain no-tools turn
+ *      returns text.
+ *   2. A multi-step tool-calling turn: the model emits tool_calls, the loop runs
+ *      the handler, appends the role:'tool' results, and the model synthesizes a
+ *      final answer (the calendar/config agent loop in miniature).
+ *   3. An `ImageAttachable` handed to ask() as a Turn attachment is actually
+ *      SEEN — the model must name the colour of a synthesized solid PNG — and
+ *      the tools are advertised in that same request, which is the whole point
+ *      of the migration.
+ *   4. The REAL IG post classifier (classifyPost) returns valid JSON for a
+ *      relevant convocatoria and an irrelevant meme, with the cover image handed
+ *      to the SAME single call that makes the relevance decision.
  *
- * Does NOT run inside `pnpm test` (that suite mocks the AWS SDK). This script
- * makes real Bedrock calls and spends a small amount of token budget.
+ * Usage:  npx tsx scripts/live-vision-smoke.ts
+ *
+ * Does NOT run inside `pnpm test` (that suite mocks the LLM client). This script
+ * makes real DeepSeek calls and spends a small amount of token budget.
  */
 import "dotenv/config";
 import { deflateSync } from "node:zlib";
-import { config } from "../src/config.js";
+import { textBackend } from "../src/config.js";
 import { ask } from "../src/llm/client.js";
 import { composeToolSources, type ToolSource } from "../src/tools/source.js";
 import { ImageAttachable } from "../src/attachments/attachable.js";
 import { classifyPost } from "../src/capabilities/instagram_monitor/classifier.js";
 import type { RecentPost } from "../src/capabilities/instagram_monitor/fetcher.js";
 
-// Build a valid solid-color RGB PNG of size×size. Bedrock/Nova rejects
-// degenerate 1×1 images ("may not meet the required format"), so we synthesize
-// a real one (a 64×64 here) the way a downloaded IG flyer cover would look.
+// Build a valid solid-color RGB PNG of size×size. A degenerate 1×1 PNG is
+// rejected by the provider's image decoder ("You have uploaded an unsupported
+// image" — probed 2026-09-14, a decode error rather than a capability gap), so
+// we synthesize a real one the way a downloaded IG flyer cover would look. A
+// 64×64 solid PNG was probed live on `deepseek-flash` alongside 512×512 ones and
+// reads fine.
 function crc32(buf: Uint8Array): number {
    let c = 0xffffffff;
    for (let i = 0; i < buf.length; i++) {
@@ -92,6 +104,7 @@ function makeSolidPng(
    }
    return png;
 }
+/** Solid red, 220/30/30 — the colour step 3 requires the model to name. */
 const RED_PNG = makeSolidPng(64, 220, 30, 30);
 
 const greenCheck = "\x1b[32m✓\x1b[0m";
@@ -107,7 +120,7 @@ function fail(label: string, err: unknown) {
 }
 const short = (s: string) => (s.length > 90 ? s.slice(0, 90) + "…" : s);
 
-// A trivial echo tool to exercise the tool_use → toolResult round-trip.
+// A trivial echo tool to exercise the tool_call → role:'tool' round-trip.
 const echoSource: ToolSource = {
    name: "echo",
    async systemPromptSection() {
@@ -156,14 +169,13 @@ function fakePost(over: Partial<RecentPost> = {}): RecentPost {
 }
 
 async function main() {
-   console.log("=== Live Bedrock smoke test ===");
-   console.log("Region:", config.AWS_REGION);
-   console.log("Model: ", config.BEDROCK_MODEL_ID);
+   console.log("=== Live DeepSeek V4.1 Flash vision smoke ===");
+   console.log("Provider:", textBackend.provider);
+   console.log("Model:   ", textBackend.modelId);
+   console.log("Base URL:", textBackend.baseUrl);
    console.log(
-      "Key:   ",
-      config.ACCESS_KEY_ID
-         ? config.ACCESS_KEY_ID.slice(0, 6) + "…"
-         : "(MISSING)",
+      "Key:     ",
+      textBackend.apiKey ? textBackend.apiKey.slice(0, 6) + "…" : "(MISSING)",
    );
    console.log();
 
@@ -174,14 +186,14 @@ async function main() {
          messages: [
             {
                role: "user",
-               content: 'Say "bedrock smoke ok" verbatim, then stop.',
+               content: 'Say "deepseek smoke ok" verbatim, then stop.',
             },
          ],
          tools: composeToolSources([]),
       });
-      out
+      out.toLowerCase().includes("deepseek smoke ok")
          ? pass("plain text turn", short(out))
-         : fail("plain text turn", new Error("empty response"));
+         : fail("plain text turn — marker missing", out);
    } catch (err) {
       fail("plain text turn", err);
    }
@@ -195,23 +207,26 @@ async function main() {
             {
                role: "user",
                content:
-                  'Use the echo tool to echo "bedrock-tool-ok" exactly, then tell me what it returned.',
+                  'Use the echo tool to echo "deepseek-tool-ok" exactly, then tell me what it returned.',
             },
          ],
          tools: composeToolSources([echoSource]),
       });
-      out.toLowerCase().includes("bedrock-tool-ok")
+      out.toLowerCase().includes("deepseek-tool-ok")
          ? pass("tool-calling turn", short(out))
          : fail("tool-calling turn — echoed string missing", out);
    } catch (err) {
       fail("tool-calling turn", err);
    }
 
-   // 3. Image attachment (vision).
+   // 3. Image attachment (vision). The echo tool is advertised in this SAME
+   // request on purpose: the migration's claim is that the image and the tools
+   // ride one call, so this is the shape that must keep working.
    try {
       const img = new ImageAttachable("red.png", "image/png", RED_PNG, "png");
       const out = await ask({
-         system: "You can see images. Be terse.",
+         system:
+            "You can see images. Be terse. You may answer with no tool call at all.",
          messages: [
             {
                role: "user",
@@ -220,16 +235,19 @@ async function main() {
                attachments: [img],
             },
          ],
-         tools: composeToolSources([]),
+         tools: composeToolSources([echoSource]),
       });
-      out
-         ? pass("image attachment turn", short(out))
-         : fail("image attachment turn", new Error("empty response"));
+      // The assertion is the colour, not merely "some text came back": an
+      // answer that ignores the image is the regression this catches.
+      /\bred\b|\brojo\b/i.test(out)
+         ? pass("image attachment turn (named the colour)", short(out))
+         : fail("image attachment turn — did not name the red colour", out);
    } catch (err) {
       fail("image attachment turn", err);
    }
 
-   // 4. The REAL IG classifier — relevant convocatoria.
+   // 4. The REAL IG classifier — relevant convocatoria, cover image attached to
+   // the single deciding call (it used to be a separate transcription stage).
    try {
       const c = await classifyPost(
          "colectiva_demo",
@@ -237,24 +255,28 @@ async function main() {
             caption:
                "📣 CONVOCATORIA: Asamblea feminista este sábado 21 de junio, 17:00 hrs en el Zócalo de la CDMX. Trae pancartas. ¡Te esperamos!",
          }),
-         { nowMs: Date.parse("2026-06-19T12:00:00Z") },
+         {
+            nowMs: Date.parse("2026-06-19T12:00:00Z"),
+            cover: { bytes: RED_PNG, mimeType: "image/png", format: "png" },
+         },
       );
       if (c.reason) fail("classifier (convocatoria)", new Error(c.reason));
       else if (c.relevant && (c.type === "convocatoria" || c.type === "evento"))
          pass(
-            "classifier (convocatoria)",
+            "classifier (convocatoria + cover)",
             `type=${c.type} when=${c.when ?? "∅"} where=${short(c.where ?? "∅")}`,
          );
       else
          fail(
-            "classifier (convocatoria) — expected relevant convocatoria/evento",
+            "classifier (convocatoria + cover) — expected relevant convocatoria/evento",
             JSON.stringify(c),
          );
    } catch (err) {
       fail("classifier (convocatoria)", err);
    }
 
-   // 4b. The REAL IG classifier — irrelevant meme.
+   // 4b. The REAL IG classifier — irrelevant meme (same cover, so an image
+   // alone must not turn a meme into a relevant post).
    try {
       const c = await classifyPost(
          "colectiva_demo",
@@ -262,7 +284,10 @@ async function main() {
             shortcode: "MEME1",
             caption: "jajaja buen lunes 😂😂 #meme #frase",
          }),
-         { nowMs: Date.parse("2026-06-19T12:00:00Z") },
+         {
+            nowMs: Date.parse("2026-06-19T12:00:00Z"),
+            cover: { bytes: RED_PNG, mimeType: "image/png", format: "png" },
+         },
       );
       if (c.reason) fail("classifier (meme)", new Error(c.reason));
       else if (!c.relevant)
@@ -274,7 +299,9 @@ async function main() {
 
    console.log();
    if (failures === 0) {
-      console.log(`${greenCheck} All live Bedrock smoke checks passed.`);
+      console.log(
+         `${greenCheck} All live DeepSeek vision smoke checks passed.`,
+      );
       process.exit(0);
    } else {
       console.log(`${redX} ${failures} check(s) failed.`);

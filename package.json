@@ -1,7 +1,7 @@
 {
    "name": "chopperbot",
-   "version": "1.28.2",
-   "description": "Discord Q&A bot for fintech project, powered by Amazon Bedrock (Converse API).",
+   "version": "2.0.0",
+   "description": "Community Discord bot for Revolución Z — capabilities routed per channel, powered by DeepSeek V4.1 Flash.",
    "private": true,
    "license": "MIT",
    "type": "module",
@@ -21,7 +21,6 @@
       "node": ">=20"
    },
    "dependencies": {
-      "@aws-sdk/client-bedrock-runtime": "^3.1074.0",
       "@aws-sdk/client-cloudwatch-logs": "^3.1074.0",
       "@aws-sdk/client-s3": "^3.1104.0",
       "@aws-sdk/credential-providers": "^3.1074.0",

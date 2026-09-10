@@ -195,7 +195,7 @@ describe("getChannelCapabilityMap", () => {
    });
 });
 
-describe("boot validation (LLM text backend + AWS credential pair)", () => {
+describe("boot validation (DeepSeek-only backend)", () => {
    beforeEach(() => {
       vi.resetModules();
       process.env = { ...originalEnv };
@@ -213,62 +213,30 @@ describe("boot validation (LLM text backend + AWS credential pair)", () => {
       }) as never);
    }
 
-   test("LLM_TEXT_BACKEND=bedrock boots with NO KIMI_API_KEY", async () => {
-      delete process.env.KIMI_API_KEY;
-      process.env.LLM_TEXT_BACKEND = "bedrock";
-
-      const { config } = await import("../config.js");
-      expect(config.LLM_TEXT_BACKEND).toBe("bedrock");
-      expect(config.KIMI_API_KEY).toBeUndefined();
-   });
-
-   test("default kimi backend exits when KIMI_API_KEY is missing", async () => {
-      delete process.env.KIMI_API_KEY;
-      delete process.env.LLM_TEXT_BACKEND;
-      mockExit();
-
-      await expect(import("../config.js")).rejects.toThrow("exit:1");
-   });
-
-   test("ACCESS_KEY_ID without SECRET_ACCESS_KEY exits (both-or-neither)", async () => {
-      process.env.ACCESS_KEY_ID = "solo-key";
-      delete process.env.SECRET_ACCESS_KEY;
-      mockExit();
-
-      await expect(import("../config.js")).rejects.toThrow("exit:1");
-   });
-
-   test("both AWS keys unset boots (default credential chain mode)", async () => {
-      delete process.env.ACCESS_KEY_ID;
-      delete process.env.SECRET_ACCESS_KEY;
-
-      const { config } = await import("../config.js");
-      expect(config.ACCESS_KEY_ID).toBeUndefined();
-      expect(config.SECRET_ACCESS_KEY).toBeUndefined();
-   });
-
-   // The 2026-08-23 Kimi→DeepSeek cutover is meant to be ONE env var. These pin
-   // that: selecting deepseek must repoint key/url/model together, and must fail
-   // loudly rather than silently falling back to the Kimi endpoint with the
-   // wrong credentials.
-   test("LLM_TEXT_BACKEND=deepseek resolves textBackend to the DeepSeek endpoint", async () => {
-      process.env.LLM_TEXT_BACKEND = "deepseek";
+   // DeepSeek is the ONLY brain since the 2026-09-14 v4.1 migration — it serves
+   // text AND images — so its key is required unconditionally. There is no
+   // second backend left to boot onto, which is why these are plain
+   // "exits without the key" assertions rather than per-backend branches.
+   test("boots with DEEPSEEK_API_KEY and resolves one DeepSeek backend", async () => {
       process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
       delete process.env.DEEP_SEEK_API_KEY;
 
-      const { textBackend, textBrainDisplayName } = await import("../config.js");
+      const { textBackend, textBrainDisplayName } = await import(
+         "../config.js"
+      );
       expect(textBackend.provider).toBe("deepseek");
       expect(textBackend.apiKey).toBe("sk-deepseek-test");
       expect(textBackend.baseUrl).toBe("https://api.deepseek.com/v1");
-      expect(textBackend.modelId).toBe("deepseek-v4-flash");
-      expect(textBrainDisplayName()).toBe("DeepSeek V4 Flash");
-      // ONE model for every text tier — no second, pricier id. V4-Pro measured
-      // identical to Flash on the tool battery while being slower and 3.1×.
+      // `deepseek-flash` IS DeepSeek-V4.1-Flash (the legacy ids still route to
+      // it, but name the real one).
+      expect(textBackend.modelId).toBe("deepseek-flash");
+      expect(textBrainDisplayName()).toBe("DeepSeek V4.1 Flash");
+      // ONE model for every tier — no second, pricier id, and no separate vision
+      // model: V4.1 Flash reads images natively.
       expect(textBackend.supportsThinkingSwitch).toBe(true);
    });
 
    test("DEEP_SEEK_API_KEY is accepted as an alias (the spelling already in .env)", async () => {
-      process.env.LLM_TEXT_BACKEND = "deepseek";
       delete process.env.DEEPSEEK_API_KEY;
       process.env.DEEP_SEEK_API_KEY = "sk-alias-test";
 
@@ -276,8 +244,7 @@ describe("boot validation (LLM text backend + AWS credential pair)", () => {
       expect(textBackend.apiKey).toBe("sk-alias-test");
    });
 
-   test("LLM_TEXT_BACKEND=deepseek exits when neither key spelling is set", async () => {
-      process.env.LLM_TEXT_BACKEND = "deepseek";
+   test("exits when neither key spelling is set", async () => {
       delete process.env.DEEPSEEK_API_KEY;
       delete process.env.DEEP_SEEK_API_KEY;
       mockExit();
@@ -285,21 +252,21 @@ describe("boot validation (LLM text backend + AWS credential pair)", () => {
       await expect(import("../config.js")).rejects.toThrow("exit:1");
    });
 
-   test("default kimi backend leaves textBackend on the Kimi endpoint", async () => {
-      delete process.env.LLM_TEXT_BACKEND;
-      process.env.KIMI_API_KEY = "sk-kimi-test";
+   // The old Bedrock/Kimi knobs are gone. A leftover .env line for them must be
+   // inert rather than a boot failure — Zod strips unknown keys by default, and
+   // this pins that so a stale deployment .env can't take the bot down.
+   test("leftover Kimi/Bedrock/AWS env vars are ignored, not fatal", async () => {
+      process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
+      process.env.KIMI_API_KEY = "sk-stale-kimi";
+      process.env.LLM_TEXT_BACKEND = "kimi";
+      process.env.ACCESS_KEY_ID = "stale";
+      process.env.BEDROCK_MODEL_LOW = "us.amazon.nova-lite-v1:0";
 
-      // Mirror the KIMI_ vars rather than the schema defaults: vitest.setup.ts
-      // pre-fills KIMI_MODEL_ID, so asserting the literal default would pin the
-      // test harness instead of the resolver.
-      const { config, textBackend, textBrainDisplayName } = await import("../config.js");
-      expect(textBackend.provider).toBe("kimi");
-      expect(textBackend.apiKey).toBe("sk-kimi-test");
-      expect(textBackend.baseUrl).toBe(config.KIMI_BASE_URL);
-      expect(textBackend.modelId).toBe(config.KIMI_MODEL_ID);
-      expect(textBrainDisplayName()).toBe("Kimi");
-      // Moonshot 400s on unexpected params (it already does for `temperature`),
-      // so the DeepSeek-only `thinking` switch must never be sent there.
-      expect(textBackend.supportsThinkingSwitch).toBe(false);
+      const { config, textBackend } = await import("../config.js");
+      expect(textBackend.provider).toBe("deepseek");
+      expect(config).not.toHaveProperty("BEDROCK_MODEL_LOW");
+      expect(config).not.toHaveProperty("KIMI_API_KEY");
+      expect(config).not.toHaveProperty("LLM_TEXT_BACKEND");
+      expect(config).not.toHaveProperty("ACCESS_KEY_ID");
    });
 });

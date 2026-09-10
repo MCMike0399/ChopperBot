@@ -1,6 +1,6 @@
 # ChopperBot
 
-A multi-capability Discord assistant for a community project, powered by the Moonshot Kimi Code API. Each authorized Discord channel is bound to exactly one **Capability** — a self-contained bundle of system prompt, tools, and a private SQLite namespace. Bindings are managed live from chat via an admin console; no restart needed. Any unbound channel where the bot is @-mentioned falls back to `general_chat`. Image attachments (PNG/JPEG/GIF/WebP) are forwarded to the model as vision input in any capability; documents are not supported.
+A multi-capability Discord assistant for a community project, powered by DeepSeek V4.1 Flash. Each authorized Discord channel is bound to exactly one **Capability** — a self-contained bundle of system prompt, tools, and a private SQLite namespace. Bindings are managed live from chat via an admin console; no restart needed. Any unbound channel where the bot is @-mentioned falls back to `general_chat`. Image attachments (PNG/JPEG/GIF/WebP) are seen natively by the model in any capability — the same request carries the pixels and the tools — so a flyer can be read and acted on in one turn; documents are not supported.
 
 Four capabilities ship in this repo:
 
@@ -8,14 +8,14 @@ Four capabilities ship in this repo:
 | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `configuration`     | Admin console hard-bound to one Discord channel (`CHOPPERBOT_CONFIG_CHANNEL_ID`). Bind/unbind channels to capabilities, inspect the SQLite DB, list registered capabilities, and run scoped per-capability data admin — including full Instagram-monitor control (status, pause/resume, force-poll, kill-switch reset).                                                                                                                                                                                                                                                |
 | `calendar`          | A **global** server calendar — one shared set of events (rewritten from the old per-user model 2026-06-21). Mods manage events in natural language from a bound **input** channel; every create/update/delete is persisted, rendered into the month's PDF/PNG template, and published with a master ICS to a separate **output** channel. Daily / weekly / monthly recurrence with an optional end date and per-occurrence exceptions ("just this day" / "this and following" / "the whole series").                                                                   |
-| `instagram_monitor` | Background poller over a **global** list of public Instagram accounts. It classifies each new post with Kimi in Spanish (`evento` / `convocatoria` / `alerta` / `acuerpamiento` / `actualización` / `noticia` / `otro`) and fans the relevant ones — media re-uploaded as a Discord attachment — out to **every** channel bound to the capability. Polling cadence is **adaptive** (learned from each account's own posting history) under a daily request budget, with anti-detection jitter/quiet-hours and a persistent kill-switch that halts on real ban signals. |
+| `instagram_monitor` | Background poller over a **global** list of public Instagram accounts. It reads each new post's caption **and cover image** with DeepSeek V4.1 Flash in Spanish, in a single multimodal call, (`evento` / `convocatoria` / `alerta` / `acuerpamiento` / `actualización` / `noticia` / `otro`) and fans the relevant ones — media re-uploaded as a Discord attachment — out to **every** channel bound to the capability. Polling cadence is **adaptive** (learned from each account's own posting history) under a daily request budget, with anti-detection jitter/quiet-hours and a persistent kill-switch that halts on real ban signals. |
 | `general_chat`      | The baseline conversation. Never bound to a channel — it runs automatically when the bot is @-mentioned in any guild channel that has no specialized binding. Introduces the bot and redirects the user to the right channel.                                                                                                                                                                                                                                                                                                                                          |
 
 ## Stack
 
 - TypeScript (strict) on Node ≥ 20 (the live deployment runs Node 22)
 - [discord.js](https://discord.js.org/) for the Discord gateway client
-- [Moonshot Kimi Code](https://www.kimi.com/code/console) via the OpenAI-compatible SDK (`kimi-for-coding` model)
+- [DeepSeek V4.1 Flash](https://api-docs.deepseek.com/) via the OpenAI-compatible SDK (`deepseek-flash` model) — one backend for text **and** images
 - SQLite via [better-sqlite3](https://github.com/WiseLibs/better-sqlite3) (WAL) for all persistence — one file, namespaced per capability
 - [pino](https://getpino.io/) for structured JSON logs
 - [vitest](https://vitest.dev/) for tests
@@ -24,14 +24,14 @@ Four capabilities ship in this repo:
 
 ```bash
 pnpm install
-cp .env.example .env && $EDITOR .env   # set DISCORD_TOKEN, CHOPPERBOT_CONFIG_CHANNEL_ID, KIMI_API_KEY
+cp .env.example .env && $EDITOR .env   # set DISCORD_TOKEN, CHOPPERBOT_CONFIG_CHANNEL_ID, DEEPSEEK_API_KEY
 pnpm run typecheck
 pnpm test
 pnpm run build
 pnpm run start
 ```
 
-**Required** env vars: `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, `KIMI_API_KEY`. Everything else has a default — see `.env.example` for the full list (Kimi base URL / model / User-Agent, attachment caps, Instagram session cookies and request budget, etc.).
+**Required** env vars: `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, `DEEPSEEK_API_KEY` (the legacy spelling `DEEP_SEEK_API_KEY` is also accepted). Everything else has a default — see `.env.example` for the full list (DeepSeek base URL / model / output budget / concurrency, attachment caps, Instagram session cookies and request budget, etc.).
 
 The bot logs JSON via pino; pipe through `pino-pretty` for readable output:
 
@@ -82,10 +82,10 @@ npx vitest run src/capabilities/calendar/__tests__/store.test.ts   # single file
 npx vitest run -t "creates an event"                        # single test by name pattern
 ```
 
-Tests use real SQLite (`:memory:`) and a mocked OpenAI client. A smoke test against the **real** Kimi API is available but is not part of `pnpm test` (it spends request budget):
+Tests use real SQLite (`:memory:`) and a mocked OpenAI client. A smoke test against the **real** DeepSeek API is available but is not part of `pnpm test` (it spends request budget):
 
 ```bash
-KIMI_API_KEY=sk-kimi-... tsx scripts/live-kimi-smoke.ts
+npx tsx scripts/live-vision-smoke.ts
 ```
 
 ## Deployment

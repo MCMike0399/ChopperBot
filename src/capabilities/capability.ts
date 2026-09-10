@@ -116,15 +116,23 @@ export interface CapabilityTurnBundle {
    /** Already collision-checked, ready to pass to llm/client.ts:ask(). */
    tools: ComposedTools;
    /**
-    * Which text tier this capability's turns need (2026-08-13). Omit — the
-    * default — to get `medium`, which answers directly and is the cheap,
-    * fast path that should serve almost every turn. Declare `'high'` ONLY for
-    * capabilities that drive multi-turn tool loops where a wrong call writes
-    * bad state (calendar, workshop, event_intake, the config console); it
-    * enables the model's thinking mode, roughly doubling billed output tokens.
+    * Which thinking tier this capability's turns need (v4.1 migration,
+    * 2026-09-14). Omit — the default — to get `'high'`: thinking enabled, the
+    * safe choice for anything that may write state.
     *
-    * `'low'` is meaningless here: it is the images-only Nova tier, and ask()
-    * already routes any turn carrying an image there regardless of this field.
+    * - `'low'` — thinking DISABLED. Cheap and fast, and the right tier for
+    *   anything conversational or single-shot (general_chat, the announcer, the
+    *   IG classifier, workshop compaction). This is essentially all the volume.
+    * - `'high'` — thinking enabled. The multi-turn tool loops where a wrong call
+    *   writes bad state (calendar, event_intake, the config console).
+    * - `'max'` — thinking enabled at `reasoning_effort: 'max'`. Reserved for the
+    *   workshop, the bot's longest and most tool-dense loop.
+    *
+    * There is no vision tier any more: DeepSeek V4.1 Flash reads images on the
+    * same tier as the text, so an image turn costs no extra call and needs no
+    * special routing. (`'medium'` is still accepted as a legacy alias for
+    * `'high'` — see `normalizeEffort` in src/llm/client.ts — so an un-migrated
+    * declaration cannot silently lose thinking.)
     */
    effort?: Effort;
 }

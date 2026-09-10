@@ -3,9 +3,9 @@ import { log } from "../log.js";
 /**
  * LLM health watchdog.
  *
- * Every LLM request in `ask()` (src/llm/client.ts) — Kimi (OpenAI SDK) on the
- * text path and Bedrock on the vision path — reports its outcome here. When the
- * LLM stops working, an alert is pushed to the admin/config
+ * Every LLM request in `ask()` (src/llm/client.ts) — DeepSeek on every path,
+ * text and image alike since the 2026-09-14 v4.1 migration — reports its outcome
+ * here. When the LLM stops working, an alert is pushed to the admin/config
  * Discord channel through the injected sink — closing the gap where the bot's
  * whole brain (chat replies AND the IG post classifier) can silently fail
  * while only journald notices. Motivating incident (2026-06-12): a provider
@@ -13,9 +13,9 @@ import { log } from "../log.js";
  * hours with zero operator-facing signal.
  *
  * Alert policy, mirroring the IG monitor's "alert once, not 1000×" approach:
- * - **Deterministic errors** (4xx config/protocol: 400/401/403/404/422 — a
- *   ValidationException, revoked/insufficient IAM creds, a bad model id) never
- *   self-heal, so alert on the FIRST one.
+ * - **Deterministic errors** (4xx config/protocol: 400/401/403/404/422 — a bad
+ *   parameter, a revoked key, a bad model id, an exhausted balance on 402)
+ *   never self-heal, so alert on the FIRST one.
  * - **Transient errors** (429/5xx/network/timeouts) can self-heal, so alert
  *   only after `TRANSIENT_ALERT_THRESHOLD` consecutive failures.
  * - **Content-filter rejections** (the provider's own risk/moderation filter
@@ -41,7 +41,7 @@ export type LlmErrorKind = "deterministic" | "transient" | "content_filter";
  * The provider's own risk/moderation filter refused this prompt.
  *
  * Motivating incident (2026-08-06 09:57 CST): a member asked general_chat what
- * the server should do about people who support China, and Moonshot answered
+ * the server should do about people who support China, and the gateway answered
  * `400 The request was rejected because it was considered high risk`
  * (`param: "prompt"`). Under the old rules that was a *deterministic* 400 —
  * i.e. "API key inválida / modelo sin acceso, no se va a resolver solo" — so it
@@ -51,11 +51,18 @@ export type LlmErrorKind = "deterministic" | "transient" | "content_filter";
  *
  * Recognizing this is worth the string match precisely because the failure is
  * per-prompt: it must not be retried as a config fix, must not page anyone,
- * and — see ask() in client.ts — is the one case where a retry (and then the
- * Bedrock path) is the right recovery instead of surfacing an error.
+ * and — see ask() in client.ts — is the one case where a retry is the right
+ * recovery instead of surfacing an error. (The old second leg of that ladder,
+ * a failover to Amazon Nova, went away with the Bedrock backend on 2026-09-14.)
  *
- * Kept deliberately narrow: a genuine bad-parameter 400 (`temperature`,
- * unknown field, bad model id) has none of these phrases and must keep its
+ * DeepSeek is a Chinese provider, so the CN-sensitive shapes are worth keeping
+ * even though it measured 0/4 refusals on RevZ-shaped political prompts: it
+ * prefers to deflect in-band with HTTP 200 ("no he podido encontrar información
+ * sobre ese tema"), which is invisible here. The `content_filter` finish_reason
+ * is handled separately in client.ts — that one is a 200 too.
+ *
+ * Kept deliberately narrow: a genuine bad-parameter 400/422 (`reasoning_effort`
+ * typo, unknown field, bad model id) has none of these phrases and must keep its
  * first-failure page.
  */
 export function isContentFilterRejection(err: unknown): boolean {
@@ -85,14 +92,15 @@ export function isContentFilterRejection(err: unknown): boolean {
 }
 
 /**
- * Classify an error from either backend. OpenAI SDK errors (Kimi) carry the
- * HTTP status on `.status`; AWS SDK errors (Bedrock) carry it on
- * `$metadata.httpStatusCode` — we read both. Connection and credential-resolution errors
- * have none and are transient. 408/429/5xx are retryable server/throttle
- * states; the remaining 4xx are protocol or auth mistakes that will fail
- * identically on every retry. As a fallback when no status is present, a few
- * AWS exception `name`s are mapped explicitly (Throttling is transient; the
- * Validation/AccessDenied/ResourceNotFound family is deterministic).
+ * Classify an error from the LLM provider. The OpenAI SDK carries the HTTP
+ * status on `.status`; `$metadata.httpStatusCode` and the AWS-style exception
+ * `name` mapping are kept because MinIO/`@aws-sdk/client-s3` shares this
+ * classifier's shape and a future provider may too. Connection and
+ * credential-resolution errors have no status and are transient. 408/429/5xx
+ * are retryable server/throttle states; the remaining 4xx are protocol or auth
+ * mistakes that will fail identically on every retry — note DeepSeek's
+ * documented codes: 402 insufficient balance, 422 invalid parameters, both
+ * deterministic and both worth an immediate page.
  *
  * Content-filter refusals are checked FIRST: they arrive as a 400 but say
  * nothing about the bot's configuration.
@@ -256,11 +264,11 @@ export class LlmHealthMonitor {
          "🚨 **LLM: las peticiones están fallando**",
          `Error: \`${errorMessage(err)}\``,
          kind === "deterministic"
-            ? "Tipo: error de configuración/protocolo — **no se va a resolver solo** (p. ej. API key de Kimi inválida, credenciales IAM inválidas, modelo/region sin acceso, parámetro rechazado)."
+            ? "Tipo: error de configuración/protocolo — **no se va a resolver solo** (p. ej. API key de DeepSeek inválida, saldo agotado (402), modelo sin acceso, parámetro rechazado)."
             : `Tipo: transitorio (red/servidor/throttle), pero ya van ${this.consecutiveFailures} fallos consecutivos.`,
          "",
          "Impacto: el bot no puede responder mensajes ni clasificar posts de Instagram mientras dure.",
-         'Diagnóstico: `journalctl --user -u chopperbot -o cat | grep -iE "Validation|AccessDenied|Throttling|llm"`.',
+         'Diagnóstico: `journalctl --user -u chopperbot -o cat | grep -iE "401|402|Throttling|llm"`.',
          `(Máx. 1 alerta cada ${Math.round(ALERT_COOLDOWN_MS / 3_600_000)} h; avisaré cuando se recupere.)`,
       ]);
    }

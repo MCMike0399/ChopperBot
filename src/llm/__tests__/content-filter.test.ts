@@ -3,48 +3,34 @@
  *
  * Incident (2026-08-06 09:57 + 10:09 CST, #club-de-cine): a member asked
  * general_chat "¿qué deberíamos hacer con las personas que apoyan a china en
- * este servidor?" and Moonshot answered `400 The request was rejected because
- * it was considered high risk`. The turn threw, the member got the English
- * "Sorry, I hit an error answering that — check the logs.", and the admin
- * channel got paged as if the API key were broken.
+ * este servidor?" and the gateway answered `400 The request was rejected
+ * because it was considered high risk`. The turn threw, the member got the
+ * English "Sorry, I hit an error answering that — check the logs.", and the
+ * admin channel got paged as if the API key were broken.
  *
  * The filter is probabilistic (the same prompt answered on a replay minutes
- * later), so the contract is: retry Kimi once → fall back to Bedrock → only
- * then a Spanish message. And never retry once tools have run, or an approved
- * calendar event would be created twice.
+ * later), so the contract is: retry once → then a Spanish message. The old
+ * second leg of that ladder — failing over to Amazon Nova — is GONE with the
+ * Bedrock backend (v4.1 migration, 2026-09-14), because there is no second
+ * provider left to fail over to.
+ *
+ * And never retry once tools have run, or an approved calendar event would be
+ * created twice.
  */
 import { describe, test, expect, vi, beforeEach } from "vitest";
 
-const { kimiMock, sendMock } = vi.hoisted(() => ({
-   kimiMock: vi.fn(),
-   sendMock: vi.fn(),
+const createMock = vi.hoisted(() => vi.fn());
+
+vi.mock("openai", () => ({
+   default: class {
+      chat = { completions: { create: createMock } };
+   },
 }));
-vi.mock("openai", () => {
-   class OpenAI {
-      chat = { completions: { create: kimiMock } };
-      constructor(_opts?: unknown) {}
-   }
-   return { default: OpenAI };
-});
-vi.mock("@aws-sdk/client-bedrock-runtime", () => {
-   class BedrockRuntimeClient {
-      send = sendMock;
-      constructor(_opts?: unknown) {}
-   }
-   class ConverseCommand {
-      input: unknown;
-      constructor(input: unknown) {
-         this.input = input;
-      }
-   }
-   return { BedrockRuntimeClient, ConverseCommand };
-});
 
 const { ask } = await import("../client.js");
-import { config } from "../../config.js";
 import type { ComposedTools } from "../../tools/source.js";
 
-/** The verbatim Moonshot rejection from the incident. */
+/** The verbatim rejection from the incident. */
 function highRisk(): Error {
    const err = new Error(
       "400 The request was rejected because it was considered high risk",
@@ -54,7 +40,7 @@ function highRisk(): Error {
    return err;
 }
 
-function kimiEnd(text: string) {
+function end(text: string) {
    return {
       choices: [
          {
@@ -65,7 +51,8 @@ function kimiEnd(text: string) {
       usage: { prompt_tokens: 10, completion_tokens: 2 },
    };
 }
-function kimiToolCall(id: string, name: string, input: unknown) {
+
+function toolCall(id: string, name: string, input: unknown) {
    return {
       choices: [
          {
@@ -86,11 +73,17 @@ function kimiToolCall(id: string, name: string, input: unknown) {
       usage: { prompt_tokens: 10, completion_tokens: 2 },
    };
 }
-function bedrockEnd(text: string) {
+
+/** HTTP 200, but the provider's filter omitted the content. */
+function filteredEnd() {
    return {
-      output: { message: { role: "assistant", content: [{ text }] } },
-      stopReason: "end_turn",
-      usage: { inputTokens: 10, outputTokens: 2 },
+      choices: [
+         {
+            message: { role: "assistant", content: "" },
+            finish_reason: "content_filter",
+         },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 0 },
    };
 }
 
@@ -121,55 +114,69 @@ const TURN = {
 };
 
 beforeEach(() => {
-   kimiMock.mockReset();
-   sendMock.mockReset();
+   createMock.mockReset();
 });
 
 describe("ask — content-filter recovery", () => {
-   test("retries Kimi once and returns the answer the retry produced", async () => {
-      kimiMock
+   test("retries once and returns the answer the retry produced", async () => {
+      createMock
          .mockRejectedValueOnce(highRisk())
-         .mockResolvedValueOnce(kimiEnd("Aquí la postura."));
+         .mockResolvedValueOnce(end("Aquí la postura."));
       const out = await ask({ ...TURN, tools: fakeTools() });
       expect(out).toBe("Aquí la postura.");
-      expect(kimiMock).toHaveBeenCalledTimes(2);
-      expect(sendMock).not.toHaveBeenCalled();
+      expect(createMock).toHaveBeenCalledTimes(2);
    });
 
-   test("falls back to Bedrock when the retry is refused too", async () => {
-      kimiMock
-         .mockRejectedValueOnce(highRisk())
-         .mockRejectedValueOnce(highRisk());
-      sendMock.mockResolvedValueOnce(bedrockEnd("Respuesta de Nova."));
-      const out = await ask({ ...TURN, tools: fakeTools() });
-      expect(out).toBe("Respuesta de Nova.");
-      expect(kimiMock).toHaveBeenCalledTimes(2);
-      expect(sendMock).toHaveBeenCalledTimes(1);
-      // The vision-tier model — the only Bedrock model this deployment calls.
-      const req = (sendMock.mock.calls[0][0] as { input: { modelId: string } })
-         .input;
-      expect(req.modelId).toBe(config.BEDROCK_MODEL_LOW);
-   });
-
-   test("a Spanish message is the last resort when both backends refuse", async () => {
-      kimiMock.mockRejectedValue(highRisk());
-      sendMock.mockRejectedValue(highRisk());
+   test("a Spanish message is the last resort when the retry is refused too", async () => {
+      createMock.mockRejectedValue(highRisk());
       const out = await ask({ ...TURN, tools: fakeTools() });
       expect(out).toMatch(/filtro del proveedor/i);
       expect(out).not.toMatch(/error|logs/i);
+      expect(createMock).toHaveBeenCalledTimes(2);
+   });
+
+   test("finish_reason 'content_filter' (HTTP 200) takes the same ladder", async () => {
+      // DeepSeek can omit the content and still answer 200. That is the same
+      // event as the 400-shaped refusal, and without this it would look like an
+      // ordinary empty response and burn the three empty-retries instead.
+      createMock
+         .mockResolvedValueOnce(filteredEnd())
+         .mockResolvedValueOnce(end("Ahora sí."));
+      const out = await ask({ ...TURN, tools: fakeTools() });
+      expect(out).toBe("Ahora sí.");
+      expect(createMock).toHaveBeenCalledTimes(2);
+   });
+
+   test("a persistently filtered turn ends in the Spanish message, not the empty fallback", async () => {
+      createMock.mockResolvedValue(filteredEnd());
+      const out = await ask({ ...TURN, tools: fakeTools() });
+      expect(out).toMatch(/filtro del proveedor/i);
    });
 
    test("does NOT retry after a tool has run — a second pass would re-create the event", async () => {
       const tools = fakeTools();
-      kimiMock
+      createMock
          .mockResolvedValueOnce(
-            kimiToolCall("c1", "calendar_create_event", { title: "Asamblea" }),
+            toolCall("c1", "calendar_create_event", { title: "Asamblea" }),
          )
          .mockRejectedValueOnce(highRisk());
       const out = await ask({ ...TURN, tools });
       expect(tools.handle).toHaveBeenCalledTimes(1);
-      expect(kimiMock).toHaveBeenCalledTimes(2); // the initial call + the post-tool call, no retry
-      expect(sendMock).not.toHaveBeenCalled();
+      expect(createMock).toHaveBeenCalledTimes(2); // the initial call + the post-tool call, no retry
+      expect(out).toMatch(/filtro del proveedor/i);
+   });
+
+   test("a filtered FORCING pass after tools also skips the retry", async () => {
+      const tools = fakeTools();
+      // Every loop iteration calls a (deduped) tool, so one write happens; the
+      // only permitted forcing pass then comes back filtered.
+      createMock
+         .mockResolvedValueOnce(
+            toolCall("c1", "calendar_create_event", { title: "Asamblea" }),
+         )
+         .mockResolvedValueOnce(filteredEnd());
+      const out = await ask({ ...TURN, tools });
+      expect(tools.handle).toHaveBeenCalledTimes(1);
       expect(out).toMatch(/filtro del proveedor/i);
    });
 
@@ -178,11 +185,10 @@ describe("ask — content-filter recovery", () => {
          status: number;
       };
       authErr.status = 401;
-      kimiMock.mockRejectedValueOnce(authErr);
+      createMock.mockRejectedValueOnce(authErr);
       await expect(ask({ ...TURN, tools: fakeTools() })).rejects.toThrow(
          "Invalid Authentication",
       );
-      expect(kimiMock).toHaveBeenCalledTimes(1);
-      expect(sendMock).not.toHaveBeenCalled();
+      expect(createMock).toHaveBeenCalledTimes(1);
    });
 });

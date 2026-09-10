@@ -1,10 +1,19 @@
 /**
- * Admin-console smoke against the REAL text model (Kimi).
+ * Admin-console smoke against the REAL text model — DeepSeek V4.1 Flash
+ * (`deepseek-flash`), the only backend since the 2026-09-14 v4.1 migration.
  *
  * The one behavior worth proving live: when an operator asks a general "¿cómo va
  * el bot?", the model must call **`config_system action:health` once** and answer
  * from it — not chain the four per-capability `status` tools (the pre-2026-08-03
  * behavior), and not dump the raw JSON into Discord.
+ *
+ * Scene 3 additionally pins which model the console REPORTS. Kimi is gone, so the
+ * expected answer comes from the resolved backend (`textBackend.modelId` /
+ * `textBrainDisplayName()` in src/config.ts) — never a hardcoded name — and a
+ * retired backend (Kimi, Nova/Bedrock, Sonnet) must not be cited. The health
+ * payload's `llm.vision` block now mirrors `llm.text` (same provider, same model
+ * id: one multimodal model), so the follow-up question about reading flyer
+ * images must land on that same model.
  *
  * Runs against an in-memory SQLite store with a stubbed Discord client, so it
  * mutates nothing and posts nowhere.
@@ -114,8 +123,7 @@ async function say(
       now: NOW,
       // The console is mod-gated and fails closed (2026-08-13): an unresolvable
       // author gets the unauthorized prompt and ZERO tools, so without this the
-      // smoke asserts the deny path instead of the console. See the fuller note in
-      // scripts/text-backend-trial.ts.
+      // smoke would assert the deny path instead of the console.
       isAdministrator: true,
    });
    const tools: string[] = [];
@@ -151,7 +159,9 @@ const actionsOf = (inputs: unknown[]) =>
       .map((i) => (i as { action?: string } | null)?.action)
       .filter(Boolean) as string[];
 
-console.log("=== Admin console health smoke (real text model) ===");
+console.log(
+   `=== Admin console health smoke — backend real: ${textBackend.provider} / ${textBackend.modelId} (${textBrainDisplayName()}) ===`,
+);
 
 // ── Scene 1: the general question routes to `health` ──────────────────────────
 console.log('\n── Scene 1: "¿cómo va el bot?" → una sola llamada a health ──');
@@ -218,22 +228,36 @@ console.log(
    );
 }
 
-// ── Scene 3: "which model does it think with" — must not name legacy Sonnet ──
+// ── Scene 3: "which model does it think with" — the resolved backend only ────
 console.log(
-   `\n── Scene 3: "¿con qué modelo piensa?" → ${textBrainDisplayName()} (texto) + Nova (imágenes) ──`,
+   `\n── Scene 3: "¿con qué modelo piensa?" → ${textBrainDisplayName()} (${textBackend.modelId}), texto e imágenes ──`,
 );
 {
-   const { reply } = await say("¿con qué modelo piensa ChopperBot?");
    const brain = textBrainDisplayName();
+   const namesBrain = (text: string) =>
+      new RegExp(textBackend.provider, "i").test(text) ||
+      new RegExp(brain.replace(/\s+/g, "\\s+"), "i").test(text);
+   // Hardcoded in the pre-migration script, read from config now: if the brain
+   // ever changes again, this line follows config.ts instead of rotting.
+   const retiredRe = /\bnova\b|\bkimi\b|\bbedrock\b|sonnet|claude|anthropic/i;
+
+   const { reply } = await say("¿con qué modelo piensa ChopperBot?");
+   check(namesBrain(reply), `nombró ${brain} (${textBackend.modelId})`);
    check(
-      new RegExp(textBackend.provider, "i").test(reply) ||
-         new RegExp(brain.replace(/\s+/g, "\\s+"), "i").test(reply),
-      `nombró ${brain} para texto`,
+      !retiredRe.test(reply),
+      "NO citó un backend retirado (Nova/Bedrock/Kimi/Sonnet)",
+      reply.match(retiredRe)?.[0] ?? "",
    );
-   check(/nova/i.test(reply), "nombró Nova para imágenes");
+
+   // llm.vision mirrors llm.text now — one multimodal model, same request.
+   const { reply: visionReply } = await say(
+      "¿y qué modelo lee las imágenes de los flyers?",
+   );
+   check(namesBrain(visionReply), "reportó el MISMO modelo para las imágenes");
    check(
-      !/sonnet|claude-3|anthropic\.claude/i.test(reply),
-      "NO citó el modelo legacy (Sonnet/Claude)",
+      !retiredRe.test(visionReply),
+      "no mandó las imágenes a Nova/Bedrock",
+      visionReply.match(retiredRe)?.[0] ?? "",
    );
 }
 

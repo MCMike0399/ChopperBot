@@ -62,7 +62,9 @@ export async function compactConversation(
          system: renderCompactionPrompt(),
          messages: [{ role: "user", content: body }],
          tools: composeToolSources([]),
-         effort: "medium",
+         // Compaction is summarization with no tools: thinking would only add
+         // latency and billed output tokens.
+         effort: "low",
       });
       const cleaned = reply.trim();
       // A fallback/apology string is not a summary — keep the previous one.
