@@ -22,6 +22,7 @@ import {
    type InstagramFetcher,
    type InstagramFetchHints,
 } from "./fetcher.js";
+import { BrowserInstagramFetcher } from "./browser-fetcher.js";
 import { isModTurn } from "../mod-authority.js";
 import {
    InstagramMonitorScheduler,
@@ -48,6 +49,7 @@ export class InstagramMonitorCapability implements Capability {
 
    private store: InstagramMonitorStore | null = null;
    private fetcher: InstagramFetcher | null = null;
+   private browserFetcher: BrowserInstagramFetcher | null = null;
    private scheduler: InstagramMonitorScheduler | null = null;
    /** Shared handle, kept so a turn can read who counts as a moderator. */
    private db: Database.Database | null = null;
@@ -82,17 +84,27 @@ export class InstagramMonitorCapability implements Capability {
          config.IG_USER_AGENT,
          hints,
       );
-      this.fetcher = fetcher;
+      // The HTTP fetcher is always constructed even in browser mode: the CDN
+      // cover-image fetch borrows `cdnHeaders()` from it, so covers keep the
+      // browser-matching UA/cookies regardless of which fetch path polls. It is
+      // also the `IG_FETCH_MODE=api` rollback path.
       configureIgCdn({ headers: () => fetcher.cdnHeaders() });
+      const browserFetcher =
+         config.IG_FETCH_MODE === "browser"
+            ? new BrowserInstagramFetcher(auth, config.IG_USER_AGENT)
+            : null;
+      this.browserFetcher = browserFetcher;
+      this.fetcher = browserFetcher ?? fetcher;
       log.warn(
          {
             capability: this.id,
+            fetch_mode: config.IG_FETCH_MODE,
             authed: auth !== null,
             custom_ua: !!config.IG_USER_AGENT,
          },
          auth
-            ? "InstagramMonitorCapability initialized in DIRECT+AUTH mode (logged-in IG session cookies). Higher rate limits; session can expire (watch for instagram_monitor.auth.expired)."
-            : "InstagramMonitorCapability initialized in DIRECT mode (no auth). OK for local dev; in prod this risks IP throttling.",
+            ? `InstagramMonitorCapability initialized in ${config.IG_FETCH_MODE.toUpperCase()}+AUTH mode (logged-in IG session cookies). Session can expire (watch for instagram_monitor.auth.expired).`
+            : `InstagramMonitorCapability initialized in ${config.IG_FETCH_MODE.toUpperCase()} mode (no auth). OK for local dev; in prod this risks IP throttling.`,
       );
    }
 
@@ -171,6 +183,10 @@ export class InstagramMonitorCapability implements Capability {
       if (this.scheduler) {
          await this.scheduler.dispose();
          this.scheduler = null;
+      }
+      if (this.browserFetcher) {
+         await this.browserFetcher.dispose().catch(() => {});
+         this.browserFetcher = null;
       }
    }
 }
