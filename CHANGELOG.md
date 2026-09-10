@@ -14,6 +14,20 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.1.1 — 2026-09-10
+
+🔎 **Las noticias ya están llegando de nuevo (y aprendimos algo en el camino)**
+
+Después de arreglar la lectura de Instagram quedaba una parte que no se veía desde afuera: el canal siguió vacío un buen rato aunque por dentro todo parecía estar funcionando bien. Costó encontrarlo, así que lo dejo dicho.
+
+- **Ya están llegando.** Las publicaciones de las últimas horas volvieron al canal, y de acá en adelante entran solas a medida que las cuentas publican.
+- **Recuperamos lo más reciente.** Antes dije que lo de esos días no se recuperaba; al final sí pudimos traer las últimas horas, que es lo que todavía sirve. Lo más viejo queda afuera a propósito: no tiene sentido llenar el canal con convocatorias que ya pasaron.
+- **Ahora me doy cuenta antes si me quedo callado.** Si el canal se queda quieto, hay una revisión que en segundos dice si estoy detenido, si estoy esperando turno, o si simplemente no hay nada nuevo que publicar. Antes eso había que deducirlo a mano y por eso tardamos en verlo.
+
+Gracias otra vez por la paciencia. 💚
+
+---
+
 ## 2.1.0 — 2026-09-10
 
 📰 **Las noticias están de vuelta**
