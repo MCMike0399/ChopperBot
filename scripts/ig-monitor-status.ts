@@ -64,12 +64,15 @@ try {
    );
    const counts = new Map<string, number>();
    for (const line of j.split("\n")) {
-      const m = /"msg":"instagram_monitor\.push".*?"channelId":"(\d+)"/.exec(line);
-      if (m) counts.set(m[1]!, (counts.get(m[1]!) ?? 0) + 1);
-      else {
-         const e = /"msg":"(instagram_monitor\.[a-z_.]+)"/.exec(line);
-         if (e) recentEvents = e[1]!; // last event seen in the window
+      // pino emits the bound fields BEFORE `msg`, so channelId precedes the
+      // message key — match the two independently rather than in one regex.
+      if (line.includes('"msg":"instagram_monitor.push"')) {
+         const m = /"channelId":"(\d+)"/.exec(line);
+         if (m) counts.set(m[1]!, (counts.get(m[1]!) ?? 0) + 1);
+         continue;
       }
+      const e = /"msg":"(instagram_monitor\.[a-z_.]+)"/.exec(line);
+      if (e) recentEvents = e[1]!; // last event seen in the window
    }
    pushCounts =
       counts.size === 0
