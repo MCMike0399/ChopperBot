@@ -56,6 +56,39 @@ The takeaway for future readers: **trust the live DB + `cadence_sweep` log over 
 - **Governor trail in the journal:** `journalctl --user -u chopperbot -o cat | grep -E 'cadence_sweep|stretch_update|budget_exhausted'`. `cadence_sweep` is the daily per-account recompute (carries `stretch`/`projected`/`calls_per_poll`); `stretch_update` is the per-tick governor move (≥10 % changes only). `projected` is always ≈ the headroom ceiling **at the moment it logged** — the value is correct, what used to go stale was _how often_ it was recomputed.
 - **Polls-bias check (the diagnostic that found the 2026-06-12 fix).** Compare _realized_ polls/day against what the governor _modeled_: realized = `journalctl --user -u chopperbot --since "-24 hours" -o cat --no-pager | grep -c '"msg":"instagram_monitor.fetch.ok"'`; modeled = `projected ÷ calls_per_poll` from the latest `stretch_update`/`cadence_sweep` line. Because the stretch is re-solved every tick to hold the instantaneous projection at the headroom ceiling, **any persistent realized-vs-modeled gap is pure model bias** (intra-day drift can't explain it). Pre-fix this read 70 vs 60 (+17 %); healthy is within ±5 %. Cross-check spend the same way: `requests_24h ÷ realized polls` should ≈ the logged `calls_per_poll` — if it does, the poll _count_ model is what's off, not the per-poll cost (that's exactly how the 2026-06-12 diagnosis isolated the quiet-hours term).
 
+**Resuming after a long outage — three silent states that all look like an empty channel (learned the hard way, 2026-09-10).** After the Sep 2–10 outage the monitor was `active (running)`, logging green `browser.fetch.ok` on every poll, and `#noticias` still sat **empty for ~11 hours**. Nothing in Discord distinguishes these states, and all three look identical to a human staring at the channel:
+
+1. **Kill-switch engaged** (`instagram_monitor_runtime.global_stop = 1`). `tickOnce()` returns before `dueAccounts()`, so nothing is ever polled. Journal: `instagram_monitor.tick.global_stop` (rate-limited to 1/30 min). Check: `SELECT global_stop, stop_reason FROM instagram_monitor_runtime;`
+2. **Forward-only seeding** (`instagram_monitor_accounts.last_post_id IS NULL`). A NULL anchor is the _first-ever poll_ branch — `processAccount` records the anchor and returns **without pushing anything** (`instagram_monitor.first_poll_seed`). That is the correct way to "skip the backlog", but it means every poll is a successful no-op. **A NULL anchor will never deliver a single post, no matter how long you wait.**
+3. **Cadence decay.** After a long outage every account's learned interval has stretched toward the 12 h ceiling, so a just-seeded account is not due again for up to 12 h. A freshly seeded fleet therefore pushes nothing until roughly the next day _while polling normally_.
+
+Two more delays that are easy to misdiagnose:
+
+- **The resume drip is armed at scheduler _start_, not at resume.** `start()` sets `lastPollAttemptAtMs = Date.now()`, so the first poll after a restart waits the full `RESUME_DRIP_GAP_MS` (10 min) even if the kill-switch is cleared a minute later. Journal: `instagram_monitor.tick.resume_drip` (carries `sinceLastPollMs`).
+- **`requests_24h` resets to 0 on every restart** (in-memory window). "0 requests" does not mean "not polling" — read `heartbeat_at` for liveness.
+
+**To deliver a window of recent posts you must set a TIME-CUTOFF anchor; a NULL anchor does the opposite.** One statement, all accounts:
+
+```sql
+UPDATE instagram_monitor_accounts
+   SET last_post_id = '',                                          -- NOT NULL: skips the seed branch;
+                                                                   -- absent from the window → time gate applies
+       last_post_at = (strftime('%s','now')*1000 - 12*3600000),    -- the window (here: 12 h)
+       last_polled_at = NULL;                                      -- make every account immediately due
+```
+
+`last_post_id = ''` is deliberately odd and load-bearing: `NULL` takes the `first_poll_seed` branch (pushes nothing), whereas a non-NULL value **absent from the returned window** falls through to `ordered.filter(p => p.takenAtMs > last_post_at)` — the strict capture-time gate — and pushes everything newer than the cutoff. Expect one `instagram_monitor.anchor_missing.time_gated` per account; that warning is the recipe working. The fan-out still honours `MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL` (5), and because the drip returns one account per tick, a fleet-wide window backfill lands gradually over ≈10 min × account count rather than as a burst.
+
+**Triage order when the channel is quiet — do these before touching anything** (they answer stopped / seeding / waiting-on-cadence in seconds):
+
+```bash
+sqlite3 data/chopperbot.db "SELECT global_stop, requests_24h, heartbeat_at FROM instagram_monitor_runtime;"
+sqlite3 data/chopperbot.db "SELECT COUNT(*) total, SUM(last_post_id IS NULL) unseeded, SUM(last_polled_at IS NULL) due_now FROM instagram_monitor_accounts;"
+journalctl --user -u chopperbot -o cat --since "-30 min" | grep -oE 'instagram_monitor\.[a-z_.]+' | sort | uniq -c
+```
+
+**Verification cards belong in the admin channel — and must be deleted afterwards.** `scripts/verify-ig-browser-fetch.ts --publish-to=<channelId>` posts a genuinely rendered card. Point it at `#chopperbot-monitor` (`CHOPPERBOT_CONFIG_CHANNEL_ID`), never a community channel, **and delete the card when the check passes**: a news card left sitting in the admin channel reads as "the monitor is publishing to the wrong place" and cost a real debugging detour on 2026-09-10. The monitor's own fan-out only ever targets channels bound to `instagram_monitor` in `configuration_bindings` — it has never pushed to the config channel (1,619 push events as of 2026-09-10: 810 to `#📰│noticias`, 809 to `#instagram`, 0 elsewhere).
+
 **Known residuals / open follow-ups (not yet fixed, ordered by impact):**
 
 1. ~~`activeFraction` under-counts ceiling-clamped accounts~~ — **FIXED 2026-06-12** with the quiet-aware `expectedPollsPerDay()` (see the budget-governor bullet above). The 9-day live validation that motivated it: realized 70 polls/day vs modeled 60; the quiet-aware model predicts ~72 against the same snapshot (-3 % error instead of +17 %). Expect realized spend to settle back toward ~90/day and `poll_stretch` to RISE (≈2.5 → ≈3.3 at the 2026-06-12 account mix) — that's the fix working, not a regression.
