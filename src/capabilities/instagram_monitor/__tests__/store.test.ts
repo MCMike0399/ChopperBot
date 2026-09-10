@@ -14,7 +14,6 @@ import {
    CADENCE_INTERVAL_FACTOR,
    HARD_PAUSE_THRESHOLD,
    POLL_JITTER_FRACTION,
-   USERNAME_FEED_REPROBE_MS,
    type MonitoredAccount,
 } from "../store.js";
 
@@ -263,8 +262,8 @@ describe("InstagramMonitorStore — global runtime / circuit breaker (v5)", () =
       const base = 10_000_000_000;
       expect(store.record429Event(base)).toBe(1);
       expect(store.record429Event(base + 1_000)).toBe(2);
-      // 7h later: the first two have aged out of the 6h window.
-      const count = store.record429Event(base + 7 * 60 * 60 * 1000);
+      // 25h later: the first two have aged out of the 24h window.
+      const count = store.record429Event(base + 25 * 60 * 60 * 1000);
       expect(count).toBe(1);
       mem.close();
    });
@@ -515,12 +514,12 @@ describe("persistent fetch hints (v9)", () => {
 
       store.rememberUsernameFeed("foo", 1_000);
       expect(store.prefersUsernameFeed("foo", 1_000)).toBe(true);
+      // No auto-expiry: a 14-day clock used to flip this back to web_profile_info
+      // and that's what tripped the 2026-09-02 kill-switch. Stays sticky until
+      // an operator unpauses or force-polls.
       expect(
-         store.prefersUsernameFeed("foo", 1_000 + USERNAME_FEED_REPROBE_MS - 1),
+         store.prefersUsernameFeed("foo", 1_000 + 90 * 24 * 60 * 60 * 1000),
       ).toBe(true);
-      expect(
-         store.prefersUsernameFeed("foo", 1_000 + USERNAME_FEED_REPROBE_MS + 1),
-      ).toBe(false);
 
       store.setPaused("foo", false);
       expect(store.prefersUsernameFeed("foo", 2_000)).toBe(false);

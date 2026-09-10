@@ -6,6 +6,7 @@ import {
    InstagramAuthError,
    InstagramHardAccountError,
    InstagramRateLimitError,
+   InstagramHtmlFeedError,
    detectAuthBlock,
    detectHardAccountBlock,
    detectRateLimit,
@@ -613,6 +614,138 @@ describe("DirectInstagramFetcher — fingerprint headers + durable hints", () =>
       expect(seen[1]["x-ig-www-claim"]).toBe("hmac.TESTCLAIM");
    });
 
+   test("absorbs a rotated csrftoken from Set-Cookie and sends it on the next XHR", async () => {
+      const seen: Record<string, string>[] = [];
+      globalThis.fetch = vi.fn(async (url: string, init: RequestInit) => {
+         seen.push(init.headers as Record<string, string>);
+         if (url.includes("web_profile_info")) {
+            return {
+               ok: true,
+               status: 200,
+               headers: {
+                  getSetCookie: () => [
+                     "csrftoken=rotatedcsrf; Path=/; Domain=.instagram.com",
+                     "rur=CLN; Path=/",
+                  ],
+                  get: () => null,
+               },
+               async text() {
+                  return JSON.stringify({ data: { user: { id: "5005" } } });
+               },
+            };
+         }
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return JSON.stringify({
+                  status: "ok",
+                  items: [feedItem("3001", "AAA")],
+               });
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      await new DirectInstagramFetcher(AUTH, 0).fetchRecentPosts("foo");
+      expect(seen[0]["x-csrftoken"]).toBe("csrf");
+      expect(seen[1]["x-csrftoken"]).toBe("rotatedcsrf");
+      expect(seen[1].Cookie).toContain("csrftoken=rotatedcsrf");
+      expect(seen[1].Cookie).toContain("rur=CLN");
+      expect(seen[1].Cookie).toContain("sessionid=sid");
+   });
+
+   test("HTML warmup login shell surfaces InstagramAuthError (no feed XHR)", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return '<!DOCTYPE html>\n<html class="no-js not-logged-in">';
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const err = await new DirectInstagramFetcher(AUTH, 1)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramAuthError);
+      expect(err.sessionLevel).toBe(true);
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain("www.instagram.com/foo/");
+   });
+
+   test("HTML on web_profile_info is InstagramHtmlFeedError (no extra host retry)", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return {
+            ok: true,
+            status: 200,
+            async text() {
+               return '<!DOCTYPE html><html class="_9dls _ar44" lang="en">';
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const err = await new DirectInstagramFetcher(AUTH, 0)
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramHtmlFeedError);
+      expect(urls).toHaveLength(1);
+      expect(urls[0]).toContain("web_profile_info");
+   });
+
+   test("HTML on the feed is a transient InstagramHtmlFeedError (no extra host retry)", async () => {
+      const urls: string[] = [];
+      globalThis.fetch = vi.fn(async (url: string) => {
+         urls.push(url);
+         return {
+            ok: false,
+            status: 404,
+            async text() {
+               return '<!DOCTYPE html>\n<html class="no-js not-logged-in">';
+            },
+         };
+      }) as unknown as typeof fetch;
+
+      const hints = memoryFetchHints();
+      hints.rememberUsernameFeed("foo");
+      const err = await new DirectInstagramFetcher(
+         AUTH,
+         0,
+         DEFAULT_IG_USER_AGENT,
+         hints,
+      )
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramHtmlFeedError);
+      expect(urls).toHaveLength(1);
+   });
+
+   test("HTTP 429 wins even when the body is HTML", async () => {
+      globalThis.fetch = vi.fn(async () => ({
+         ok: false,
+         status: 429,
+         async text() {
+            return "<!DOCTYPE html><html>rate limited</html>";
+         },
+      })) as unknown as typeof fetch;
+
+      const hints = memoryFetchHints();
+      hints.rememberUsernameFeed("foo");
+      const err = await new DirectInstagramFetcher(
+         AUTH,
+         0,
+         DEFAULT_IG_USER_AGENT,
+         hints,
+      )
+         .fetchRecentPosts("foo")
+         .catch((e) => e);
+      expect(err).toBeInstanceOf(InstagramRateLimitError);
+   });
+
    test("hints.prefersUsernameFeed skips web_profile_info on a fresh fetcher", async () => {
       const urls: string[] = [];
       globalThis.fetch = vi.fn(async (url: string) => {
@@ -883,6 +1016,14 @@ describe("detectAuthBlock", () => {
       expect(detectAuthBlock(200, "checkpoint_required")).toBeNull();
       expect(detectAuthBlock(404, "login_required")).toBeNull();
       expect(detectAuthBlock(500, "challenge_required")).toBeNull();
+      // HTML 404 login shell is NOT session death — www warmup can still be
+      // logged-in while i.instagram.com serves that page (2026-09-07).
+      expect(
+         detectAuthBlock(
+            404,
+            '<!DOCTYPE html>\n<html class="no-js not-logged-in">',
+         ),
+      ).toBeNull();
    });
 });
 

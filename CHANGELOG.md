@@ -31,6 +31,19 @@ Si me preguntas con qué IA corro, ahora la respuesta es **DeepSeek V4.1 Flash**
 
 ---
 
+## 1.29.0 — 2026-09-07
+
+📡 **El monitor de Instagram volvió, y ahora se cuida más cuando Instagram pide ir despacio**
+
+El sondeo se había frenado solo: Instagram nos pidió esperar dos veces seguidas y el bot se detuvo por seguridad, varios días. No hacía falta cambiar la sesión — las mismas cookies siguen sirviendo. El monitor ya puede reanudar, y para que no se vuelva a trabar así:
+
+- ya no reintenta solo las consultas que Instagram rechaza siempre en las mismas cuentas
+- si se pausa mucho rato, reanuda de a poquito (una cuenta cada rato) en vez de consultar todo de golpe
+- un par de “espera un poco” ya no apaga el monitor; hace falta que se repita de verdad
+- si Instagram responde con la página web en vez de datos, espera varias horas en vez de insistir
+- sigue usando la misma sesión de siempre (no hace falta sacar cookies nuevas); si Instagram pide ir despacio, reanuda con calma
+---
+
 ## 1.28.2 — 2026-09-03
 
 🖼️ **Si me mandas una imagen y me pides que haga algo, ya no me trabo**

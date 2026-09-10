@@ -11,6 +11,7 @@ import {
 import {
    InstagramAuthError,
    InstagramHardAccountError,
+   InstagramHtmlFeedError,
    InstagramRateLimitError,
    type InstagramFetcher,
    type RecentPost,
@@ -75,17 +76,28 @@ const AUTH_FAILURE_COOLDOWN_MS = 60 * 60 * 1000;
 
 // A 429/throttle is worse than a one-off auth blip: IG is actively rate-limiting
 // us and continuing to poll escalates toward a ban. On a throttle we suspend ALL
-// polling for an escalating cooldown (base 2h, ×2 per throttle in the window,
-// capped at 12h) — longer than the auth cooldown.
-const RATE_LIMIT_COOLDOWN_BASE_MS = 2 * 60 * 60 * 1000;
+// polling for an escalating cooldown (base 6h, ×2 per throttle in the window,
+// capped at 12h). The old 2h base + trip-at-2 meant the first poll after the
+// cooldown was a second 429 that killed the monitor (2026-09-02).
+export const RATE_LIMIT_COOLDOWN_BASE_MS = 6 * 60 * 60 * 1000;
 const RATE_LIMIT_COOLDOWN_MAX_MS = 12 * 60 * 60 * 1000;
 
 // Circuit-breaker trip threshold for throttles (counted within EVENT_WINDOW_MS,
-// 6h): a 429 is IP/session-wide, so ≥2 in the window trips the PERSISTENT global
-// stop (manual resume only). Session-level auth failures (require_login /
-// checkpoint / challenge) trip immediately; account-specific 401/403 never trip
-// the global stop (they auto-pause the single offending account instead).
-const RATE_LIMIT_TRIP_COUNT = 2;
+// 24h): a 429 is IP/session-wide, so ≥3 in the window trips the PERSISTENT
+// global stop (manual resume only). Two throttles is the designed retry after
+// the first cooldown; a third means IG is still slamming us. Session-level
+// auth failures (require_login / checkpoint / challenge) trip immediately;
+// account-specific 401/403 never trip the global stop (they auto-pause the
+// single offending account instead).
+export const RATE_LIMIT_TRIP_COUNT = 3;
+
+// After a long outage (kill-switch, multi-hour 429 cooldown, days of downtime)
+// every account is due at once. Catching them up at the normal ~1–3 min tick
+// is a request burst — the same pattern that earned the 2026-09-02 429s.
+// Production enables a drip: 10 min between polls until the fleet is fresh.
+export const RESUME_DRIP_STALE_MS = 6 * 60 * 60 * 1000;
+export const RESUME_DRIP_GAP_MS = 10 * 60 * 1000;
+const GLOBAL_STOP_LOG_EVERY_MS = 30 * 60 * 1000;
 
 // Rolling window for the daily request budget.
 const REQUEST_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -235,6 +247,18 @@ export interface SchedulerDeps {
    resumeDebounceMs?: number;
    /** Override the resume-alert cooldown (ms). Tests set 0. Defaults to RESUME_ALERT_COOLDOWN_MS. */
    resumeCooldownMs?: number;
+   /**
+    * Resume-drip: if any unpaused account was last polled more than this many
+    * ms ago, space polls by {@link resumeDripGapMs} instead of the normal tick.
+    * `0`/unset disables the drip — tests leave it off so they can fire two
+    * ticks back-to-back; production passes {@link RESUME_DRIP_STALE_MS}.
+    */
+   resumeDripStaleMs?: number;
+   /**
+    * Minimum gap between account polls while the fleet is stale. `0`/unset
+    * disables. Production passes {@link RESUME_DRIP_GAP_MS}.
+    */
+   resumeDripGapMs?: number;
 }
 
 /** Deterministic per-local-date jitter in [-QUIET_BOUNDARY_JITTER_MIN,
@@ -352,6 +376,12 @@ export class InstagramMonitorScheduler {
    private readonly tickSkipProbability: number;
    private readonly resumeDebounceMs: number;
    private readonly resumeCooldownMs: number;
+   private readonly resumeDripStaleMs: number;
+   private readonly resumeDripGapMs: number;
+   /** Last time processAccount actually hit IG (success or fail). Drip gate. */
+   private lastPollAttemptAtMs = 0;
+   /** Rate-limit the per-tick `global_stop` warn — it used to fire every ~1–3 min. */
+   private lastGlobalStopLogAtMs = 0;
 
    constructor(
       private readonly deps: SchedulerDeps,
@@ -365,6 +395,8 @@ export class InstagramMonitorScheduler {
       this.tickSkipProbability = deps.tickSkipProbability ?? 0;
       this.resumeDebounceMs = deps.resumeDebounceMs ?? MIN_PAUSE_FOR_RESUME_MS;
       this.resumeCooldownMs = deps.resumeCooldownMs ?? RESUME_ALERT_COOLDOWN_MS;
+      this.resumeDripStaleMs = deps.resumeDripStaleMs ?? 0;
+      this.resumeDripGapMs = deps.resumeDripGapMs ?? 0;
       // Wire the fetcher's per-request observer into our rolling 24h counter (for
       // the daily-budget guardrail). Done here (not in start()) so it's active
       // even when tests drive tickOnce() directly.
@@ -389,6 +421,21 @@ export class InstagramMonitorScheduler {
       if (runtime.global_stop === 1) {
          this.lastBlockReason = "killswitch";
          this.blockedSinceMs = runtime.stopped_at ?? Date.now();
+      }
+      // A restart after a long outage must not immediately fire a poll —
+      // that's a request burst (observed 2026-09-07: 4 calls in one tick
+      // then a 429). Seed the drip clock so the first IG hit waits a gap.
+      const now = Date.now();
+      if (
+         this.resumeDripGapMs > 0 &&
+         this.resumeDripStaleMs > 0 &&
+         this.fleetIsStale(now)
+      ) {
+         this.lastPollAttemptAtMs = now;
+         log.info(
+            { gapMs: this.resumeDripGapMs },
+            "instagram_monitor.scheduler.start.resume_drip",
+         );
       }
       log.info(
          {
@@ -704,10 +751,13 @@ export class InstagramMonitorScheduler {
          const runtime = this.deps.store.getRuntime();
          if (runtime.global_stop === 1) {
             this.markBlocked("killswitch", now);
-            log.warn(
-               { reason: runtime.stop_reason },
-               "instagram_monitor.tick.global_stop",
-            );
+            if (now - this.lastGlobalStopLogAtMs >= GLOBAL_STOP_LOG_EVERY_MS) {
+               this.lastGlobalStopLogAtMs = now;
+               log.warn(
+                  { reason: runtime.stop_reason },
+                  "instagram_monitor.tick.global_stop",
+               );
+            }
             return;
          }
          // Quiet-hours and random-skip are NORMAL pauses: they deliberately leave
@@ -780,6 +830,18 @@ export class InstagramMonitorScheduler {
             ACCOUNTS_PER_TICK,
          );
          if (due.length === 0) return;
+         if (this.shouldResumeDrip(now)) {
+            log.info(
+               {
+                  gapMs: this.resumeDripGapMs,
+                  sinceLastPollMs: this.lastPollAttemptAtMs
+                     ? now - this.lastPollAttemptAtMs
+                     : null,
+               },
+               "instagram_monitor.tick.resume_drip",
+            );
+            return;
+         }
          log.info({ due: due.length }, "instagram_monitor.tick");
          for (const acc of due) {
             if (this.disposed) return;
@@ -799,8 +861,26 @@ export class InstagramMonitorScheduler {
       }
    }
 
+   private fleetIsStale(now: number): boolean {
+      return this.deps.store.listAccounts().some(
+         (a) =>
+            a.paused === 0 &&
+            (a.last_polled_at === null ||
+               now - a.last_polled_at >= this.resumeDripStaleMs),
+      );
+   }
+
+   /** True when the fleet is stale AND we already polled too recently. */
+   private shouldResumeDrip(now: number): boolean {
+      if (this.resumeDripStaleMs <= 0 || this.resumeDripGapMs <= 0) return false;
+      if (this.lastPollAttemptAtMs === 0) return false;
+      if (now - this.lastPollAttemptAtMs >= this.resumeDripGapMs) return false;
+      return this.fleetIsStale(now);
+   }
+
    private async processAccount(acc: MonitoredAccount): Promise<void> {
       const t0 = Date.now();
+      this.lastPollAttemptAtMs = t0;
       // Count this as one poll for the realized requests-per-poll measure, whether
       // the fetch below succeeds or fails — a failed fetch still spent IG requests.
       this.recordPoll(t0);
@@ -818,6 +898,27 @@ export class InstagramMonitorScheduler {
          // halt ALL polling for an escalating cooldown, and trip the persistent
          // breaker if it recurs. Continuing to poll while throttled is exactly
          // what turns a throttle into a ban.
+         // JSON APIs serving the SPA/login HTML: session-wide, not one account,
+         // and not session death (www warmup can still be logged-in). Retrying
+         // the next handle — or another host — is how 2026-09-07 turned HTML
+         // into a 429. Cool the whole fleet; do not count this as a 429 trip.
+         if (err instanceof InstagramHtmlFeedError) {
+            this.deps.store.markPollFailure(acc.id, now, { auth: false });
+            this.rateLimitCooldownUntilMs = Math.max(
+               this.rateLimitCooldownUntilMs,
+               now + RATE_LIMIT_COOLDOWN_BASE_MS,
+            );
+            log.warn(
+               {
+                  account: acc.username,
+                  cooldownMs: RATE_LIMIT_COOLDOWN_BASE_MS,
+                  err: String(err),
+               },
+               "instagram_monitor.html_feed",
+            );
+            return;
+         }
+
          if (err instanceof InstagramRateLimitError) {
             this.deps.store.markPollFailure(acc.id, now, { auth: false });
             const count = this.deps.store.record429Event(now);

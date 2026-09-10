@@ -72,8 +72,10 @@ export interface MonitoredAccount {
     * username-keyed feed works. Survives restarts so we don't keep hammering
     * the doomed `web_profile_info` endpoint (the 2026-08-16 in-memory sticky
     * set was wiped on every deploy — 25 identical 400s in the following 3 days).
-    * Re-probed after {@link USERNAME_FEED_REPROBE_MS}, or when an operator
-    * force-polls / unpauses.
+    * Stays sticky until an operator force-polls / unpauses (those are the
+    * "try pk-resolve again" gestures). A 14-day auto-reprobe used to expire
+    * this flag; on 2026-09-02 that re-hit `web_profile_info` on the same 5
+    * accounts, drew two HTTP 429s two hours apart, and tripped the kill-switch.
     */
    prefer_username_feed: number;
    /** When `prefer_username_feed` was last set (ms). NULL = never / cleared. */
@@ -332,8 +334,12 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
    },
 ];
 
-/** Window over which the circuit breaker counts soft-block events (6h). */
-export const EVENT_WINDOW_MS = 6 * 60 * 60 * 1000;
+/** Window over which the circuit breaker counts soft-block events.
+ * 24h (was 6h): a 429 now starts a 6h cooldown, so two throttles 6h apart
+ * are the *designed* retry, not "IG is still slamming us". The old 6h
+ * window + 2h cooldown + trip-at-2 made the first post-cooldown 429 trip
+ * the kill-switch every time (observed 2026-09-02). */
+export const EVENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Threshold of consecutive auth-class failures (per account) at which
@@ -356,14 +362,6 @@ export const AUTH_PAUSE_THRESHOLD = 5;
  * deliberately NOT by `clearFailureBackoff()` (see migration v8).
  */
 export const HARD_PAUSE_THRESHOLD = 5;
-
-/**
- * How long a `prefer_username_feed` decision stays sticky before we re-probe
- * `web_profile_info` once (in case IG restored the deleted schema). 14 days:
- * long enough that a deploy-a-day cadence never re-arms the 400, short enough
- * that a server-side fix is noticed without waiting for an operator.
- */
-export const USERNAME_FEED_REPROBE_MS = 14 * 24 * 60 * 60 * 1000;
 
 /**
  * Failure backoff ceiling: next allowed poll is min(base * 2^failures, max(MAX_BACKOFF, base)).
@@ -979,19 +977,14 @@ export class InstagramMonitorStore {
 
    /**
     * True when this handle should skip web_profile_info and go straight to
-    * `feed/user/{username}/username/`. False if never set, operator-cleared, or
-    * older than {@link USERNAME_FEED_REPROBE_MS}.
+    * `feed/user/{username}/username/`. False only if never set or
+    * operator-cleared (`force_poll` / unpause). `nowMs` is accepted so the
+    * {@link InstagramFetchHints} signature stays stable; it is not used —
+    * the flag no longer auto-expires (see the 2026-09-02 429 incident).
     */
-   prefersUsernameFeed(username: string, nowMs: number): boolean {
+   prefersUsernameFeed(username: string, _nowMs?: number): boolean {
       const a = this.getAccount(username);
-      if (!a || a.prefer_username_feed !== 1) return false;
-      if (
-         a.prefer_username_feed_at !== null &&
-         nowMs - a.prefer_username_feed_at > USERNAME_FEED_REPROBE_MS
-      ) {
-         return false;
-      }
-      return true;
+      return a?.prefer_username_feed === 1;
    }
 
    hasSeen(channelId: string, igPostId: string): boolean {
