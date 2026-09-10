@@ -1105,12 +1105,15 @@ export class InstagramMonitorScheduler {
          // The cover is fetched anyway for publishing, so we hand it to the
          // classifier too: many activist flyers carry the real qué/cuándo/dónde
          // ONLY in the image, not the caption (the gap that made the bot miss a
-         // post's actual content). The classifier runs two stages — Nova Lite
-         // transcribes the flyer image, Kimi decides — inside classifyPost.
+         // post's actual content). Since the v4.1 migration the classifier makes
+         // ONE multimodal call — the model reads the flyer and decides in the same
+         // request — so this costs the same as the old text-only stage did.
          const coverBytes = await this.fetchCover(post.displayUrl);
          // Sniff the real format from magic bytes — IG covers are usually JPEG but
-         // not guaranteed, and a mislabeled image is rejected by Bedrock. If we
-         // can't recognize it, omit it (the classifier falls back to caption-only).
+         // not guaranteed, and DeepSeek detects the image format from the actual
+         // bytes (not the declared MIME type), so mislabeling would be wasteful
+         // rather than fatal. If we can't recognize it at all, omit it and let the
+         // classifier work from the caption alone.
          const coverFormat = coverBytes ? sniffImageFormat(coverBytes) : null;
          const hadCover = Boolean(coverBytes && coverFormat);
          const classification = await this.classify(acc.username, post, {

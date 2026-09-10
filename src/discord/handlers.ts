@@ -180,10 +180,11 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                      system: turn.system,
                      messages: turns,
                      tools: turn.tools,
-                     // Capability-declared tier, default `medium` = thinking off
-                     // (2026-08-13). Previously every channel turn defaulted to
-                     // `high`; only the tool-loop capabilities opt back into it now.
-                     effort: turn.effort ?? "medium",
+                     // Capability-declared tier. `ask()` normalises, so omitting it
+                     // means `high` (thinking ON) — the conservative default for a
+                     // capability that forgot to declare one. The conversational
+                     // capabilities declare `low` explicitly (see capability.ts).
+                     effort: turn.effort,
                      onPhase: (phase, detail) =>
                         presenter.onPhase(phase, detail),
                   });

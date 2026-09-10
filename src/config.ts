@@ -109,64 +109,17 @@ const ConfigSchema = z
          .min(0)
          .max(23)
          .default(10),
-      // ── Text brain selector ────────────────────────────────────────────────────
-      // `kimi` (default, self-hosted/Pi): every text turn runs on Moonshot Kimi 2.7
-      // Thinking (KIMI_API_KEY required). `deepseek`: the same OpenAI-compatible
-      // code path pointed at DeepSeek V4-Flash (DEEPSEEK_API_KEY required) — see the
-      // DEEPSEEK_ block below. `bedrock` (AWS-native deploys):
-      // text turns run on Amazon Bedrock Converse with BEDROCK_MODEL_ID,
-      // authenticated by the ambient AWS credential chain (task role on ECS, named
-      // profile locally) — no external API key needed.
+      // ── DeepSeek — the ONLY brain (v4.1 migration, 2026-09-14) ─────────────────
+      // Every turn, text and image alike, runs on DeepSeek-V4.1-Flash through the
+      // OpenAI-compatible chat-completions API (the `openai` SDK). There is no
+      // second backend: Amazon Bedrock/Nova is gone (V4.1 Flash reads images
+      // natively), and Moonshot Kimi is gone with it. `textBackend` below is
+      // therefore a single resolved object rather than a selector — see the
+      // standing rule in docs/llm.md before reintroducing a provider slot.
       //
-      // NOTE: this selects the TEXT brain only. Image turns always route to Amazon
-      // Nova Lite regardless, because neither Kimi nor DeepSeek V4 can see images —
-      // DeepSeek rejects `image_url` with a 400 at the deserialization layer on both
-      // Flash and Pro (probed 2026-08-10, scripts/probe-deepseek-api.ts §8).
-      LLM_TEXT_BACKEND: z.enum(["kimi", "deepseek", "bedrock"]).default("kimi"),
-      // ── Moonshot Kimi (the text brain — ALL text, every domain) ────────────────
-      // Every text turn — Discord chat, the calendar/config tool-calling, the
-      // event-intake proposals, and the IG classifier's caption-only fallback — runs
-      // on Moonshot Kimi 2.7 Thinking via the OpenAI-compatible chat-completions API
-      // (the `openai` SDK). Bedrock is used ONLY for images: Kimi 2.7 Thinking is
-      // text-only, so any turn carrying an image is routed to Amazon Nova Lite (the
-      // `low` tier — see BEDROCK_MODEL_LOW below and src/llm/client.ts).
-      // Required when LLM_TEXT_BACKEND=kimi (enforced by the superRefine below);
-      // optional in bedrock mode, where no Kimi client is constructed.
-      KIMI_API_KEY: z.preprocess(
-         emptyToUndefined,
-         z.string().min(1).optional(),
-      ),
-      // OpenAI-compatible base URL. Default is the Kimi-for-Coding endpoint, which
-      // serves the K2.7 model but gates on a coding-agent User-Agent (see
-      // KIMI_USER_AGENT). Point at https://api.moonshot.ai/v1 for the plain platform
-      // API (model id `kimi-k2-thinking`, no UA gate).
-      KIMI_BASE_URL: z
-         .string()
-         .min(1)
-         .default("https://api.kimi.com/coding/v1"),
-      // Model id. `kimi-for-coding` on the coding endpoint IS Kimi 2.7 Thinking (it
-      // returns `reasoning_content` — the client echoes it back so follow-up turns
-      // validate). On the platform API use `kimi-k2-thinking`.
-      KIMI_MODEL_ID: z.string().min(1).default("kimi-for-coding"),
-      // The coding endpoint 403s requests whose User-Agent isn't a known coding
-      // agent with "Kimi For Coding is currently only available for Coding Agents".
-      // `claude-cli/1.0.0` is empirically on the allowlist. Ignored by the plain
-      // platform API. Override if the allowlist changes.
-      KIMI_USER_AGENT: z.string().min(1).default("claude-cli/1.0.0"),
-
-      // ── DeepSeek (the other OpenAI-compatible text brain) ──────────────────────
-      // Selected with LLM_TEXT_BACKEND=deepseek. Speaks the SAME chat-completions
-      // wire shape as Kimi, so it reuses askKimi's agent loop verbatim — only the
-      // base URL, key and model id differ (resolved into `textBackend` below).
-      //
-      // Why it's here (measured 2026-08-10, scripts/text-backend-trial.ts, 2 runs):
-      // V4-Flash matched or beat the Kimi coding endpoint on every axis — tool
-      // battery 7/8 vs 6/8, voice 2/2, zero scaffolding leaks, and 9.1s/turn vs
-      // 33.5s. It also returns `reasoning_content` exactly like K2.7 Thinking, so
-      // the degenerate-output guard and the empty-content retry both still apply.
-      //
-      // Both spellings are accepted: DEEPSEEK_API_KEY is canonical, DEEP_SEEK_API_KEY
-      // is the spelling already sitting in the Pi's .env. Set either.
+      // Both key spellings are accepted: DEEPSEEK_API_KEY is canonical,
+      // DEEP_SEEK_API_KEY is the spelling already sitting in the Pi's .env. Set
+      // either; at least one is REQUIRED (enforced by the superRefine below).
       DEEPSEEK_API_KEY: z.preprocess(
          emptyToUndefined,
          z.string().min(1).optional(),
@@ -179,67 +132,39 @@ const ConfigSchema = z
          .string()
          .min(1)
          .default("https://api.deepseek.com/v1"),
-      // The MEDIUM tier and the workhorse: deepseek-v4-flash is the agentic-tuned,
-      // cheap one ($0.14/M in, $0.28/M out, $0.0028/M on a cache hit). It serves
-      // every conversational surface (general_chat, the IG classifier's decision,
-      // the calendar announcer, workshop compaction) — i.e. essentially all volume.
-      DEEPSEEK_MODEL_ID: z.string().min(1).default("deepseek-v4-flash"),
-      // There is deliberately NO second model id. V4-Pro was wired to the `high`
-      // tier on 2026-08-13 and removed the same day: measured on the calendar
-      // battery it scored **7/8 tool-calling at 10.5 s/turn vs Flash's 7/8 at
-      // 7.1 s** — identical accuracy, ~48% slower, 3.1× the price. Effort selects
-      // a THINKING MODE on the one model now (see DEEPSEEK_THINKING below), not a
-      // pricier model. Re-measure before reintroducing a tier.
-
-      // Amazon Bedrock (Converse API) credentials + models. On the Pi these are the
-      // static ACCESS_KEY_ID / SECRET_ACCESS_KEY pair from .env (the IMAGES-ONLY
-      // backend: Kimi is text-only, so the ONLY thing Bedrock serves there is
-      // vision — any turn carrying an image goes to Amazon Nova Lite). The env var
-      // names are deliberately the short ACCESS_KEY_ID / SECRET_ACCESS_KEY (NOT the
-      // AWS_-prefixed standard names) so they don't collide with any ambient AWS CLI
-      // credentials on the host. BOTH are OPTIONAL: when unset, the Bedrock client
-      // falls back to the AWS default credential chain (ECS task role, EC2 instance
-      // profile, or AWS_PROFILE locally) — the mode used by the AWS-native deploy.
-      ACCESS_KEY_ID: z.preprocess(
-         emptyToUndefined,
-         z.string().min(1).optional(),
-      ),
-      SECRET_ACCESS_KEY: z.preprocess(
-         emptyToUndefined,
-         z.string().min(1).optional(),
-      ),
-      // Optional STS session token (only for temporary credentials).
-      AWS_SESSION_TOKEN: z.preprocess(
-         emptyToUndefined,
-         z.string().min(1).optional(),
-      ),
-      AWS_REGION: z.string().min(1).default("us-east-1"),
-      // Legacy Bedrock text model id. No longer on any hot path — every text domain
-      // is Kimi now (see KIMI_MODEL_ID). Kept only for the dev smoke/bake-off scripts
-      // and so a future all-Bedrock rollback needs no schema change.
-      BEDROCK_MODEL_ID: z
-         .string()
-         .min(1)
-         .default("us.anthropic.claude-sonnet-4-6"),
-      // The vision model (Amazon Nova Lite), the effort `low` tier. This is the ONLY
-      // model Bedrock serves and it is used ONLY for image turns — `high`/`medium`
-      // are text and go to Kimi. Directive (2026-07-13): "Nova only for images; it is
-      // the low tier; medium and high are Kimi." MUST be image-capable.
-      BEDROCK_MODEL_LOW: z.string().min(1).default("us.amazon.nova-lite-v1:0"),
-      MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(4096),
-      // Output budget for the KIMI path specifically. K2.7 Thinking's
-      // reasoning_content counts against max_tokens, so 4096 starves complex
-      // multi-step turns — live 2026-08-06: a workshop turn hit stopReason
-      // 'length' after 8 file reads and the visible reply was cut mid-sentence
-      // ("Ahora te armo un documento Word…") with the promised docx never created.
-      // The coding endpoint accepts ≥24k (probed); the subscription is flat-rate.
-      KIMI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(16384),
+      // `deepseek-flash` IS DeepSeek-V4.1-Flash. Probed live 2026-09-14
+      // (scripts/probe-deepseek-v41.ts §1): the legacy ids `deepseek-v4-flash`
+      // and `deepseek-v4-flash-vision-exp` are still accepted and served by
+      // V4.1 Flash, and a bogus id 400s, so the name is really validated.
+      //
+      // There is deliberately NO second model id. Effort selects a thinking
+      // MODE on this one model, never a pricier model: V4-Pro measured
+      // identical to Flash on the calendar tool battery while being ~48% slower
+      // and 3.1× the price (2026-08-13), and DeepSeek is retiring Pro in favour
+      // of V4.1 Flash anyway. Re-measure before reintroducing a model tier.
+      DEEPSEEK_MODEL_ID: z.string().min(1).default("deepseek-flash"),
+      // Output budget for the thinking path. Reasoning tokens bill at the OUTPUT
+      // rate and count against max_tokens, so a starved cap shows up as
+      // finish_reason `length` with empty content — live 2026-09-02 (workshop):
+      // three consecutive 16384-token caps produced zero visible text and the
+      // member got the fallback. Probed 2026-09-14 (probe-deepseek-v41.ts §6):
+      // the API caps max_tokens at 393216 and defaults to 64K thinking / 8K
+      // non-thinking, so 32768 is comfortably inside both and leaves real
+      // headroom for a `max`-effort workshop turn. The length-cap retry in
+      // client.ts still exists as the last line of defence.
+      DEEPSEEK_MAX_OUTPUT_TOKENS: z.coerce
+         .number()
+         .int()
+         .positive()
+         .default(32768),
       MAX_TOOL_ITERATIONS: z.coerce.number().int().positive().default(10),
-      // Max Kimi HTTP requests in flight at once (a semaphore inside llm/client.ts,
-      // NOT whole turns — two agent loops interleave their requests). Default 1: the
-      // coding endpoint degrades under overlapping requests (2026-08-05: two
-      // overlapping mentions → one turn returned empty content).
-      KIMI_MAX_CONCURRENT: z.coerce.number().int().positive().default(1),
+      // Max DeepSeek HTTP requests in flight at once (a semaphore inside
+      // llm/client.ts, NOT whole turns — two agent loops interleave their
+      // requests). DeepSeek's concurrency limit is 2500 on `deepseek-flash`
+      // (probed 2026-09-14), so this is a Pi-protection knob, not a provider
+      // limit. 1 was the old Kimi requirement; DeepSeek tolerates overlap, so
+      // the default is 3 to match MAX_CONCURRENT_TURNS.
+      DEEPSEEK_MAX_CONCURRENT: z.coerce.number().int().positive().default(3),
       // Max message-handling turns executing at once across ALL channels (the
       // per-channel ordering is always strict FIFO regardless). Protects the Pi;
       // queued turns show ⏳ on the user's message.
@@ -516,33 +441,14 @@ const ConfigSchema = z
       ),
    })
    .superRefine((c, ctx) => {
-      if (c.LLM_TEXT_BACKEND === "kimi" && !c.KIMI_API_KEY) {
-         ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["KIMI_API_KEY"],
-            message: "KIMI_API_KEY is required when LLM_TEXT_BACKEND=kimi",
-         });
-      }
-      if (
-         c.LLM_TEXT_BACKEND === "deepseek" &&
-         !(c.DEEPSEEK_API_KEY ?? c.DEEP_SEEK_API_KEY)
-      ) {
+      // DeepSeek is the only brain — text and vision alike — so its key is
+      // unconditionally required. There is no fallback backend to boot onto.
+      if (!(c.DEEPSEEK_API_KEY ?? c.DEEP_SEEK_API_KEY)) {
          ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ["DEEPSEEK_API_KEY"],
             message:
-               "DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY) is required when LLM_TEXT_BACKEND=deepseek",
-         });
-      }
-      if (
-         (c.ACCESS_KEY_ID && !c.SECRET_ACCESS_KEY) ||
-         (!c.ACCESS_KEY_ID && c.SECRET_ACCESS_KEY)
-      ) {
-         ctx.addIssue({
-            code: z.ZodIssueCode.custom,
-            path: ["ACCESS_KEY_ID"],
-            message:
-               "ACCESS_KEY_ID and SECRET_ACCESS_KEY must be set together (or both unset for the default AWS credential chain)",
+               "DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY) is required — DeepSeek V4.1 Flash is the only LLM backend",
          });
       }
       if (
@@ -572,78 +478,58 @@ export const config = parsed.data;
 export type Config = typeof config;
 
 /**
- * The resolved OpenAI-compatible TEXT backend.
+ * The resolved LLM backend — one object, one provider (v4.1 migration).
  *
- * Kimi and DeepSeek speak the same chat-completions wire shape, so
- * src/llm/client.ts runs ONE agent loop against whichever is selected — it
- * reads this object instead of the provider-specific `KIMI_` / `DEEPSEEK_`
- * vars, so adding a third OpenAI-compatible provider never touches the loop.
- *
- * In `bedrock` text mode no OpenAI-compatible client is built at all; the shape
- * still resolves (to the Kimi defaults) and `apiKey` is simply undefined, which
- * is what keeps the client construction lazy.
+ * Before 2026-09-14 this was a *selector* (Kimi / DeepSeek / Bedrock), because
+ * the text brain could not see images and Amazon Nova had to serve the vision
+ * path. DeepSeek-V4.1-Flash is natively multimodal, so both halves collapsed
+ * into one provider and this object lost its branch. src/llm/client.ts reads
+ * this instead of raw env vars, which is the seam a future provider would use —
+ * but do not add one back without re-reading docs/llm.md.
  */
 export interface TextBackend {
-   provider: "kimi" | "deepseek";
+   provider: "deepseek";
    apiKey: string | undefined;
    baseUrl: string;
-   /** The one text model. Every text tier runs on it; effort picks a mode. */
+   /**
+    * The one model. Every tier runs on it; effort picks a thinking MODE, never a
+    * pricier model (V4-Pro measured identical to Flash on the tool battery while
+    * being ~48% slower and 3.1× the price, and DeepSeek is retiring it).
+    */
    modelId: string;
    /**
-    * Whether this provider honours DeepSeek's `thinking: {type}` switch, which
-    * is how the effort tier is expressed now (2026-08-13). Measured on
-    * v4-flash, 3 reps per variant (`scripts/probe-deepseek-thinking.ts`):
-    * `type:'disabled'` reliably yields **0 reasoning tokens, 95 output tokens,
-    * 1.34 s** vs **111 / 207 / 1.89 s** with thinking on — a ~2.2× cut in
-    * billed output tokens — while still tool-calling correctly 3/3.
+    * Whether the provider honours `thinking: {type}`. Kept as a flag rather than
+    * deleted so the request builder has one place to express "this provider
+    * takes a thinking switch" — and so a future provider that 400s on unexpected
+    * params (as Moonshot did for `temperature`) can opt out without touching the
+    * loop. Always true today.
     *
-    * Its sibling `reasoning_effort` is NOT honoured on Flash and must not be
-    * sent: across the same reps `low` produced MORE reasoning than `high`, and
-    * a deliberately invalid value ("banana") returned 200 and landed mid-pack.
-    * An ignored knob that never errors is worse than no knob, so only the
-    * on/off switch is wired.
+    * MEASURED on v4-flash (2026-08-13, `scripts/probe-deepseek-thinking.ts`) and
+    * RE-MEASURED on v4.1 Flash (2026-09-14, `scripts/probe-deepseek-v41-effort.ts`):
+    * `type:'disabled'` reliably yields 0 reasoning tokens, while enabling
+    * thinking costs roughly 2× billed output. That switch is the load-bearing
+    * half of the effort tier.
     */
    supportsThinkingSwitch: boolean;
-   /** Only the Kimi coding endpoint gates on this; DeepSeek ignores it. */
-   userAgent: string;
    maxOutputTokens: number;
    maxConcurrent: number;
 }
 
-export const textBackend: TextBackend =
-   config.LLM_TEXT_BACKEND === "deepseek"
-      ? {
-           provider: "deepseek",
-           apiKey: config.DEEPSEEK_API_KEY ?? config.DEEP_SEEK_API_KEY,
-           baseUrl: config.DEEPSEEK_BASE_URL,
-           modelId: config.DEEPSEEK_MODEL_ID,
-           supportsThinkingSwitch: true,
-           userAgent: config.KIMI_USER_AGENT,
-           maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
-           maxConcurrent: config.KIMI_MAX_CONCURRENT,
-        }
-      : {
-           provider: "kimi",
-           apiKey: config.KIMI_API_KEY,
-           baseUrl: config.KIMI_BASE_URL,
-           modelId: config.KIMI_MODEL_ID,
-           // Moonshot's endpoint is not known to accept `thinking`, and it 400s on
-           // unexpected params (it already does for `temperature`), so never send
-           // it there — the tier is a no-op on kimi, as it was before 2026-08-13.
-           supportsThinkingSwitch: false,
-           userAgent: config.KIMI_USER_AGENT,
-           maxOutputTokens: config.KIMI_MAX_OUTPUT_TOKENS,
-           maxConcurrent: config.KIMI_MAX_CONCURRENT,
-        };
+export const textBackend: TextBackend = {
+   provider: "deepseek",
+   apiKey: config.DEEPSEEK_API_KEY ?? config.DEEP_SEEK_API_KEY,
+   baseUrl: config.DEEPSEEK_BASE_URL,
+   modelId: config.DEEPSEEK_MODEL_ID,
+   supportsThinkingSwitch: true,
+   maxOutputTokens: config.DEEPSEEK_MAX_OUTPUT_TOKENS,
+   maxConcurrent: config.DEEPSEEK_MAX_CONCURRENT,
+};
 
-/** Community-facing name of the live text brain. Not the wire model id. */
+/** Community-facing name of the live brain. Not the wire model id. Kept as a
+ * function (not a constant) because capability preambles interpolate it and it
+ * is asserted in tests. */
 export function textBrainDisplayName(): string {
-   switch (textBackend.provider) {
-      case "deepseek":
-         return "DeepSeek V4 Flash";
-      case "kimi":
-         return "Kimi";
-   }
+   return "DeepSeek V4.1 Flash";
 }
 
 let cachedChannels: Set<string> | null = null;

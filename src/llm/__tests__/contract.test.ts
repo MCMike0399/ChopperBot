@@ -1,38 +1,26 @@
 /**
- * Wire-shape contract tests. Pin down the exact JSON we send to each backend so
- * future contributors don't silently regress the integration. Two backends:
- * Kimi (OpenAI chat-completions) on the text path, Bedrock (Converse) on the
- * vision path. Mocks both SDKs; no network.
+ * Wire-shape contract tests. Pin down the exact JSON we send to DeepSeek so
+ * future contributors don't silently regress the integration. ONE provider
+ * since the 2026-09-14 v4.1 migration: the OpenAI chat-completions shape, with
+ * images inlined as `image_url` parts. Mocks the SDK; no network.
+ *
+ * The assertions about what we do NOT send matter as much as the ones about what
+ * we do: DeepSeek's thinking mode IGNORES `temperature` and has DEPRECATED
+ * `presence_penalty`/`frequency_penalty`, and clamps `top_p` to >= 0.95 — so
+ * sampling params would be noise that reads like tuning.
  */
 import { describe, test, expect, vi, beforeEach } from "vitest";
 
-const { kimiMock, sendMock } = vi.hoisted(() => ({
-   kimiMock: vi.fn(),
-   sendMock: vi.fn(),
+const createMock = vi.hoisted(() => vi.fn());
+
+vi.mock("openai", () => ({
+   default: class {
+      chat = { completions: { create: createMock } };
+   },
 }));
-vi.mock("openai", () => {
-   class OpenAI {
-      chat = { completions: { create: kimiMock } };
-      constructor(_opts?: unknown) {}
-   }
-   return { default: OpenAI };
-});
-vi.mock("@aws-sdk/client-bedrock-runtime", () => {
-   class BedrockRuntimeClient {
-      send = sendMock;
-      constructor(_opts?: unknown) {}
-   }
-   class ConverseCommand {
-      input: unknown;
-      constructor(input: unknown) {
-         this.input = input;
-      }
-   }
-   return { BedrockRuntimeClient, ConverseCommand };
-});
 
 const { ask } = await import("../client.js");
-import { config } from "../../config.js";
+import { config, textBackend } from "../../config.js";
 import type { ComposedTools, ToolSpec } from "../../tools/source.js";
 import { ImageAttachable } from "../../attachments/attachable.js";
 
@@ -53,51 +41,55 @@ function toolsWithSample(): ComposedTools {
    };
 }
 
-// ── Kimi (OpenAI chat-completions) wire ──────────────────────────────────────
-describe("Kimi wire contract (text path)", () => {
-   beforeEach(() => kimiMock.mockReset());
+function end(text: string) {
+   return {
+      choices: [
+         {
+            message: { role: "assistant", content: text },
+            finish_reason: "stop",
+         },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 5 },
+   };
+}
 
-   function end(text: string) {
-      return {
-         choices: [
-            {
-               message: { role: "assistant", content: text },
-               finish_reason: "stop",
+function toolCallResponse(
+   calls: Array<{ id: string; name: string; input: unknown }>,
+) {
+   return {
+      choices: [
+         {
+            message: {
+               role: "assistant",
+               content: null,
+               tool_calls: calls.map((c) => ({
+                  id: c.id,
+                  type: "function",
+                  function: {
+                     name: c.name,
+                     arguments: JSON.stringify(c.input),
+                  },
+               })),
             },
-         ],
-         usage: { prompt_tokens: 5, completion_tokens: 5 },
-      };
-   }
-   function toolCalls(
-      calls: Array<{ id: string; name: string; input: unknown }>,
-   ) {
-      return {
-         choices: [
-            {
-               message: {
-                  role: "assistant",
-                  content: null,
-                  tool_calls: calls.map((c) => ({
-                     id: c.id,
-                     type: "function",
-                     function: {
-                        name: c.name,
-                        arguments: JSON.stringify(c.input),
-                     },
-                  })),
-               },
-               finish_reason: "tool_calls",
-            },
-         ],
-         usage: { prompt_tokens: 5, completion_tokens: 5 },
-      };
-   }
-   function reqAt(i: number): Record<string, unknown> {
-      return kimiMock.mock.calls[i][0] as Record<string, unknown>;
-   }
+            finish_reason: "tool_calls",
+         },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 5 },
+   };
+}
 
+function reqAt(i: number): Record<string, unknown> {
+   return createMock.mock.calls[i][0] as Record<string, unknown>;
+}
+
+const img = () =>
+   new ImageAttachable("a.png", "image/png", new Uint8Array([1, 2, 3]), "png");
+
+beforeEach(() => createMock.mockReset());
+
+describe("DeepSeek wire contract", () => {
    test("system prompt is the leading role:system message; user turn follows", async () => {
-      kimiMock.mockResolvedValueOnce(end("hi"));
+      createMock.mockResolvedValueOnce(end("hi"));
       await ask({
          system: "YOU ARE A BOT",
          messages: [{ role: "user", content: "q" }],
@@ -112,7 +104,7 @@ describe("Kimi wire contract (text path)", () => {
    });
 
    test("tools serialize as { type:function, function:{ name, description, parameters } }", async () => {
-      kimiMock.mockResolvedValueOnce(end("hi"));
+      createMock.mockResolvedValueOnce(end("hi"));
       await ask({
          system: "s",
          messages: [{ role: "user", content: "q" }],
@@ -131,26 +123,28 @@ describe("Kimi wire contract (text path)", () => {
    });
 
    test("model and max_tokens forwarded; no sampling params set", async () => {
-      kimiMock.mockResolvedValueOnce(end("hi"));
+      createMock.mockResolvedValueOnce(end("hi"));
       await ask({
          system: "s",
          messages: [{ role: "user", content: "q" }],
          tools: toolsWithSample(),
       });
       const req = reqAt(0);
-      expect(req.model).toBe(config.KIMI_MODEL_ID);
-      // The Kimi path has its own output budget: K2.7 Thinking's reasoning
-      // counts against max_tokens, so it rides KIMI_MAX_OUTPUT_TOKENS (16384
-      // default), not the Bedrock-shared MAX_OUTPUT_TOKENS.
-      expect(req.max_tokens).toBe(config.KIMI_MAX_OUTPUT_TOKENS);
+      expect(req.model).toBe(config.DEEPSEEK_MODEL_ID);
+      // Reasoning tokens count against max_tokens, so the generous dedicated
+      // budget is the difference between a complete answer and finish_reason
+      // `length` with empty content.
+      expect(req.max_tokens).toBe(config.DEEPSEEK_MAX_OUTPUT_TOKENS);
       expect(req.temperature).toBeUndefined();
       expect(req.top_p).toBeUndefined();
+      expect(req.frequency_penalty).toBeUndefined();
+      expect(req.presence_penalty).toBeUndefined();
    });
 
    test("tool result follow-up: one role:tool message per call, in order, JSON-encoded payload", async () => {
-      kimiMock
+      createMock
          .mockResolvedValueOnce(
-            toolCalls([
+            toolCallResponse([
                { id: "aaa", name: "sample_tool", input: { query: "one" } },
                { id: "bbb", name: "sample_tool", input: { query: "two" } },
             ]),
@@ -184,13 +178,13 @@ describe("Kimi wire contract (text path)", () => {
 
    test("forcing pass omits `tools` when the iteration cap hits while still calling tools", async () => {
       for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
-         kimiMock.mockResolvedValueOnce(
-            toolCalls([
+         createMock.mockResolvedValueOnce(
+            toolCallResponse([
                { id: `t${i}`, name: "sample_tool", input: { query: `q${i}` } },
             ]),
          );
       }
-      kimiMock.mockResolvedValueOnce(end("forced"));
+      createMock.mockResolvedValueOnce(end("forced"));
       await ask({
          system: "s",
          messages: [{ role: "user", content: "go" }],
@@ -205,31 +199,9 @@ describe("Kimi wire contract (text path)", () => {
    });
 });
 
-// ── Bedrock (Converse) wire — vision path ─────────────────────────────────────
-describe("Bedrock wire contract (vision path)", () => {
-   beforeEach(() => sendMock.mockReset());
-
-   function end(text: string) {
-      return {
-         output: { message: { role: "assistant", content: [{ text }] } },
-         stopReason: "end_turn",
-         usage: { inputTokens: 5, outputTokens: 5 },
-      };
-   }
-   function reqAt(i: number): Record<string, unknown> {
-      return (sendMock.mock.calls[i][0] as { input: Record<string, unknown> })
-         .input;
-   }
-   const img = () =>
-      new ImageAttachable(
-         "a.png",
-         "image/png",
-         new Uint8Array([1, 2, 3]),
-         "png",
-      );
-
-   test("image attachments serialize as { image: { format, source: { bytes } } }; system is a separate field", async () => {
-      sendMock.mockResolvedValueOnce(end("ok"));
+describe("DeepSeek image wire contract", () => {
+   test("an attachment serializes as an OpenAI image_url data URL beside the text part", async () => {
+      createMock.mockResolvedValueOnce(end("ok"));
       await ask({
          system: "YOU ARE A BOT",
          messages: [
@@ -238,56 +210,27 @@ describe("Bedrock wire contract (vision path)", () => {
          tools: toolsWithSample(),
          effort: "low",
       });
-      const req = reqAt(0);
-      expect(req.system).toEqual([{ text: "YOU ARE A BOT" }]);
-      const parts = (
-         req.messages as Array<{ content: Array<Record<string, unknown>> }>
-      )[0].content;
-      expect(parts[0]).toEqual({ text: "see this" });
-      expect(parts[1]).toMatchObject({ image: { format: "png" } });
-      const bytes = (parts[1] as { image: { source: { bytes: Uint8Array } } })
-         .image.source.bytes;
-      expect(bytes).toEqual(new Uint8Array([1, 2, 3]));
+      const msgs = reqAt(0).messages as Array<{
+         role: string;
+         content: unknown;
+      }>;
+      expect(msgs[0]).toEqual({ role: "system", content: "YOU ARE A BOT" });
+      const parts = msgs[1].content as Array<Record<string, unknown>>;
+      expect(parts[0]).toEqual({ type: "text", text: "see this" });
+      expect(parts[1]).toEqual({
+         type: "image_url",
+         image_url: { url: "data:image/png;base64,AQID" },
+      });
    });
 
-   test("modelId is the Nova Lite vision model; maxTokens forwarded; no sampling params", async () => {
-      sendMock.mockResolvedValueOnce(end("ok"));
+   test("the same model serves text and images — there is no second model id", async () => {
+      createMock.mockResolvedValueOnce(end("ok"));
       await ask({
          system: "s",
          messages: [{ role: "user", content: "q", attachments: [img()] }],
          tools: toolsWithSample(),
          effort: "low",
       });
-      const req = reqAt(0);
-      expect(req.modelId).toBe(config.BEDROCK_MODEL_LOW);
-      const ic = req.inferenceConfig as {
-         maxTokens: number;
-         temperature?: number;
-         topP?: number;
-      };
-      expect(ic.maxTokens).toBe(4096);
-      expect(ic.temperature).toBeUndefined();
-      expect(ic.topP).toBeUndefined();
-   });
-
-   test("tools serialize as { toolSpec: { name, description, inputSchema: { json } } }", async () => {
-      sendMock.mockResolvedValueOnce(end("hi"));
-      await ask({
-         system: "s",
-         messages: [{ role: "user", content: "q", attachments: [img()] }],
-         tools: toolsWithSample(),
-         effort: "low",
-      });
-      const tc = reqAt(0).toolConfig as {
-         tools: Array<Record<string, unknown>>;
-      };
-      expect(tc.tools).toHaveLength(1);
-      expect(tc.tools[0]).toEqual({
-         toolSpec: {
-            name: "sample_tool",
-            description: "A sample tool used in contract tests.",
-            inputSchema: { json: SAMPLE_SPEC.inputSchema },
-         },
-      });
+      expect(reqAt(0).model).toBe(textBackend.modelId);
    });
 });

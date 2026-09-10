@@ -1,36 +1,38 @@
 /**
- * Effort → thinking mode on the OpenAI-compatible text brain (2026-08-13).
+ * Effort → thinking mode + `reasoning_effort` on DeepSeek V4.1 Flash
+ * (v4.1 migration, 2026-09-14).
  *
- * Effort does NOT select a model any more: every text turn runs on the single
- * `textBackend.modelId` (V4-Pro measured identical to Flash on the calendar
- * tool battery while being ~48% slower and 3.1× the price). What it selects is
- * DeepSeek's `thinking` switch — the one knob that model actually honours:
+ * Effort does NOT select a model: every turn runs on the single
+ * `textBackend.modelId`. The old three-tier scheme (low = Nova vision,
+ * medium = thinking off, high = thinking on) is replaced by DeepSeek's own
+ * documented scale:
  *
- *   high   → thinking enabled  (reason before acting; the multi-turn tool loops)
- *   medium → thinking disabled (~2.2× fewer billed output tokens, ~30% faster)
- *   low    → never reaches here; ask() routes it to Nova, the vision backend
+ *   low  → thinking DISABLED                       (conversational / single-shot)
+ *   high → thinking enabled, reasoning_effort high (the tool-loop capabilities)
+ *   max  → thinking enabled, reasoning_effort max  (workshop only)
  *
- * The sibling `reasoning_effort` is deliberately NOT sent: measured on
- * v4-flash it is silently ignored (an invalid "banana" value returns 200, and
- * `low` produced more reasoning than `high`). A knob that never errors and
- * never works is the worst kind, so these tests also pin that we don't send it.
+ * WHY BOTH KNOBS ARE PINNED — the two halves have very different evidence:
  *
- * Both failure directions are silent in production — thinking left on
- * everywhere quietly doubles the output-token bill on the surfaces carrying
- * all the volume; thinking off on a tool loop quietly degrades the turns that
- * write real state. Neither shows up as an error.
+ *   • `thinking.type` is LOAD-BEARING and reliable. Probed on v4-flash
+ *     (2026-08-13) and again on v4.1 Flash (2026-09-14): disabled ⇒ 0 reasoning
+ *     tokens, enabled ⇒ roughly 2× the billed output. Thinking left on
+ *     everywhere quietly doubles the bill on the surfaces that carry all the
+ *     volume; thinking off on a tool loop quietly degrades the turns that write
+ *     real state. Neither shows up as an error, which is why they are asserted.
+ *
+ *   • `reasoning_effort` is documented but measured INERT on this model.
+ *     `scripts/probe-deepseek-v41-effort.ts`, 6 fixed puzzles × 6 reps per tier:
+ *     median reasoning tokens 257 (low) / 244 (high) / 186 (max) — overlapping,
+ *     with `max` lowest — and the control value "banana" returned HTTP 200
+ *     instead of erroring. We send it anyway: it is the documented API, it costs
+ *     nothing, and it becomes correct the day DeepSeek wires it up. These tests
+ *     pin that we send the DOCUMENTED shape, not that the model obeys it.
+ *
+ * `'medium'` is pinned as a legacy alias for `'high'`, because that is exactly
+ * what it meant on the old backend and an un-migrated declaration must not
+ * silently lose thinking.
  */
 import { describe, test, expect, vi, beforeEach } from "vitest";
-
-// Select the DeepSeek backend BEFORE the static imports run (config validates
-// and freezes `textBackend` at import time). Without this the file inherits the
-// host .env / vitest.setup defaults, resolves to a provider with no thinking
-// switch, and the two assertions that matter silently skip — which is exactly
-// what happened on the first version of this file.
-vi.hoisted(() => {
-   process.env.LLM_TEXT_BACKEND = "deepseek";
-   process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
-});
 
 const createMock = vi.hoisted(() => vi.fn());
 
@@ -40,11 +42,13 @@ vi.mock("openai", () => ({
    },
 }));
 
-import { ask } from "../client.js";
-import { textBackend } from "../../config.js";
-import { composeToolSources } from "../../tools/source.js";
+import { ask, normalizeEffort } from "../client.js";
+import { config, textBackend } from "../../config.js";
 
-const NO_TOOLS = composeToolSources([]);
+const NO_TOOLS = {
+   tools: [],
+   handle: async () => ({ status: "success" as const, payload: null }),
+};
 
 function reply(content: string) {
    return {
@@ -70,40 +74,75 @@ beforeEach(() => {
    createMock.mockReset();
 });
 
-describe("effort tier selects the thinking mode, not a model", () => {
-   // Guard the guard: if this ever resolves false the switch assertions below
-   // would pass vacuously, so fail loudly instead of skipping.
-   test("the test env really is on a thinking-capable provider", () => {
+describe("effort tier selects a thinking mode, not a model", () => {
+   test("the resolved backend is the thinking-capable DeepSeek one", () => {
+      expect(textBackend.provider).toBe("deepseek");
       expect(textBackend.supportsThinkingSwitch).toBe(true);
-      expect(textBackend.modelId).toBe("deepseek-v4-flash");
+      expect(textBackend.modelId).toBe("deepseek-flash");
    });
 
    test("every tier uses the SAME model id", async () => {
       createMock
          .mockResolvedValueOnce(reply("a"))
-         .mockResolvedValueOnce(reply("b"));
+         .mockResolvedValueOnce(reply("b"))
+         .mockResolvedValueOnce(reply("c"));
+      await ask({ ...baseInput(), effort: "low" });
       await ask({ ...baseInput(), effort: "high" });
-      await ask({ ...baseInput(), effort: "medium" });
+      await ask({ ...baseInput(), effort: "max" });
       expect(bodyOf(0).model).toBe(textBackend.modelId);
       expect(bodyOf(1).model).toBe(textBackend.modelId);
+      expect(bodyOf(2).model).toBe(textBackend.modelId);
    });
 
-   test("effort 'high' enables thinking", async () => {
+   test("effort 'low' disables thinking (and sends no reasoning_effort)", async () => {
       createMock.mockResolvedValueOnce(reply("ok"));
-      await ask({ ...baseInput(), effort: "high" });
-      expect(bodyOf(0).thinking).toEqual({ type: "enabled" });
-   });
-
-   test("effort 'medium' disables thinking", async () => {
-      createMock.mockResolvedValueOnce(reply("ok"));
-      await ask({ ...baseInput(), effort: "medium" });
+      await ask({ ...baseInput(), effort: "low" });
       expect(bodyOf(0).thinking).toEqual({ type: "disabled" });
    });
 
-   test("reasoning_effort is never sent — it is silently ignored upstream", async () => {
+   test("effort 'high' enables thinking at high", async () => {
       createMock.mockResolvedValueOnce(reply("ok"));
       await ask({ ...baseInput(), effort: "high" });
-      expect(bodyOf(0)).not.toHaveProperty("reasoning_effort");
+      expect(bodyOf(0).thinking).toEqual({
+         type: "enabled",
+         reasoning_effort: "high",
+      });
+   });
+
+   test("effort 'max' enables thinking at max", async () => {
+      createMock.mockResolvedValueOnce(reply("ok"));
+      await ask({ ...baseInput(), effort: "max" });
+      expect(bodyOf(0).thinking).toEqual({
+         type: "enabled",
+         reasoning_effort: "max",
+      });
+   });
+
+   test("an omitted tier defaults to high — thinking ON", async () => {
+      // The conservative direction: a capability that forgot to declare a tier
+      // must not silently lose the reasoning it used to have.
+      createMock.mockResolvedValueOnce(reply("ok"));
+      await ask(baseInput());
+      expect(bodyOf(0).thinking).toEqual({
+         type: "enabled",
+         reasoning_effort: "high",
+      });
+   });
+
+   test("legacy 'medium' is honoured as 'high', not as thinking-off", async () => {
+      createMock.mockResolvedValueOnce(reply("ok"));
+      await ask({ ...baseInput(), effort: "medium" });
+      expect(bodyOf(0).thinking).toEqual({
+         type: "enabled",
+         reasoning_effort: "high",
+      });
+   });
+
+   test("normalizeEffort maps the legacy spelling and the default", () => {
+      expect(normalizeEffort("medium")).toBe("high");
+      expect(normalizeEffort(undefined)).toBe("high");
+      expect(normalizeEffort("low")).toBe("low");
+      expect(normalizeEffort("max")).toBe("max");
    });
 
    test("the mode holds across a retry, not just the first request", async () => {
@@ -113,16 +152,16 @@ describe("effort tier selects the thinking mode, not a model", () => {
       createMock
          .mockResolvedValueOnce(reply(""))
          .mockResolvedValueOnce(reply("ya"));
-      await ask({ ...baseInput(), effort: "medium" });
+      await ask({ ...baseInput(), effort: "low" });
       expect(createMock).toHaveBeenCalledTimes(2);
       expect(bodyOf(1).model).toBe(textBackend.modelId);
       expect(bodyOf(1).thinking).toEqual({ type: "disabled" });
    });
 
    test("empty length-cap on high disables thinking for the retry", async () => {
-      // Live 2026-09-02 workshop: thinking-on burned 3×16384 output tokens
-      // with finish_reason `length` and empty content. The retry must flip
-      // the switch off or it just empties the budget again.
+      // Live 2026-09-02 workshop: thinking-on burned 3×16384 output tokens with
+      // finish_reason `length` and empty content. The retry must flip the switch
+      // off or it just empties the budget again.
       createMock
          .mockResolvedValueOnce({
             choices: [{ finish_reason: "length", message: { content: "" } }],
@@ -130,25 +169,56 @@ describe("effort tier selects the thinking mode, not a model", () => {
          })
          .mockResolvedValueOnce(reply("ya"));
       await ask({ ...baseInput(), effort: "high" });
-      expect(bodyOf(0).thinking).toEqual({ type: "enabled" });
+      expect(bodyOf(0).thinking).toEqual({
+         type: "enabled",
+         reasoning_effort: "high",
+      });
       expect(bodyOf(1).thinking).toEqual({ type: "disabled" });
    });
 
-   // The other direction, on a fresh module graph: Moonshot 400s on unexpected
-   // params, so a `thinking` key leaking onto a kimi deployment would break
-   // EVERY text turn. Worth a real request-shape assertion, not just the config
-   // flag, because the flag and the send site can drift apart.
-   test("a kimi deployment never receives the thinking key", async () => {
-      vi.resetModules();
-      process.env.LLM_TEXT_BACKEND = "kimi";
-      process.env.KIMI_API_KEY = "sk-kimi-test";
-      try {
-         const { ask: kimiAsk } = await import("../client.js");
-         createMock.mockResolvedValueOnce(reply("ok"));
-         await kimiAsk({ ...baseInput(), effort: "medium" });
-         expect(createMock.mock.calls[0]?.[0]).not.toHaveProperty("thinking");
-      } finally {
-         process.env.LLM_TEXT_BACKEND = "deepseek";
+   test("the forcing pass keeps the turn's tier", async () => {
+      // The rescue pass must not silently drop the reasoning budget relative to
+      // the turn it is rescuing.
+      for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
+         createMock.mockResolvedValueOnce({
+            choices: [
+               {
+                  finish_reason: "tool_calls",
+                  message: {
+                     content: null,
+                     tool_calls: [
+                        {
+                           id: `t${i}`,
+                           type: "function",
+                           function: { name: "noop", arguments: "{}" },
+                        },
+                     ],
+                  },
+               },
+            ],
+            usage: { prompt_tokens: 1, completion_tokens: 1 },
+         });
       }
+      createMock.mockResolvedValueOnce(reply("listo"));
+      await ask({
+         ...baseInput(),
+         tools: {
+            tools: [
+               {
+                  name: "noop",
+                  description: "noop",
+                  inputSchema: { type: "object", properties: {} },
+               },
+            ],
+            handle: async () => ({ status: "success", payload: null }),
+         },
+         effort: "max",
+      });
+      const forcing = bodyOf(config.MAX_TOOL_ITERATIONS);
+      expect(forcing.tools).toBeUndefined();
+      expect(forcing.thinking).toEqual({
+         type: "enabled",
+         reasoning_effort: "max",
+      });
    });
 });

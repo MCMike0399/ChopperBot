@@ -1,13 +1,19 @@
 /**
- * Counting semaphore gating concurrent requests to an LLM backend.
+ * Counting semaphore gating concurrent requests to the LLM backend.
  *
  * Why this exists (2026-08-06): the bot handles Discord messages concurrently,
- * but the Kimi coding endpoint degrades under overlapping requests — observed
- * live on 2026-08-05, when two overlapping mentions made one turn burn its
- * whole output budget on reasoning_content and return empty text (the user got
- * the fallback string). Serializing the REQUESTS (not the whole turns) keeps
- * multi-user chat responsive — two agent loops interleave their completions —
- * while the provider only ever sees `limit` requests in flight.
+ * and the provider it used then (the Kimi coding endpoint) degraded under
+ * overlapping requests — observed live on 2026-08-05, when two overlapping
+ * mentions made one turn burn its whole output budget on reasoning_content and
+ * return empty text (the user got the fallback string). Serializing the
+ * REQUESTS (not the whole turns) keeps multi-user chat responsive — two agent
+ * loops interleave their completions — while the provider only ever sees
+ * `limit` requests in flight.
+ *
+ * DeepSeek tolerates overlap (its documented concurrency limit is 2500), so the
+ * default limit was raised from 1 to 3 with the 2026-09-14 v4.1 migration: this
+ * is now a Pi-protection and cost-shaping knob rather than a provider
+ * requirement. See `DEEPSEEK_MAX_CONCURRENT`.
  */
 export class Semaphore {
    private active = 0;

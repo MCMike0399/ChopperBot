@@ -117,7 +117,7 @@ export class ConfigurationToolSource implements ToolSource {
             name: "config_system",
             description:
                "Bot health, known users, and destructive per-channel purge. `action`:\n" +
-               '• "health" — **the cross-capability snapshot: use this for "¿cómo va el bot?", "estado general", "todo bien?".** One call returns an overall `status` (ok/degraded/down) + a `problems` list, plus per-subsystem blocks: LLM (both backends + whether calls are succeeding), which capabilities failed to start, IG monitor kill-switch/budget, calendar publish state, file scanner budget, event intake. Lead with `status` + `problems`; only dig into a block if something is wrong.\n' +
+               '• "health" — **the cross-capability snapshot: use this for "¿cómo va el bot?", "estado general", "todo bien?".** One call returns an overall `status` (ok/degraded/down) + a `problems` list, plus per-subsystem blocks: LLM (the one DeepSeek backend, which serves text AND images, + whether calls are succeeding), which capabilities failed to start, IG monitor kill-switch/budget, calendar publish state, file scanner budget, event intake. Lead with `status` + `problems`; only dig into a block if something is wrong.\n' +
                '• "bot_info" — narrow runtime facts only (uptime, Node version, model ids, data dir, DB size, capability/binding/guild counts). Prefer "health" for anything about how the bot is DOING.\n' +
                '• "list_users" {limit?} — Discord users the bot has seen (id, tag, first/last seen), most-recent first.\n' +
                '• "purge_channel_data" {capability, channel_id, confirm} — DESTRUCTIVE. Delete every row `<capability>_*` carries for a channel (tables with a channel_id column). Clears instagram_monitor_seen_posts (per-channel dedup). The calendar is GLOBAL (no channel_id) so it is a no-op there — use config_calendar. Refuses configuration_*. Requires confirm:true.',
@@ -487,18 +487,18 @@ export class ConfigurationToolSource implements ToolSource {
             uptime_ms: uptimeMs,
             uptime_human: humanDuration(uptimeMs),
             node_version: process.version,
-            // The bot runs TWO backends: the selected text brain for all text,
-            // Nova Lite for images only. `BEDROCK_MODEL_ID` (Sonnet) has been
-            // legacy and off every hot path since 2026-07-13 — reporting it as
-            // "the model" told operators the bot ran on something it never
-            // calls, so it is deliberately not here. Do not hardcode Kimi:
-            // live has been DeepSeek V4 Flash since 2026-08-13.
+            // ONE backend since the v4.1 migration (2026-09-14): DeepSeek V4.1
+            // Flash serves text AND images, so there is no separate vision model
+            // to report and no AWS region. The console has twice told operators a
+            // model the bot never called (BEDROCK_MODEL_ID after the Kimi
+            // repoint, then a hardcoded Kimi after the DeepSeek cutover), so it
+            // reports `textBackend` — the object the client actually reads — and
+            // nothing else.
             text_backend: textBackend.provider,
             text_model: textBackend.modelId,
             text_model_name: textBrainDisplayName(),
-            vision_model: config.BEDROCK_MODEL_LOW,
-            aws_region: config.AWS_REGION,
-            max_output_tokens: config.MAX_OUTPUT_TOKENS,
+            vision_model: textBackend.modelId,
+            max_output_tokens: textBackend.maxOutputTokens,
             data_dir: config.CHOPPERBOT_DATA_DIR,
             db_path: this.deps.dbPath,
             db_size_bytes: dbSizeBytes,

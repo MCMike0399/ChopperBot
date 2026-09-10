@@ -225,7 +225,10 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       expect(turn.system).toContain("Cero tolerancia");
       expect(turn.system).not.toContain("modo chat general");
       expect(turn.system).toContain(textBrainDisplayName());
-      expect(turn.system).toContain("Amazon Nova Lite");
+      // One multimodal model since the v4.1 migration: the prompt must not name a
+      // retired vision backend, or the bot will tell members it runs on Nova.
+      expect(turn.system).not.toContain("Nova");
+      expect(turn.system).not.toContain("Kimi");
       h.memory.close();
    });
 
@@ -309,6 +312,30 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       // The capability itself is still described (the calendar exists and the
       // assistant can read it) — only the staff channel info is hidden.
       expect(turn.system).toContain("**calendar**");
+      h.memory.close();
+   });
+});
+
+describe("GeneralChatCapability — effort tier", () => {
+   // general_chat is the community's chat surface and therefore essentially all
+   // the turn volume, so its tier is a cost decision, not a taste one: undeclared
+   // it silently takes `ask()`'s `high` default (thinking ON) and roughly doubles
+   // the billed output of the busiest path in the bot. The declaration was
+   // MISSING once already during the v4.1 migration — every doc said `low` while
+   // the code thought. Pin both branches.
+   test("the profile-less branch declares the low tier", async () => {
+      const h = await buildHarness();
+      const turn = await callBuildTurn(h, "40000000000000000002");
+      expect(turn.effort).toBe("low");
+      h.memory.close();
+   });
+
+   test("the RevZ branch declares the low tier", async () => {
+      // Its calendar/server-directory tools are read-only lookups inside a chat
+      // turn, NOT a state-writing loop — so it does not belong on `high`.
+      const h = await buildHarness();
+      const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+      expect(turn.effort).toBe("low");
       h.memory.close();
    });
 });

@@ -76,8 +76,11 @@ export function listImageAttachments(message: Message): ImageAttachmentRef[] {
 /**
  * Resolve Discord message attachments into LLM-compatible Attachables. Only
  * image formats (png/jpeg/gif/webp) are supported — PDFs, csv, docx, etc.
- * land in the "unsupported attachment type, skipping" branch (the bot only
- * sends images to the Bedrock Converse API).
+ * land in the "unsupported attachment type, skipping" branch, because these
+ * are the formats the declared `ImageFormat` union covers and the only ones the
+ * model is told to expect. DeepSeek detects the real format from the bytes, so
+ * (unlike the old Bedrock path) a mislabeled MIME type is wasteful rather than
+ * fatal.
  */
 export async function resolveAttachments(
    message: Message,

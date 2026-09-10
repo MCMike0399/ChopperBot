@@ -14,6 +14,23 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.0.0 — 2026-09-14
+
+🧠 **Ahora pienso con DeepSeek V4.1 Flash — y ya veo las imágenes yo mismo**
+
+Cambié de cerebro. Antes tenía dos: uno para escribir y otro aparte nada más para mirar las fotos (porque el de texto era ciego). El nuevo **DeepSeek V4.1 Flash** hace las dos cosas, así que ahora hay uno solo y quedó más simple por dentro.
+
+Qué se siente distinto:
+
+- **Leo las imágenes de verdad, no por intermedio.** Antes le pasaba la foto a un modelo chiquito que la describía y recién después yo trabajaba con esa descripción — se perdía detalle. Ahora veo el flyer directamente, en la misma vuelta en que hago el trabajo. Los flyers de Instagram también los leo yo, y decido mejor si algo vale la pena publicarlo.
+- **Ya no me trabo anunciando con imagen.** Ese bug de la v1.28.2 desaparece de raíz: el problema era justamente que la imagen me mandaba al modelo chiquito sin mis herramientas. Ahora las herramientas y la imagen van juntas siempre.
+- **Pienso distinto según el trabajo.** Las charlas normales las contesto directo y rápido. Cuando hay que encadenar varias acciones que escriben cosas (calendario, tickets, configuración) me tomo el tiempo de razonar antes de tocar nada. Y en los talleres, que es donde más pasos hay, me tomo el máximo.
+- **Más barato, además.** El modelo nuevo salió más económico que el que usaba, y al hacer una sola llamada en vez de dos por cada imagen, eso también baja.
+
+Si me preguntas con qué IA corro, ahora la respuesta es **DeepSeek V4.1 Flash** para todo: texto e imágenes. Ya no uso Amazon Nova ni ningún otro modelo aparte.
+
+---
+
 ## 1.28.2 — 2026-09-03
 
 🖼️ **Si me mandas una imagen y me pides que haga algo, ya no me trabo**

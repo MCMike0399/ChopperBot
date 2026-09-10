@@ -153,9 +153,10 @@ export function splitTranscriptIntoBlocks(
 }
 
 /**
- * Draft → minutes via the text brain. One pass when the draft fits; for long
- * assemblies a map pass extracts per-block notes (effort medium — no tools,
- * no thinking tokens needed) and a final pass merges them into the acta.
+ * Draft → minutes via the LLM. One pass when the draft fits; for long
+ * assemblies a map pass extracts per-block notes and a final pass merges them
+ * into the acta. Every pass is `low` (thinking OFF): no tools are involved and
+ * the work is summarization, which thinking only makes slower and dearer.
  */
 export async function generateMinutes(
    draft: string,
@@ -170,7 +171,7 @@ export async function generateMinutes(
             { role: "user", content: buildMinutesUserPrompt(draft, meta) },
          ],
          tools: composeToolSources([]),
-         effort: "medium",
+         effort: "low",
       });
    } else {
       const blocks = splitTranscriptIntoBlocks(draft);
@@ -189,7 +190,7 @@ export async function generateMinutes(
                },
             ],
             tools: composeToolSources([]),
-            effort: "medium",
+            effort: "low",
          });
          notes.push(`### Parte ${i + 1}\n${note.trim()}`);
       }
@@ -202,7 +203,7 @@ export async function generateMinutes(
             },
          ],
          tools: composeToolSources([]),
-         effort: "medium",
+         effort: "low",
       });
    }
    return stripMinutesChatSection(body);

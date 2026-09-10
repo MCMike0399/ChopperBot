@@ -28,3 +28,9 @@ deploy/launchd/
 
 # Timestamped .env backups — `pnpm run release --commit` does `git add -A`
 .env.bak*
+
+# pnpm's content-addressable store when it is materialized inside the project
+# (happens when `pnpm install --store-dir .pnpm-store` or a CI-ish run drops it
+# in the repo root). 200 MB of package blobs — `git add -A` must never see it.
+.pnpm-store/
+

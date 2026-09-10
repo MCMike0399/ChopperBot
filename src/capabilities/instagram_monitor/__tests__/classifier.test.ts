@@ -67,10 +67,10 @@ describe("parseClassificationReply", () => {
       expect(parseClassificationReply('{ "relevant": true ')).toBeNull();
    });
 
-   // The weaker vision model (Nova Lite) regularly writes the string "null"
-   // instead of the JSON literal; left verbatim it printed a literal
-   // "Cuándo: null" on the card. The parser must fold nullish tokens to a real
-   // absence.
+   // Historical: a weaker vision-only model used to write the STRING "null"
+   // instead of the JSON literal, which printed a literal "Cuándo: null" on the
+   // card. The decider is a frontier multimodal model now, so this should no
+   // longer happen — but the guard costs nothing and must keep working.
    test('normalizes a literal string "null"/"None" in when/where to real null', () => {
       const raw =
          '{"relevant":true,"type":"noticia","title":"x","summary":"y","when":"null","where":"None","tags":[]}';
@@ -109,7 +109,7 @@ describe("parseClassificationReply", () => {
    });
 });
 
-describe("classifyPost (two-stage: Nova reads, Kimi decides)", () => {
+describe("classifyPost — ONE multimodal call (v4.1)", () => {
    const post: RecentPost = {
       igPostId: "123",
       shortcode: "ABC",
@@ -135,86 +135,61 @@ describe("classifyPost (two-stage: Nova reads, Kimi decides)", () => {
 
    beforeEach(() => askMock.mockReset());
 
-   test("no cover → a single caption-only Kimi call on the medium tier, no attachment", async () => {
+   test("no cover → one caption-only call on the low tier, no attachment", async () => {
       askMock.mockResolvedValueOnce(goodReply);
       const out = await classifyPost("acc", post, { nowMs: Date.now() });
       expect(askMock).toHaveBeenCalledTimes(1);
       const arg = askMock.mock.calls[0][0] as {
          effort: string;
-         messages: Array<{ attachments?: unknown[] }>;
+         messages: Array<{ attachments?: unknown[]; content: string }>;
       };
-      expect(arg.effort).toBe("medium");
+      expect(arg.effort).toBe("low");
       expect(arg.messages[0].attachments).toBeUndefined();
+      expect(arg.messages[0].content).not.toContain("adjunta como imagen");
       expect(out.relevant).toBe(true);
    });
 
-   test("with cover → stage 1 (image, low) transcribes; stage 2 (text, medium) classifies with the transcription inlined", async () => {
-      const transcription = "MARCHA 8M · 8 de marzo 17:00 · Zócalo CDMX";
-      askMock
-         .mockResolvedValueOnce(transcription) // stage 1: Nova vision transcription
-         .mockResolvedValueOnce(goodReply); // stage 2: Kimi classification
+   test("with cover → ONE call carrying the image, the caption AND the tools bundle", async () => {
+      askMock.mockResolvedValueOnce(goodReply);
       const out = await classifyPost("acc", post, { cover, nowMs: Date.now() });
-      expect(askMock).toHaveBeenCalledTimes(2);
 
-      // Stage 1 is the vision call: carries the image on the low tier.
-      const s1 = askMock.mock.calls[0][0] as {
+      // The old flow made TWO calls here (Nova transcribed, then the text brain
+      // decided). One multimodal call is the whole point of the migration.
+      expect(askMock).toHaveBeenCalledTimes(1);
+      const arg = askMock.mock.calls[0][0] as {
          effort: string;
          messages: Array<{
             attachments?: Array<{ mimeType: string; format: string }>;
+            content: string;
          }>;
       };
-      expect(s1.effort).toBe("low");
-      expect(s1.messages[0].attachments).toHaveLength(1);
-      expect(s1.messages[0].attachments![0]).toMatchObject({
+      expect(arg.effort).toBe("low");
+      expect(arg.messages[0].attachments).toHaveLength(1);
+      expect(arg.messages[0].attachments![0]).toMatchObject({
          mimeType: "image/jpeg",
          format: "jpeg",
       });
-
-      // Stage 2 is the decision call: text-only (no attachment), medium tier, and
-      // the transcribed flyer text is inlined into what Kimi sees.
-      const s2 = askMock.mock.calls[1][0] as {
-         effort: string;
-         messages: Array<{ content: string; attachments?: unknown[] }>;
-      };
-      expect(s2.effort).toBe("medium");
-      expect(s2.messages[0].attachments).toBeUndefined();
-      expect(s2.messages[0].content).toContain(transcription);
-
+      // The caption still rides along — the flyer and the caption are read together.
+      expect(arg.messages[0].content).toContain("Convocatoria");
+      expect(arg.messages[0].content).toContain("adjunta como imagen");
       expect(out.relevant).toBe(true);
    });
 
-   test("transcription failure is non-fatal — still classifies caption-only, never drops the post", async () => {
-      askMock
-         .mockRejectedValueOnce(new Error("bedrock rejected image")) // stage 1 fails
-         .mockResolvedValueOnce(goodReply); // stage 2 succeeds
+   test("a failed classification call is non-fatal but marks the post undecided", async () => {
+      askMock.mockRejectedValueOnce(new Error("deepseek 500"));
       const out = await classifyPost("acc", post, { cover, nowMs: Date.now() });
-      expect(askMock).toHaveBeenCalledTimes(2);
-      const s2 = askMock.mock.calls[1][0] as {
-         messages: Array<{ attachments?: unknown[] }>;
-      };
-      expect(s2.messages[0].attachments).toBeUndefined();
-      expect(out.relevant).toBe(true);
-      expect(out.reason).toBeUndefined();
-   });
-
-   test("empty transcription → no flyer section handed to Kimi", async () => {
-      askMock
-         .mockResolvedValueOnce("   ") // stage 1: whitespace only → treated as no text
-         .mockResolvedValueOnce(goodReply);
-      await classifyPost("acc", post, { cover, nowMs: Date.now() });
-      const s2 = askMock.mock.calls[1][0] as {
-         messages: Array<{ content: string }>;
-      };
-      expect(s2.messages[0].content).not.toContain("transcrito");
-   });
-
-   test("gives up (non-relevant, reason ask_failed) only when the Kimi classification call fails", async () => {
-      askMock
-         .mockResolvedValueOnce("algún texto del flyer") // stage 1 ok
-         .mockRejectedValueOnce(new Error("kimi down")); // stage 2 fails
-      const out = await classifyPost("acc", post, { cover, nowMs: Date.now() });
-      expect(askMock).toHaveBeenCalledTimes(2);
+      expect(askMock).toHaveBeenCalledTimes(1);
       expect(out.relevant).toBe(false);
       expect(out.reason).toMatch(/ask_failed/);
+      // The scheduler holds its dedup anchor back on `undecided` so the post is
+      // retried instead of being silently dropped forever.
+      expect(out.undecided).toBe(true);
+   });
+
+   test("an unparseable reply is undecided too", async () => {
+      askMock.mockResolvedValueOnce("no soy JSON");
+      const out = await classifyPost("acc", post, { nowMs: Date.now() });
+      expect(out.undecided).toBe(true);
+      expect(out.reason).toBe("parse_error");
    });
 });

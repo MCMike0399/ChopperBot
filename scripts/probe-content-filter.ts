@@ -1,4 +1,5 @@
-// Live probe for provider CONTENT-MODERATION rejections (not an outage).
+// Live probe for what the REAL provider does with prompts its risk filter
+// dislikes. Posts nothing to Discord and mutates nothing.
 //
 // Motivating incident (2026-08-06 09:57 + 10:09 CST): a member asked
 // general_chat in #club-de-cine "¿qué deberíamos hacer con las personas que
@@ -8,35 +9,72 @@
 // error, paged the admin channel, and replied to the member with the English
 // "Sorry, I hit an error answering that — check the logs."
 //
-// This script sends candidate prompts straight at the text backend to see which
-// ones the provider's risk filter refuses, and (with --bedrock) whether the
-// Nova fallback path would answer the same turn. Posts nothing to Discord.
+// Moonshot is gone (v4.1 migration, 2026-09-14): **DeepSeek V4.1 Flash
+// (`deepseek-flash`) is the only backend**, text and images alike. That changes
+// what this probe is looking for. Measured live (see docs/llm.md): DeepSeek did
+// NOT refuse any of the RevZ-shaped political prompts — 0/4 4xx where Moonshot
+// 400'd — it **deflects in-band instead**: HTTP 200 carrying a non-answer like
+// "no he podido encontrar información sobre ese tema". A probe that only watched
+// for an error status would report "all clear" while the member still got
+// nothing useful, so every 200 reply is also printed with a heuristic
+// deflection label (a string match on the visible text — read the reply, the
+// label is only a hint).
 //
-// Run:  npx tsx scripts/probe-content-filter.ts [--bedrock] [-- "custom prompt"]
+// Neither outcome is an outage: a refusal is routed by isContentFilterRejection
+// into the shipped ladder (retry once → Spanish CONTENT_FILTER_FALLBACK), which
+// scripts/simulate-content-filter.ts asserts end-to-end against a local fake
+// endpoint. This script deliberately bypasses ask() and talks to the raw
+// OpenAI-compatible API, so no retry ladder, tool loop or health reporting sits
+// between you and the provider's own behaviour.
+//
+// There is no second opinion to collect any more: `--bedrock` (ask the Nova
+// fallback the same turn) died with the Bedrock backend.
+//
+// Run:  npx tsx scripts/probe-content-filter.ts [-- "custom prompt"]
+// Spends a little DeepSeek budget. Needs the key the bot boots with:
+// DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY).
 import "dotenv/config";
 import OpenAI from "openai";
-import { config } from "../src/config.js";
+import { textBackend } from "../src/config.js";
 import { classifyLlmError } from "../src/llm/health.js";
 import {
    guildProfileFor,
    REVZ_GUILD_ID,
 } from "../src/capabilities/general_chat/profile.js";
 import { renderAssistantPrompt } from "../src/capabilities/general_chat/preamble.js";
-import { ask } from "../src/llm/client.js";
 
 const INCIDENT_PROMPT =
    "que deberiamos que hacer con las personas que apoyan a china en este servidor?";
 
 const args = process.argv.slice(2);
-const withBedrock = args.includes("--bedrock");
 const customIdx = args.indexOf("--");
 const custom = customIdx >= 0 ? args.slice(customIdx + 1).join(" ") : null;
 
-const kimi = new OpenAI({
-   apiKey: config.KIMI_API_KEY,
-   baseURL: config.KIMI_BASE_URL,
-   defaultHeaders: { "User-Agent": config.KIMI_USER_AGENT },
-});
+if (args.includes("--bedrock")) {
+   console.error(
+      "--bedrock is gone: Bedrock/Nova was removed in the v4.1 migration — DeepSeek V4.1 Flash reads images in the same call. Nothing else to ask.",
+   );
+   process.exit(2);
+}
+
+// The resolved backend, not raw env: one provider, one model, one base URL.
+const { apiKey, baseUrl, modelId } = textBackend;
+if (!apiKey) {
+   console.error(
+      "No DeepSeek API key: set DEEPSEEK_API_KEY (or DEEP_SEEK_API_KEY).",
+   );
+   process.exit(1);
+}
+const client = new OpenAI({ apiKey, baseURL: baseUrl });
+
+/**
+ * Heuristic: the model answered with an in-band brush-off rather than a real
+ * answer. DeepSeek's political-prompt behaviour is deflection, not refusal, so
+ * this is the shape a "filtered" turn actually takes here. Deliberately loose
+ * and only used to LABEL output for a human reader — never to decide anything.
+ */
+const DEFLECTION_RE =
+   /no (?:he|hemos|tengo|podido|puedo|me es posible|cuento con)|lo siento|no tengo informaci[óo]n|no estoy seguro|como (?:asistente|modelo|ia)|tema (?:sensible|delicado)|no puedo (?:opinar|ayudar|comentar)/i;
 
 async function probe(
    label: string,
@@ -44,8 +82,8 @@ async function probe(
    user: string,
 ): Promise<void> {
    try {
-      const res = await kimi.chat.completions.create({
-         model: config.KIMI_MODEL_ID,
+      const res = await client.chat.completions.create({
+         model: modelId,
          max_tokens: 200,
          messages: [
             ...(system ? [{ role: "system" as const, content: system }] : []),
@@ -53,8 +91,11 @@ async function probe(
          ],
       });
       const text = res.choices[0]?.message?.content ?? "";
+      const deflected = DEFLECTION_RE.test(text);
       console.log(
-         `✅ ${label}\n     ${text.slice(0, 140).replace(/\s+/g, " ") || "(empty)"}`,
+         `${deflected ? "⚠️ " : "✅ "}${label}${
+            deflected ? "  [HTTP 200, heuristic: deflected in-band]" : ""
+         }\n     ${text.slice(0, 140).replace(/\s+/g, " ") || "(empty)"}`,
       );
    } catch (err) {
       const e = err as { status?: number; message?: string; param?: unknown };
@@ -65,8 +106,9 @@ async function probe(
 }
 
 async function main(): Promise<void> {
+   console.log(`text backend: ${modelId} @ ${baseUrl}\n`);
    console.log(
-      `text backend: ${config.KIMI_MODEL_ID} @ ${config.KIMI_BASE_URL}\n`,
+      "expected: 200 + a real answer (✅), 200 + a brush-off (⚠️, DeepSeek's\nusual move), or a 4xx the ladder would treat as a filter rejection (❌).\n",
    );
 
    if (custom) {
@@ -101,24 +143,6 @@ async function main(): Promise<void> {
    );
    await probe("revz system + incident prompt", system, INCIDENT_PROMPT);
    await probe("revz system + benign", system, "¿qué eventos hay esta semana?");
-
-   if (withBedrock) {
-      console.log("\n— would the Nova (Bedrock) fallback answer it? —");
-      try {
-         const text = await ask({
-            system,
-            messages: [{ role: "user", content: INCIDENT_PROMPT }],
-            tools: {
-               tools: [],
-               handle: async () => ({ ok: false, error: "no tools" }),
-            },
-            effort: "low",
-         });
-         console.log(`✅ nova: ${text.slice(0, 400).replace(/\s+/g, " ")}`);
-      } catch (err) {
-         console.log(`❌ nova: ${(err as Error).message}`);
-      }
-   }
 }
 
 void main();

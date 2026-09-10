@@ -45,6 +45,7 @@ import { WhisperCliTranscriber } from "../src/capabilities/minutas/transcriber.j
 import {
    finalizeSession,
    type FinalizeDeps,
+   type FinalizeResult,
 } from "../src/capabilities/minutas/pipeline.js";
 import {
    recordOpusStreamToPcm,
@@ -255,9 +256,7 @@ async function main(): Promise<void> {
       "minutas",
       "sessions",
    );
-   let finalizePromise: Promise<
-      import("../src/capabilities/minutas/pipeline.js").FinalizeResult
-   > | null = null;
+   let finalizePromise: Promise<FinalizeResult> | null = null;
    const sessions = new MinutasSessions({
       store,
       sessionsDir,
@@ -323,8 +322,12 @@ async function main(): Promise<void> {
    );
    const closed = await sessions.endAndReport(REVZ_GUILD_ID, "prueba e2e");
    check("sesión cerrada y entregada al finalizador", closed !== null);
+   // Control-flow analysis cannot see the assignment made inside onClosed, so it
+   // still believes `finalizePromise` is literally `null` here — which narrows
+   // the value to `never` and makes `result.empty` a type error. The runtime
+   // guard below is real; the cast only restores the declared type.
    if (!finalizePromise) throw new Error("onClosed no disparó finalizeSession");
-   const result = await finalizePromise;
+   const result = await (finalizePromise as unknown as Promise<FinalizeResult>);
 
    // ── Step 3: assertions ────────────────────────────────────────────────────
    const done = store.getSession(row.id)!;

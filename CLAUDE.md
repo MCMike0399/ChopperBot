@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | Working on…                                                                                                                                                                                                                                                                                                                                                       | Read first                                                                       |
 | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | **Onboarding / "what does this bot do?"** — one deep, self-contained tour of every RevZ capability, the live channel wiring, config reference, runbook and failure-mode index. **Orientation only — never the change-gated source of truth; the topic docs below are.** **Local-only/untracked** (present on the Mac + Pi working trees, not in the public repo). | [docs/revolucion-z-capabilities.md](docs/revolucion-z-capabilities.md)           |
-| LLM client — dual backend (selectable text brain, **live: DeepSeek**; Nova vision is two-stage: Nova reads, text brain acts), effort tiers, content-filter recovery, tool loop, health watchdog, image attachments                                                                                                 | [docs/llm.md](docs/llm.md)                                                       |
+| LLM client — **one backend**: DeepSeek V4.1 Flash (`deepseek-flash`, OpenAI-compatible chat-completions, text **and** images in the same call), effort tiers (`low`/`high`/`max`; `medium` is a legacy alias for `high`), content-filter recovery, tool loop, health watchdog, image attachments                                                                                | [docs/llm.md](docs/llm.md)                                                       |
 | Framework internals — boot sequence, per-turn pipeline, tool composition, persistence, capability routing                                                                                                                                                                                                                                                         | [docs/framework.md](docs/framework.md)                                           |
 | `calendar` — global calendar, recurrence, PDF/ICS publishing, month rollover, daily announcements, Discord-event sync                                                                                                                                                                                                                                             | [docs/capabilities/calendar.md](docs/capabilities/calendar.md)                   |
 | `instagram_monitor` — scheduler, adaptive cadence + budget governor, anti-detection, guardrails/kill-switch                                                                                                                                                                                                                                                       | [docs/capabilities/instagram-monitor.md](docs/capabilities/instagram-monitor.md) |
@@ -40,14 +40,17 @@ pnpm run build          # tsc → dist/
 pnpm run start          # node dist/index.js (prod entry)
 pnpm run dev            # tsx watch src/index.ts
 
-# Tests — vitest, real SQLite (`:memory:`), mocked Bedrock client.
+# Tests — vitest, real SQLite (`:memory:`), mocked LLM client.
 npx vitest run                                                # full suite
 npx vitest                                                    # watch mode
 npx vitest run src/capabilities/calendar/__tests__/store.test.ts   # single file
 npx vitest run -t "creates an event"                          # single test by name pattern
 
-# Live e2e smoke against REAL Amazon Bedrock (NOT run by `pnpm test`; spends token budget):
-npx tsx scripts/live-bedrock-smoke.ts
+# Live e2e smoke against the REAL DeepSeek API (NOT run by `pnpm test`; spends token budget):
+npx tsx scripts/live-vision-smoke.ts
+# The hidden budget rule: nothing under `scripts/` is a test, several are live and billed, and the
+# API probes print what they cost — `probe-deepseek-v41-api.ts`, `…-vision.ts`, `…-effort.ts`.
+# Run them deliberately, never in a loop, and never from CI.
 ```
 
 `vitest.setup.ts` pre-fills required env vars at module load so `src/config.ts` (which validates at import) doesn't crash test runs. Note dotenv also loads the host's real `.env` into the vitest process — assertions about an _unset_ optional var must stub `config.<KEY>` and restore it.
@@ -110,7 +113,7 @@ Capabilities that exist only for other/private deploys are **not kept in this re
 - `src/index.ts` → `src/app.ts` — process entry and boot wiring.
 - `src/config.ts` — Zod-validated env config; **validates at import**, so a missing required var crashes the process (and any test that imports it — hence `vitest.setup.ts`).
 - `src/lifecycle.ts` — signal handling + clean-vs-crash restart detection (drives the crash-restart Discord alert).
-- `src/llm/` — the dual-backend LLM client (`client.ts`, the agent loop) and the health watchdog (`health.ts`) → [docs/llm.md](docs/llm.md).
+- `src/llm/` — the LLM client (`client.ts`, the agent loop, one OpenAI-compatible backend) and the health watchdog (`health.ts`) → [docs/llm.md](docs/llm.md).
 - `src/discord/` — gateway `client.ts`, per-turn `handlers.ts`, reply-chain `history.ts`, reply splitting `chunk.ts`, the shared `admin-alert.ts`, and `mod-roles.ts` (approver roles + `<@&id>` notify-ability; pure, shared by event_intake, the config console and the calendar announcer so "who may approve" and "who gets pinged" can't drift).
 - `src/capabilities/<name>/` — one self-contained dir per capability. `capability.ts` (interface), `registry.ts`, and `routing.ts` are the framework glue.
 - `src/lang/` — the Spanish voice contract: `voice.ts` (`SPANISH_VOICE_RULES`, embedded in every community-facing prompt), `spanish-style.ts` (`lintSpanish`, the deterministic rules), `report.ts` (the warn-level `style.spanish_voice_drift` log on every delivered reply) → [docs/framework.md](docs/framework.md).
@@ -119,7 +122,7 @@ Capabilities that exist only for other/private deploys are **not kept in this re
 - `src/storage/` — the provider-neutral object-storage layer (`ObjectStorage` in `object-storage.ts`): `minio.ts` (MinIO on the Pi's 1 TB SSD at `/srv/minio`, via `@aws-sdk/client-s3`, path-style, localhost endpoint), `local.ts` (dev/test backend), `index.ts` (the config-driven factory; returns `null` when `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` are unset → callers keep their pre-storage behavior). Used today by the workshop for durable session-file storage.
 - `src/users/` — the framework Discord-user directory (the reserved `__framework__` namespace).
 - `src/attachments/` — image (vision) resolution for incoming Discord attachments.
-- `scripts/` — dev/proof/calibration scripts, **not tests** (some spend real Bedrock/IG budget — see the per-doc notes).
+- `scripts/` — dev/proof/calibration scripts, **not tests** (some spend real DeepSeek/IG budget — see the per-doc notes).
 - `deploy/` — the reference `systemd/` unit (live, tracked). The decommissioned macOS `launchd/`+`bin/` artifacts are **local-only/untracked** (reference/rollback only; backed up at `pi:~/ChopperBot-private-assets/`).
 - `calendar/` — the 7 Canva month-PDF templates; **local-only/untracked** (private assets, licensing) but read at runtime from the repo root, so they MUST exist in the deployment working tree (Pi backup: `pi:~/ChopperBot-private-assets/calendar-backup-2026-08-13/`).
 - `docs/` — the topic documentation routed by the map at the top of this file.
@@ -138,7 +141,7 @@ Full details: [docs/framework.md](docs/framework.md). The load-bearing facts:
 Full per-var reference and gotchas: [docs/environment.md](docs/environment.md). The universal rules:
 
 - **dotenv `override: false`** — a stale `export FOO=...` in a shell rc shadows `.env`; `unset FOO`, don't flip override.
-- **Required at boot:** `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, the key for the selected text brain (`LLM_TEXT_BACKEND=kimi` → `KIMI_API_KEY`, the default; `=deepseek` → `DEEPSEEK_API_KEY`/`DEEP_SEEK_API_KEY`), `ACCESS_KEY_ID`+`SECRET_ACCESS_KEY` (the images-only Nova backend — required under every text backend, since no text brain can see images). Everything else has a schema default.
+- **Required at boot:** `DISCORD_TOKEN`, `CHOPPERBOT_CONFIG_CHANNEL_ID`, `DEEPSEEK_API_KEY` (or the legacy spelling `DEEP_SEEK_API_KEY`, which is what the Pi's `.env` carries) — there is **one** backend, DeepSeek V4.1 Flash, and it serves text **and** images, so there is no second key to set and a missing key is a hard boot failure. Everything else has a schema default.
 - **Channel settings seed-then-DB-wins:** env vars seed SQLite settings on first boot only; after that the DB is the source of truth, managed live from the config channel — no restart needed.
 
 ## Logs & observability — quick reference

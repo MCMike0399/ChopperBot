@@ -90,6 +90,12 @@ export class GeneralChatCapability implements Capability {
          return {
             system: renderGeneralChatPrompt(ctx.now, snapshot),
             tools: composeToolSources([]),
+            // Lowest tier — thinking OFF. This is the community's chat surface and
+            // therefore essentially all the turn volume; it is conversational, and
+            // its tools are read-only lookups that need no multi-step plan. Left
+            // undeclared it would silently take `ask()`'s `high` default and double
+            // the billed output of the busiest path in the bot.
+            effort: "low",
          };
       }
 
@@ -136,6 +142,11 @@ export class GeneralChatCapability implements Capability {
             liveHowTo,
          ),
          tools: composeToolSources(sources),
+         // Same `low` tier as the profile-less branch above, and for the same
+         // reason: the calendar/server-directory tools here are read-only lookups
+         // inside a chat turn, not a state-writing loop. See capability.ts for
+         // which capabilities legitimately declare `high`/`max`.
+         effort: "low",
       };
    }
 

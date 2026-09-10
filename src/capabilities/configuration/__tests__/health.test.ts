@@ -119,7 +119,7 @@ describe("collectHealth", () => {
       memory.close();
    });
 
-   test("reports the ACTUAL two backends, not the legacy Bedrock model", async () => {
+   test("reports the ACTUAL backend — one model for text and images", async () => {
       const { memory, deps } = await healthyDeps();
       const llm = collectHealth(deps).llm as {
          text: { backend: string; model: string; display_name: string };
@@ -128,9 +128,15 @@ describe("collectHealth", () => {
       expect(llm.text.backend).toBe(textBackend.provider);
       expect(llm.text.model).toBe(textBackend.modelId);
       expect(llm.text.display_name).toBe(textBrainDisplayName());
-      expect(llm.vision.backend).toBe("bedrock");
-      // The legacy Sonnet id must not be presented as the model in use anywhere.
+      // Since the v4.1 migration (2026-09-14) images ride the SAME model, so the
+      // vision block mirrors the text one. This is the third time this report
+      // has had to stop naming a retired model — pin the whole shape.
+      expect(llm.vision.backend).toBe(textBackend.provider);
+      expect(llm.vision.model).toBe(textBackend.modelId);
+      // Neither the retired Bedrock Sonnet id nor Amazon Nova may appear as the
+      // model in use anywhere.
       expect(JSON.stringify(llm)).not.toContain("anthropic.claude");
+      expect(JSON.stringify(llm)).not.toContain("nova");
       memory.close();
    });
 
