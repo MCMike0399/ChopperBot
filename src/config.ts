@@ -206,6 +206,20 @@ const ConfigSchema = z
          emptyToUndefined,
          z.string().min(1).optional(),
       ),
+      // Which fetch implementation instagram_monitor uses.
+      //  - "browser" (default since 2026-09-10): drives headless Chromium and reads
+      //    the profile page's own timeline XHR. This is the only path that works —
+      //    Instagram retired the HTTP read path on 2026-09-02.
+      //  - "api": the legacy direct HTTP fetcher (i.instagram.com/api/v1/…). Kept as
+      //    a rollback lever; every route it needs 302s or 429s as of 2026-09-10.
+      IG_FETCH_MODE: z.enum(["api", "browser"]).default("browser"),
+      // Explicit Chromium/Chrome binary for the browser fetcher. Unset = auto-resolve
+      // (newest Playwright-cached chromium, then the system chromium, then macOS
+      // Chrome). Set this when the deployment's browser lives somewhere unusual.
+      IG_BROWSER_EXECUTABLE_PATH: z.preprocess(
+         emptyToUndefined,
+         z.string().min(1).optional(),
+      ),
       // Hard ceiling on outbound IG HTTP requests in a rolling 24h window (one poll
       // ≈ 2–3 calls: optional warmup + pk-resolve + feed). On hit, polling
       // soft-pauses (auto-recovers as the window drains) and the operator is
