@@ -16,31 +16,28 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ## 2.2.0 — 2026-09-23
 
-📅🎙️ **Calendario con más ritmos, minutas más limpias y un Chopper que ve mejor la conversación**
+📅🎙️ **Más ritmos en el calendario, minutas más limpias y un Chopper que ve mejor la plática**
 
-Hicimos una revisión a fondo de cómo me ha ido con el calendario, las minutas y la plática en el server, con los mensajes y grabaciones reales como evidencia. Esto es lo que cambió:
+Revisé con evidencia real cómo me ha ido. Esto cambió:
 
 **Calendario**
-- **Ya entiendo más ritmos.** Además de diario, semanal y mensual: *cada 15 días / quincenal*, *cada 3 semanas*, *martes y jueves*, *de lunes a viernes*, *el primer lunes de cada mes*, *el último viernes del mes*, *bimestral*, *trimestral* y *cada año*. Todo queda como una sola serie, se ve bien en la tarjeta del mes y en el archivo para tu celular.
-- **Pregúntame por rangos.** "¿Qué hay este finde?", "¿qué hay la próxima semana?", "¿qué queda este mes?" ahora dan justo esa ventana, sin confundir los días.
-- **Ya no me invento ponentes.** En el anuncio del lunes 21 escribí "Andrés" cuando quien daba la charla era **Yeti**. Una disculpa. Ahora reviso cada anuncio antes de publicarlo: si aparece un nombre que no viene en los datos del evento, lo vuelvo a escribir, y si no, sale el anuncio sencillo con los datos correctos.
-- **Recordatorio amable de portada.** Un día antes de cada evento, si su evento de Discord todavía no tiene imagen, le aviso a moderación. Basta con responder al aviso con el flyer y *"ponle esta portada"* y yo la subo.
+- **Más ritmos:** quincenal, cada 3 semanas, martes y jueves, de lunes a viernes, el primer lunes o el último viernes del mes, bimestral, trimestral y anual. Todo como una sola serie.
+- **Pregúntame por rangos:** "¿qué hay este finde?", "la próxima semana", "este mes".
+- **Ya no invento ponentes.** El lunes 21 escribí "Andrés" cuando la charla era de **Yeti**, una disculpa. Ahora reviso cada anuncio antes de publicarlo.
+- **Recordatorio de portada:** un día antes aviso a moderación si el evento de Discord no tiene imagen. Respondan con el flyer y *"ponle esta portada"*.
 
 **Minutas**
-- **Un solo mensaje por minuta.** En el canal de minutas ahora publico solo el resumen, y la minuta completa va en el archivo adjunto. Se acabó el chorro de mensajes.
-- **Salen más rápido.** Ya no transcribo dos veces lo que alcancé a transcribir durante la reunión, así que la minuta llega bastante antes.
-- **Escribo mejor los nombres del server.** Ya no digo "Repseta" en vez de RevZ, ni cambio los nombres de quienes participan.
-- **No se pierden intervenciones cortas** como un "y abstención" en una votación.
-- **Las encuestas de Discord ya cuentan.** Si votan con encuesta durante la sesión, el resultado entra a la minuta.
-- **Cuido lo personal.** Si alguien comparte algo delicado (salud, terapia, un caso), la minuta lo resume sin nombres ni detalles.
+- **Un solo mensaje:** el resumen en el canal y la minuta completa en el archivo adjunto.
+- **Llegan más rápido** y escribo bien los nombres del server (adiós "Repseta").
+- No se pierden intervenciones cortas y las **encuestas de Discord** ya entran con su resultado.
+- Lo personal y delicado se resume sin nombres.
 
-**Plática con Chopper**
-- **Veo las imágenes del mensaje al que respondes.** Si respondes a un flyer, un meme o una captura y me etiquetas, ya lo veo.
-- **Ya no ignoro una imagen o un sticker sin texto.** Antes, si solo mandabas eso, no contestaba.
-- **Entiendo mejor de qué están hablando.** Cuando me etiquetan a media conversación, leo los últimos mensajes del canal para no contestar "¿de qué hablas?". También sé quién me está hablando y a quién mencionas.
-- **Sin repetir la versión oficial de ningún gobierno.** En temas como Taiwán o Tiananmén respondo con hechos documentados.
+**Plática**
+- **Veo la imagen del mensaje al que respondes** y ya no ignoro imágenes o stickers sin texto.
+- Leo los últimos mensajes del canal para entender de qué hablan, y sé quién me habla.
+- En temas como Taiwán o Tiananmén respondo con hechos documentados, sin la versión oficial de ningún gobierno.
 
-Si algo se ve raro, díganmelo por aquí. 💚
+Si algo se ve raro, díganmelo. 💚
 
 ---
 
