@@ -15,10 +15,12 @@ import {
 import {
    countOccurrencesUntil,
    isRecurrenceFreq,
+   ruleOf,
    MAX_RECURRENCE_COUNT,
    RECURRENCE_FREQUENCIES,
    untilFromCount,
    type RecurrenceFreq,
+   type RecurrenceRule,
 } from "../calendar/recurrence.js";
 import { formatInTimezone } from "../calendar/time.js";
 import { CalendarAnnouncer } from "../calendar/announcer.js";
@@ -314,8 +316,18 @@ export class ConfigCalendarAdminSource implements ToolSource {
          patch.description = asOptionalString(obj.description);
       if (obj.location !== undefined)
          patch.location = asOptionalString(obj.location);
-      if (obj.recurrence_freq !== undefined)
+      if (obj.recurrence_freq !== undefined) {
          patch.recurrence_freq = parseRecurrenceFreq(obj.recurrence_freq);
+         // The console speaks plain frequencies only; a frequency change here
+         // resets the rhythm modifiers (quincenal, martes y jueves, …) rather
+         // than leaving them to reapply to a different rhythm.
+         const current = this.store.get(eventId);
+         if (current && current.recurrence_freq !== patch.recurrence_freq) {
+            patch.recurrence_interval = null;
+            patch.recurrence_byday = null;
+            patch.recurrence_monthly = null;
+         }
+      }
       if (
          obj.recurrence_count !== undefined ||
          obj.recurrence_until_iso !== undefined
@@ -334,7 +346,9 @@ export class ConfigCalendarAdminSource implements ToolSource {
          patch.recurrence_until = resolveUntil(
             obj,
             effectiveStart,
-            effectiveFreq,
+            effectiveFreq === existing.recurrence_freq && effectiveFreq !== null
+               ? ruleOf(existing)
+               : effectiveFreq,
          );
       }
       if (Object.keys(patch).length === 0) {
@@ -630,7 +644,7 @@ export class ConfigCalendarAdminSource implements ToolSource {
             e.recurrence_freq !== null
                ? countOccurrencesUntil(
                     e.start_at,
-                    e.recurrence_freq,
+                    ruleOf(e)!,
                     e.recurrence_until,
                  )
                : 1,
@@ -650,7 +664,7 @@ export class ConfigCalendarAdminSource implements ToolSource {
 function resolveUntil(
    obj: Record<string, unknown>,
    startMs: number,
-   freq: RecurrenceFreq | null,
+   freq: RecurrenceFreq | RecurrenceRule | null,
 ): number | null {
    const hasCount =
       obj.recurrence_count !== undefined && obj.recurrence_count !== null;

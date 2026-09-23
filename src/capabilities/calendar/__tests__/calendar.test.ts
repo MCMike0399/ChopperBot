@@ -515,7 +515,7 @@ describe('CalendarCapability + agent loop (mocked Kimi)', () => {
 
     const turn2 = await cap.buildTurn(ctx());
     expect(turn2.system).toContain('Repensar la Pobreza');
-    expect(turn2.system).toContain('serie weekly');
+    expect(turn2.system).toMatch(/serie: semanal, los \p{L}+/u);
     memory.close();
   });
 

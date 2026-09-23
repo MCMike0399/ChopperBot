@@ -5,6 +5,7 @@ import {
   expandOccurrences,
   type ExpandedOccurrence,
   type OccurrenceOverride,
+  type MonthlyMode,
   type RecurrenceFreq,
 } from './recurrence.js';
 
@@ -26,6 +27,12 @@ export interface CalendarEvent {
   location: string | null;
   recurrence_freq: RecurrenceFreq | null; // null = one-off event
   recurrence_until: number | null;        // unix ms UTC, inclusive cap on expansions
+  /** Rule modifiers (v11, see `RecurrenceRule`): every N units; NULL = 1. */
+  recurrence_interval: number | null;
+  /** Weekly only: several days per week as RFC 5545 codes ("TU,TH"); NULL = the anchor's day. */
+  recurrence_byday: string | null;
+  /** Monthly only: 'nth_weekday' | 'last_weekday'; NULL = same day of month. */
+  recurrence_monthly: MonthlyMode | null;
   /**
    * The Discord **Scheduled Event** this row corresponds to, if any — the thing
    * members click to RSVP and what the daily announcement links to. Written by
@@ -64,6 +71,9 @@ export interface CreateEventInput {
   location?: string | null;
   recurrence_freq?: RecurrenceFreq | null;
   recurrence_until?: number | null;
+  recurrence_interval?: number | null;
+  recurrence_byday?: string | null;
+  recurrence_monthly?: MonthlyMode | null;
 }
 
 export interface UpdateEventInput {
@@ -74,6 +84,9 @@ export interface UpdateEventInput {
   location?: string | null;
   recurrence_freq?: RecurrenceFreq | null;
   recurrence_until?: number | null;
+  recurrence_interval?: number | null;
+  recurrence_byday?: string | null;
+  recurrence_monthly?: MonthlyMode | null;
 }
 
 /** A published Discord message tracked so we can edit it in place. */
@@ -328,6 +341,19 @@ export const CALENDAR_MIGRATIONS: Migration[] = [
         ON calendar_announcement_drafts (created_at DESC);
     `,
   },
+  {
+    // v11 — richer series rhythms: "cada 2 semanas" (interval), "martes y
+    // jueves" (byday), "el último viernes del mes" (monthly mode). All three are
+    // nullable modifiers on top of `recurrence_freq`, so every pre-v11 row keeps
+    // meaning exactly what it did (NULL = the plain rule) and nothing is
+    // backfilled.
+    version: 11,
+    up: `
+      ALTER TABLE calendar_events ADD COLUMN recurrence_interval INTEGER;
+      ALTER TABLE calendar_events ADD COLUMN recurrence_byday TEXT;
+      ALTER TABLE calendar_events ADD COLUMN recurrence_monthly TEXT;
+    `,
+  },
 ];
 
 interface OverrideRow {
@@ -484,8 +510,9 @@ export class CalendarStore {
       .prepare(
         `INSERT INTO calendar_events
            (created_by, title, description, start_at, end_at, location,
-            recurrence_freq, recurrence_until, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            recurrence_freq, recurrence_until, recurrence_interval, recurrence_byday,
+            recurrence_monthly, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         input.created_by,
@@ -496,6 +523,9 @@ export class CalendarStore {
         input.location ?? null,
         input.recurrence_freq ?? null,
         input.recurrence_until ?? null,
+        input.recurrence_freq ? input.recurrence_interval ?? null : null,
+        input.recurrence_freq ? input.recurrence_byday ?? null : null,
+        input.recurrence_freq ? input.recurrence_monthly ?? null : null,
         now,
         now,
       );
@@ -523,6 +553,9 @@ export class CalendarStore {
     setIf('location', 'location');
     setIf('recurrence_freq', 'recurrence_freq');
     setIf('recurrence_until', 'recurrence_until');
+    setIf('recurrence_interval', 'recurrence_interval');
+    setIf('recurrence_byday', 'recurrence_byday');
+    setIf('recurrence_monthly', 'recurrence_monthly');
     if (fields.length === 0) return existing;
     fields.push('updated_at = ?');
     params.push(Date.now());
@@ -1054,6 +1087,9 @@ function toOccurrence(master: CalendarEvent, occ: ExpandedOccurrence): CalendarO
     location: ov?.location ?? master.location,
     recurrence_freq: master.recurrence_freq,
     recurrence_until: master.recurrence_until,
+    recurrence_interval: master.recurrence_interval,
+    recurrence_byday: master.recurrence_byday,
+    recurrence_monthly: master.recurrence_monthly,
     discord_event_id: master.discord_event_id,
     flyer_channel_id: master.flyer_channel_id,
     flyer_image_message_id: master.flyer_image_message_id,

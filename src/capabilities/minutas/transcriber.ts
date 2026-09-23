@@ -25,8 +25,15 @@ export interface TranscriptSegment {
 export interface Transcriber {
    /** Whether the engine can run at all (binary + model present). */
    isAvailable(): boolean;
-   /** Transcribe a 16 kHz mono WAV; rejects on engine failure. */
-   transcribe(wavPath: string, outBase: string): Promise<TranscriptSegment[]>;
+   /**
+    * Transcribe a 16 kHz mono WAV; rejects on engine failure. `prompt` is
+    * whisper's initial prompt — vocabulary and names to spell right.
+    */
+   transcribe(
+      wavPath: string,
+      outBase: string,
+      opts?: { prompt?: string },
+   ): Promise<TranscriptSegment[]>;
 }
 
 interface WhisperCliOptions {
@@ -51,8 +58,14 @@ export class WhisperCliTranscriber implements Transcriber {
       return existsSync(this.opts.bin) && existsSync(this.opts.modelPath);
    }
 
-   transcribe(wavPath: string, outBase: string): Promise<TranscriptSegment[]> {
-      const run = this.queue.then(() => this.transcribeNow(wavPath, outBase));
+   transcribe(
+      wavPath: string,
+      outBase: string,
+      opts?: { prompt?: string },
+   ): Promise<TranscriptSegment[]> {
+      const run = this.queue.then(() =>
+         this.transcribeNow(wavPath, outBase, opts?.prompt),
+      );
       this.queue = run.catch(() => {});
       return run;
    }
@@ -60,6 +73,7 @@ export class WhisperCliTranscriber implements Transcriber {
    private async transcribeNow(
       wavPath: string,
       outBase: string,
+      prompt?: string,
    ): Promise<TranscriptSegment[]> {
       const started = Date.now();
       const running = execFileAsync(
@@ -77,6 +91,7 @@ export class WhisperCliTranscriber implements Transcriber {
             "-t",
             String(this.opts.threads),
             "-np",
+            ...(prompt ? ["--prompt", prompt] : []),
          ],
          // A 2 h monologue on the small model is ~1.5 h of Pi CPU worst case —
          // generous ceiling; execFile's default 1 MB stdout cap is fine with -np.

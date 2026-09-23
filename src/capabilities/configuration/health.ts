@@ -36,7 +36,7 @@ import { DEFAULT_MOD_ROLES } from "../../discord/mod-roles.js";
 import { CalendarStore } from "../calendar/store.js";
 import { desiredMonthKeys } from "../calendar/publisher.js";
 import { resolveAnnounceSettings } from "../calendar/announce-settings.js";
-import { countOccurrencesUntil } from "../calendar/recurrence.js";
+import { countOccurrencesUntil, ruleOf } from "../calendar/recurrence.js";
 
 const DAY_MS = 86_400_000;
 
@@ -344,7 +344,7 @@ export function collectHealth(deps: HealthDeps): HealthReport {
                title: e.title,
                occurrences: countOccurrencesUntil(
                   e.start_at,
-                  e.recurrence_freq!,
+                  ruleOf(e)!,
                   e.recurrence_until,
                ),
                until_iso: iso(e.recurrence_until),

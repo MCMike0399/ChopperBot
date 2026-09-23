@@ -240,6 +240,8 @@ export class OutputChannelPublisher implements CalendarPublisher {
         id: e.id, title: e.title, description: e.description, location: e.location,
         start_at: e.start_at, end_at: e.end_at,
         recurrence_freq: e.recurrence_freq, recurrence_until: e.recurrence_until,
+        recurrence_interval: e.recurrence_interval, recurrence_byday: e.recurrence_byday,
+        recurrence_monthly: e.recurrence_monthly,
       })),
       { nowMs: Date.now(), overrides },
     );

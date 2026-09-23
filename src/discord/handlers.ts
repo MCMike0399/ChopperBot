@@ -22,6 +22,17 @@ import type { CapabilityRegistry } from "../capabilities/registry.js";
 import type { CapabilityRouter } from "../capabilities/routing.js";
 import { GENERAL_CHAT_CAPABILITY_ID } from "../capabilities/general_chat/constants.js";
 import type { UserDirectory } from "../users/store.js";
+import { config } from "../config.js";
+import {
+   AMBIENT_MAX_MESSAGES,
+   composeUserText,
+   displayNameOf,
+   hasImages,
+   parentImagesLabel,
+   renderAmbientContext,
+   renderThreadContext,
+   type ContextMessage,
+} from "./turn-context.js";
 
 export interface HandlerDeps {
    registry: CapabilityRegistry;
@@ -94,11 +105,13 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
          if (!shouldRespond(client, message, deps.router.allChannelIds()))
             return;
 
-         const userText = stripBotMention(
-            client,
-            message.content,
-            message.guild,
-         ).trim();
+         // Words (mentions resolved to names) + notes for stickers/files, or a
+         // placeholder for an image-only mention — which used to be dropped
+         // here, before its image was ever looked at.
+         const userText = composeUserText(
+            stripBotMention(client, message.content, message.guild).trim(),
+            message,
+         );
          if (!userText) return;
 
          // Lazily register the Discord user. Idempotent; refreshes tag +
@@ -146,9 +159,36 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
 
                   const history = await buildHistory(client, message);
                   const attachments = await resolveAttachments(message);
+                  const imageRefs = listImageAttachments(message);
+                  const context = await gatherTurnContext(
+                     client,
+                     message,
+                     capability.channelContext === true,
+                  );
+                  // The replied-to message's images ride this turn: historical
+                  // turns are text-only (and DeepSeek 400s on images in assistant
+                  // turns), so the live user turn is the one place they can go.
+                  const room = config.MAX_ATTACHMENT_COUNT - attachments.length;
+                  if (context.parent && room > 0) {
+                     const parentImages = (
+                        await resolveAttachments(context.parent)
+                     ).slice(0, room);
+                     if (parentImages.length > 0) {
+                        attachments.push(...parentImages);
+                        imageRefs.push(...listImageAttachments(context.parent));
+                        context.blocks.push(
+                           parentImagesLabel(
+                              displayNameOf(context.parent),
+                              parentImages.length,
+                              context.parent.author.id === client.user?.id,
+                           ),
+                        );
+                     }
+                  }
+                  const turnText = [...context.blocks, userText].join("\n\n");
                   const turns: Turn[] = normalizeTurns([
                      ...history,
-                     { role: "user", content: userText, attachments },
+                     { role: "user", content: turnText, attachments },
                   ]);
 
                   servedBy = capability.id;
@@ -158,8 +198,9 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                      guildId: message.guildId,
                      userId: message.author.id,
                      userTag: message.author.tag,
+                     userDisplayName: displayNameOf(message),
                      now: new Date(),
-                     attachments: listImageAttachments(message),
+                     attachments: imageRefs,
                      ...(await resolveAuthority(message)),
                   });
 
@@ -168,10 +209,12 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                   log.info(
                      {
                         capability: capability.id,
+                        channelId: message.channelId,
                         user: message.author.tag,
                         len: userText.length,
                         historyTurns: history.length,
                         attachments: attachments.length,
+                        contextBlocks: context.blocks.length,
                      },
                      "Answering question",
                   );
@@ -222,6 +265,69 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
          await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
       }
    });
+}
+
+/**
+ * Context beyond the message's own words: the replied-to message (whose images
+ * the caller attaches), and — only for capabilities that opt in via
+ * `channelContext` — the thread title/opening post and the last few messages of
+ * the channel when the mention isn't a reply.
+ *
+ * Opt-in because ambient text is OTHER members' words: fine as context for
+ * general_chat, whose tools are read-only, but not something a capability with
+ * write tools (calendar, config) should be steered by. Every lookup is
+ * best-effort — a failed fetch costs the context, never the turn.
+ */
+async function gatherTurnContext(
+   client: Client,
+   message: Message,
+   withChannelContext: boolean,
+): Promise<{ parent: Message | null; blocks: string[] }> {
+   const blocks: string[] = [];
+   const refId = message.reference?.messageId;
+   let parent: Message | null = null;
+   if (refId) {
+      // Usually a cache hit: buildHistory fetched the same parent just before.
+      const fetched = await message.channel.messages.fetch(refId).catch(() => null);
+      // Only a member's or our own message — another bot's is not context.
+      if (
+         fetched &&
+         hasImages(fetched) &&
+         (!fetched.author.bot || fetched.author.id === client.user?.id)
+      ) {
+         parent = fetched;
+      }
+   }
+   if (!withChannelContext) return { parent, blocks };
+
+   try {
+      if (message.channel.isThread()) {
+         const starter = await message.channel
+            .fetchStarterMessage()
+            .catch(() => null);
+         blocks.push(
+            renderThreadContext(
+               message.channel.name,
+               starter && starter.id !== message.id ? starter.content : null,
+            ),
+         );
+      }
+      if (!refId) {
+         const recent = await message.channel.messages.fetch({
+            before: message.id,
+            limit: AMBIENT_MAX_MESSAGES,
+         });
+         const block = renderAmbientContext(
+            [...recent.values()] as unknown as ContextMessage[],
+            message,
+            client.user?.id ?? null,
+         );
+         if (block) blocks.push(block);
+      }
+   } catch (err) {
+      log.debug({ err, channelId: message.channelId }, "turn_context.fetch_failed");
+   }
+   return { parent, blocks };
 }
 
 /**

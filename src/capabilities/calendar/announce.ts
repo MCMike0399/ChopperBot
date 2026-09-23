@@ -53,6 +53,11 @@ export function nudgeKey(eventId: number, occurrenceStartMs: number): string {
   return `nudge:${eventId}@${occurrenceStartMs}`;
 }
 
+/** Key for the "the Discord event has no cover image" reminder (one per occurrence). */
+export function bannerKey(eventId: number, occurrenceStartMs: number): string {
+  return `banner:${eventId}@${occurrenceStartMs}`;
+}
+
 /** Discord's hard cap on the `nonce` field of a message create. */
 export const MAX_NONCE_LENGTH = 25;
 
@@ -135,6 +140,68 @@ export function nudgesDue(input: {
     .filter((t) => t.occurrence.startAtMs >= nowMs && t.occurrence.startAtMs <= horizon)
     .filter((t) => !isAnnounced(nudgeKey(t.occurrence.id, t.occurrence.startAtMs)))
     .sort((a, b) => a.occurrence.startAtMs - b.occurrence.startAtMs);
+}
+
+/**
+ * Tomorrow's occurrences whose Discord event exists but has **no cover image**
+ * — the day-before "súbanle portada" reminder for mods.
+ *
+ * Why tomorrow, at the announce hour: the next morning's announcement links the
+ * Discord event, and its embed is the cover. A day of lead time is enough for
+ * someone to find the flyer; the same morning is not (live 2026-09-23: both
+ * "Idea Vilariño" Discord events were coverless, Part 1 at 8pm that day).
+ *
+ * `imageUrl === null` is the only trigger. `undefined` means "unknown" (a
+ * lookup that didn't report covers), and a reminder about a banner that may well
+ * exist is noise. An occurrence with no Discord event at all is the missing-event
+ * nudge's job, not this one.
+ */
+export function bannerRemindersDue(input: {
+  targets: readonly AnnounceTarget[];
+  nowMs: number;
+  hour?: number;
+  isAnnounced: (key: string) => boolean;
+}): AnnounceTarget[] {
+  const { targets, nowMs, isAnnounced } = input;
+  const hour = input.hour ?? DEFAULT_ANNOUNCE_HOUR;
+  const now = localParts(nowMs);
+  if (now.hour < hour) return [];
+  const tomorrow = localParts(nowMs + 86_400_000);
+  return targets
+    .filter((t) => t.discordEvent !== null && t.discordEvent.imageUrl === null)
+    .filter((t) => {
+      const p = localParts(t.occurrence.startAtMs);
+      return p.year === tomorrow.year && p.month === tomorrow.month && p.day === tomorrow.day;
+    })
+    .filter((t) => !isAnnounced(bannerKey(t.occurrence.id, t.occurrence.startAtMs)))
+    .sort((a, b) => a.occurrence.startAtMs - b.occurrence.startAtMs);
+}
+
+/**
+ * The reminder text. Gentle on purpose — it's a nice-to-have, not a failure —
+ * and actionable in one reply: the calendar channel already turns "ponle esta
+ * portada al #N" + an attached image into the cover (`calendar_sync_discord_event`
+ * with `image_url`), so the ask names that exact sentence and the id.
+ */
+export function renderBannerReminder(targets: readonly AnnounceTarget[]): string {
+  const one = targets.length === 1;
+  const lines = [
+    one
+      ? '🖼️ **Recordatorio amable:** el evento de mañana todavía no tiene **imagen de portada** en Discord:'
+      : '🖼️ **Recordatorio amable:** estos eventos de mañana todavía no tienen **imagen de portada** en Discord:',
+  ];
+  for (const t of targets) {
+    const link = t.discordEventUrl ? ` · ${t.discordEventUrl}` : '';
+    lines.push(`- **#${t.occurrence.id} ${t.occurrence.title}** — mañana a las ${formatLocalClock(t.occurrence.startAtMs)}${link}`);
+  }
+  const example = one ? `#${targets[0]!.occurrence.id}` : '#<id>';
+  lines.push(
+    '',
+    'Con portada el evento luce mucho mejor en la lista de Eventos y en el anuncio de mañana. ' +
+      `Si ya tienen el flyer, **respondan a este mensaje adjuntándolo** con *"ponle esta portada al ${example}"* y yo la subo. ` +
+      'Si no lleva flyer, no pasa nada: el anuncio sale igual. 💚',
+  );
+  return lines.join('\n');
 }
 
 /** Render the mention prefix for the announcement (`everyone` is a valid token). */
@@ -318,4 +385,63 @@ ${list}
 Responde SOLO con este JSON, sin texto alrededor:
 {"discord_event_id": "<el id exacto de la lista>" o null, "reason": "<una frase corta>"}
 Usa el valor JSON \`null\` (sin comillas), nunca la cadena "null".`;
+}
+
+/**
+ * Capitalized words a sentence may start with that are never a person's name.
+ * Only consulted for words that are NOT in the brief — anything the brief says
+ * (title, place, speaker, the voice examples) is always allowed.
+ */
+const COMMON_CAPITALIZED = new Set(
+  (
+    'a ahi ahora al alla alli amixes amigxs anda animo animense aprovechen asi atentxs aqui asamblea aviso ' +
+    'bandaaa banda bienvenidxs buenas buenos camaradas caiganle chequen compas companerxs con cuando cualquier ' +
+    'de del desde despues dia el ella ellas ellos en entonces es esa ese eso esta estan estaremos este esto estos ' +
+    'evento eventos gente habra hay hola hoy junto la las les lleguen lo los llego manana mas muchachxs muchachos ' +
+    'muchachas nada ni no nos nosotrxs nuestra nuestro nuestras nuestros o oigan para pero por porque pues que ' +
+    'recuerden se sea sera si sin sobre somos son su sus tambien te tendremos tenemos todas todos todxs traigan ' +
+    'tu un una unete unanse va vamos vengan ven veremos y ya yo lxs chingon chido hora horas sala salas ' +
+    'lunes martes miercoles jueves viernes sabado domingo enero febrero marzo abril mayo junio julio agosto ' +
+    'septiembre octubre noviembre diciembre cdmx discord'
+  ).split(/\s+/),
+);
+
+function foldWord(w: string): string {
+  return w.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
+/**
+ * Title-case words in a model-written community post that appear NOWHERE in
+ * what the model was given — i.e. names it made up.
+ *
+ * Why this exists (live 2026-09-21, event #40): the brief said "Yeti nos
+ * explicará…", and the 10:00 announcement to the whole server said "**Andrés**
+ * nos va a explicar…". "Andrés" is in no calendar row, no Discord event, no
+ * prompt: the model invented a speaker. The prompt already said "no inventes
+ * ponentes"; a rule the model can break needs a check the code enforces.
+ *
+ * Deliberately narrow, so it can gate a post without flagging normal prose:
+ *  - only Title-case words (ALL-CAPS shouting like "ASAMBLEA" is style);
+ *  - anything present in `sources` (the whole system prompt, which carries
+ *    every fact and every style example) is allowed, accent/case-folded;
+ *  - common sentence-starters and imperative/1st-plural verb shapes
+ *    ("Pónganse", "Vamos", "Acompáñennos") are allowed.
+ * A miss costs a retry (then the deterministic template), never a bad post.
+ */
+export function inventedNames(text: string, sources: readonly string[]): string[] {
+  const vocab = new Set<string>();
+  for (const src of sources) {
+    for (const w of src.match(/\p{L}+/gu) ?? []) vocab.add(foldWord(w));
+  }
+  const out: string[] = [];
+  const cleaned = text.replace(/https?:\/\/\S+/g, ' ').replace(/<[@#&!:][^>]*>/g, ' ');
+  for (const w of cleaned.match(/\p{L}+/gu) ?? []) {
+    if (w.length < 3) continue;
+    if (!/^\p{Lu}\p{Ll}/u.test(w)) continue; // Title-case only
+    const f = foldWord(w);
+    if (vocab.has(f) || COMMON_CAPITALIZED.has(f)) continue;
+    if (/(nse|mos|nnos|nle|nles|nlo|nla)$/.test(f)) continue; // verb shapes, not names
+    if (!out.includes(w)) out.push(w);
+  }
+  return out;
 }

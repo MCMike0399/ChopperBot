@@ -103,27 +103,51 @@ describe("mapBatchSegments", () => {
       ]);
    });
 
-   it("drops segments whose midpoint falls in a silence gap (concat hallucination)", () => {
+   it("drops whisper's stock hallucinations wherever they land", () => {
       const entries = mapBatchSegments(
-         [{ startMs: 2100, endMs: 2900, text: "Subtítulos por la comunidad" }],
+         [
+            { startMs: 2100, endMs: 2900, text: "Subtítulos por la comunidad" },
+            { startMs: 200, endMs: 900, text: "[Música]" },
+            { startMs: 3200, endMs: 4000, text: "¡Suscríbete!" },
+         ],
          slots,
       );
       expect(entries[0]!.segments).toEqual([]);
       expect(entries[1]!.segments).toEqual([]);
    });
 
-   it("clamps a segment that bleeds across a join to its owning burst", () => {
+   it("keeps real speech that straddles a join — goes to the burst it overlaps most", () => {
+      // 2026-09-23 audit: the midpoint rule dropped «Y abstención.» and a
+      // proposed date this way. Overlap: 300 ms with burst 1, 1200 ms with burst 2.
       const entries = mapBatchSegments(
-         [{ startMs: 1500, endMs: 3500, text: "cruza la unión" }],
+         [{ startMs: 1700, endMs: 4200, text: "la segunda semana de octubre" }],
          slots,
       );
-      // midpoint 2500 → the gap: dropped. Midpoint just inside burst 1:
-      const entries2 = mapBatchSegments(
+      expect(entries[0]!.segments).toEqual([]);
+      expect(entries[1]!.segments).toEqual([
+         { startMs: 0, endMs: 1200, text: "la segunda semana de octubre" },
+      ]);
+   });
+
+   it("a segment entirely inside the gap or past the file end goes to the nearest burst", () => {
+      const entries = mapBatchSegments(
+         [
+            { startMs: 2100, endMs: 2400, text: "Y abstención." },
+            { startMs: 5200, endMs: 5900, text: "actividades." },
+         ],
+         slots,
+      );
+      expect(entries[0]!.segments.map((s) => s.text)).toEqual(["Y abstención."]);
+      expect(entries[0]!.segments[0]).toEqual({ startMs: 2000, endMs: 2000, text: "Y abstención." });
+      expect(entries[1]!.segments.map((s) => s.text)).toEqual(["actividades."]);
+   });
+
+   it("clamps a segment that bleeds across a join to its owning burst", () => {
+      const entries = mapBatchSegments(
          [{ startMs: 500, endMs: 2600, text: "cruza la unión" }],
          slots,
       );
-      expect(entries[0]!.segments.length + entries[1]!.segments.length).toBe(0);
-      expect(entries2[0]!.segments).toEqual([
+      expect(entries[0]!.segments).toEqual([
          { startMs: 500, endMs: 2000, text: "cruza la unión" },
       ]);
    });
@@ -284,7 +308,7 @@ describe.skipIf(!hasFfmpeg)("LiveTranscriber", () => {
             );
             if (seq < LIVE_FLUSH_MAX_BURSTS) expect(t.calls).toHaveLength(0);
          }
-         await new Promise((r) => setTimeout(r, 400)); // flush is fire-and-forget
+         await live.drain(dir); // deterministic: waits for the fire-and-forget flush
          expect(t.calls).toEqual(["batch-001-Ana.wav"]);
          expect(readLedger(dir).size).toBe(LIVE_FLUSH_MAX_BURSTS);
       } finally {
@@ -308,10 +332,71 @@ describe.skipIf(!hasFfmpeg)("LiveTranscriber", () => {
                burst({ seq, file, bytes: PCM_BYTES_PER_SECOND }),
             );
          }
-         await new Promise((r) => setTimeout(r, 400));
+         await live.drain(dir); // a failed batch still resolves drain
          expect(readLedger(dir).size).toBe(0); // finalize will pick them all up
       } finally {
          rmSync(dir, { recursive: true, force: true });
       }
+   });
+});
+
+describe("buildWhisperPrompt", () => {
+   it("carries vocabulary, title and cleaned participant names", async () => {
+      const { buildWhisperPrompt } = await import("../live.js");
+      const p = buildWhisperPrompt("asamblea general", ["tlacuache ✩‧₊˚", "Ajolotx", "Ajolotx", "🌙", "123456"]);
+      expect(p).toContain("Revolución Z (RevZ)");
+      expect(p).toContain("Sesión: asamblea general.");
+      expect(p).toContain("Participan: tlacuache, Ajolotx.");
+   });
+
+   it("stays under the cap with a huge roster", async () => {
+      const { buildWhisperPrompt } = await import("../live.js");
+      const names = Array.from({ length: 200 }, (_, i) => `Participante${i}`);
+      expect(buildWhisperPrompt("x", names).length).toBeLessThanOrEqual(600);
+   });
+});
+
+describe.skipIf(!hasFfmpeg)("LiveTranscriber.drain", () => {
+   it("resolves only after the running batch is in the ledger", async () => {
+      // 2026-09-23 audit: finalize used to read the ledger while a live batch
+      // was still running, and re-transcribed those bursts (~43% of the wait).
+      const { LiveTranscriber } = await import("../live.js");
+      const dir = mkdtempSync(join(tmpdir(), "minutas-drain-"));
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const slow: Transcriber = {
+         isAvailable: () => true,
+         transcribe: async (_wav, outBase) => {
+            await gate;
+            writeFileSync(`${outBase}.json`, JSON.stringify({ transcription: [] }));
+            return [{ startMs: 0, endMs: 500, text: "hola" }];
+         },
+      };
+      try {
+         mkdirSync(join(dir, ARTIFACTS.audioDir), { recursive: true });
+         mkdirSync(join(dir, ARTIFACTS.whisperDir), { recursive: true });
+         const live = new LiveTranscriber(slow);
+         for (let seq = 1; seq <= LIVE_FLUSH_MAX_BURSTS; seq++) {
+            const file = `audio/${String(seq).padStart(3, "0")}-Ana.pcm`;
+            writeFileSync(join(dir, file), Buffer.alloc(PCM_BYTES_PER_SECOND));
+            live.enqueue(dir, burst({ seq, file, bytes: PCM_BYTES_PER_SECOND }));
+         }
+         let drained = false;
+         const d = live.drain(dir).then(() => (drained = true));
+         await new Promise((r) => setTimeout(r, 300));
+         expect(drained).toBe(false); // the batch is still running
+         expect(readLedger(dir).size).toBe(0);
+         release();
+         await d;
+         expect(readLedger(dir).size).toBe(LIVE_FLUSH_MAX_BURSTS);
+      } finally {
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("with nothing running, resolves immediately", async () => {
+      const { LiveTranscriber } = await import("../live.js");
+      const live = new LiveTranscriber({ isAvailable: () => true, transcribe: async () => [] });
+      await expect(live.drain("/nonexistent")).resolves.toBeUndefined();
    });
 });

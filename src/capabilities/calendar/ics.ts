@@ -13,7 +13,7 @@
  * duplicating it.
  */
 import { DEFAULT_TIMEZONE, WALL_CLOCK_OFFSET_MS } from './time.js';
-import type { OccurrenceOverride, RecurrenceFreq } from './recurrence.js';
+import { ruleOf, weekdayOrdinal, WEEKDAYS, type OccurrenceOverride, type RecurrenceFreq } from './recurrence.js';
 
 export interface IcsEvent {
   id: number;
@@ -24,6 +24,10 @@ export interface IcsEvent {
   end_at: number | null; // UTC ms
   recurrence_freq: RecurrenceFreq | null;
   recurrence_until: number | null; // UTC ms, inclusive last-occurrence cap
+  /** Rule modifiers (see `RecurrenceRule`); absent = the plain rule. */
+  recurrence_interval?: number | null;
+  recurrence_byday?: string | null;
+  recurrence_monthly?: string | null;
 }
 
 export interface BuildCalendarOptions {
@@ -40,7 +44,33 @@ const RRULE_FREQ: Record<RecurrenceFreq, string> = {
   daily: 'DAILY',
   weekly: 'WEEKLY',
   monthly: 'MONTHLY',
+  yearly: 'YEARLY',
 };
+
+/**
+ * The RRULE for a master row. Every modifier has a direct RFC 5545 spelling,
+ * which is why the rule model was chosen the way it was: the file members
+ * import must describe the same dates the board draws.
+ *   cada 2 semanas, martes y jueves → FREQ=WEEKLY;INTERVAL=2;BYDAY=TU,TH
+ *   el segundo martes de cada mes   → FREQ=MONTHLY;BYDAY=2TU
+ *   el último viernes de cada mes   → FREQ=MONTHLY;BYDAY=-1FR
+ */
+export function rruleFor(e: IcsEvent): string | null {
+  const rule = ruleOf(e);
+  if (!rule) return null;
+  let rrule = `RRULE:FREQ=${RRULE_FREQ[rule.freq]}`;
+  if (rule.interval > 1) rrule += `;INTERVAL=${rule.interval}`;
+  if (rule.byWeekday) rrule += `;BYDAY=${rule.byWeekday.join(',')}`;
+  if (rule.monthly) {
+    const dow = WEEKDAYS[new Date(e.start_at + WALL_CLOCK_OFFSET_MS).getUTCDay()]!;
+    rrule += `;BYDAY=${rule.monthly === 'last_weekday' ? -1 : weekdayOrdinal(e.start_at)}${dow}`;
+  }
+  if (e.recurrence_until !== null) {
+    // UNTIL must be UTC when DTSTART carries a TZID (RFC 5545 §3.3.10).
+    rrule += `;UNTIL=${utcStamp(e.recurrence_until)}`;
+  }
+  return rrule;
+}
 
 /** Build a complete VCALENDAR document (CRLF-terminated, folded). */
 export function buildCalendar(events: IcsEvent[], opts: BuildCalendarOptions): string {
@@ -92,12 +122,8 @@ function vevent(e: IcsEvent, nowMs: number, overrides: OccurrenceOverride[]): st
   if (e.end_at !== null && e.end_at > e.start_at) {
     out.push(`DTEND;TZID=${DEFAULT_TIMEZONE}:${localStamp(e.end_at)}`);
   }
-  if (e.recurrence_freq !== null) {
-    let rrule = `RRULE:FREQ=${RRULE_FREQ[e.recurrence_freq]}`;
-    if (e.recurrence_until !== null) {
-      // UNTIL must be UTC when DTSTART carries a TZID (RFC 5545 §3.3.10).
-      rrule += `;UNTIL=${utcStamp(e.recurrence_until)}`;
-    }
+  const rrule = rruleFor(e);
+  if (rrule !== null) {
     out.push(rrule);
     // Cancelled occurrences → EXDATE at their ORIGINAL anchor time.
     const cancelled = overrides.filter((o) => o.cancelled);

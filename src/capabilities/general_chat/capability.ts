@@ -53,6 +53,8 @@ const ASSISTANT_CALENDAR_TOOLS = [
  */
 export class GeneralChatCapability implements Capability {
    readonly id = GENERAL_CHAT_CAPABILITY_ID;
+   /** Read-only tools → safe to see the channel's recent messages as context. */
+   readonly channelContext = true;
    readonly description =
       "Asistente de la comunidad y conversación base de ChopperBot. Responde desde los principios del servidor, orienta a los canales correctos y consulta el calendario en solo lectura.";
 
@@ -140,6 +142,7 @@ export class GeneralChatCapability implements Capability {
             snapshot,
             this.resolveChannelName(ctx.channelId),
             liveHowTo,
+            ctx.userDisplayName ?? null,
          ),
          tools: composeToolSources(sources),
          // Same `low` tier as the profile-less branch above, and for the same

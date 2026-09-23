@@ -20,6 +20,7 @@ import {
 import {
    generateMinutes,
    renderMinutesPost,
+   renderMinutesSummaryPost,
    type MinutesMeta,
 } from "./minutes.js";
 import { minioPrefixFor, type SessionManifest } from "./session.js";
@@ -46,6 +47,8 @@ interface ChatLine {
    t: number;
    author: string;
    content: string;
+   messageId?: string;
+   poll?: { question: string; answers: string[] };
 }
 
 /**
@@ -71,7 +74,9 @@ export async function finalizeSession(
    const bursts = await transcribeBursts(deps, dir, manifest);
 
    // ── 2. Merge speech + chat into the draft timeline ────────────────────────
-   const chat = await readChat(dir, manifest.startedAt);
+   const chat = await readChat(dir, manifest.startedAt, (lines) =>
+      withPollResults(deps, manifest.channelId, lines),
+   );
    const timeline = buildTimeline(bursts, chat);
    const transcriptMd = renderTranscript(timeline);
    await writeFile(
@@ -136,7 +141,7 @@ export async function finalizeSession(
       const published = await publishMinutes({
          client: deps.client,
          channelId: outputChannelId,
-         docText: renderMinutesPost(minutesBody, meta),
+         docText: renderMinutesSummaryPost(minutesBody, meta, `minuta-${sessionId}.md`),
          minutesMd,
          fileBaseName: sessionId,
       });
@@ -301,6 +306,50 @@ async function transcribeBursts(
    return bursts.sort((a, z) => a.startedAtMs - z.startedAtMs);
 }
 
+/**
+ * Replace each captured poll's "[encuesta: «…»]" note with its tallies, read
+ * from Discord at finalize (the poll usually closed during the meeting). The
+ * assemblies vote with Discord polls, and until now the minutes only knew a
+ * result if somebody read it out loud. Best-effort: a poll we can't fetch keeps
+ * its question and options.
+ */
+async function withPollResults(
+   deps: FinalizeDeps,
+   channelId: string,
+   lines: ChatLine[],
+): Promise<ChatLine[]> {
+   if (!lines.some((l) => l.poll && l.messageId)) return lines;
+   const channel = await deps.client.channels.fetch(channelId).catch(() => null);
+   const fetchMessage =
+      channel && "messages" in channel
+         ? (id: string) =>
+              (channel as import("discord.js").TextBasedChannel).messages.fetch(id).catch(() => null)
+         : null;
+   const out: ChatLine[] = [];
+   for (const line of lines) {
+      if (!line.poll || !line.messageId) {
+         out.push(line);
+         continue;
+      }
+      let summary = `opciones: ${line.poll.answers.join(" / ")}`;
+      const msg = fetchMessage ? await fetchMessage(line.messageId) : null;
+      if (msg?.poll) {
+         const tallies = [...msg.poll.answers.values()].map(
+            (a) => `${a.text ?? "?"} (${a.voteCount} ${a.voteCount === 1 ? "voto" : "votos"})`,
+         );
+         summary = `${msg.poll.resultsFinalized ? "resultado final" : "votos al cierre"}: ${tallies.join(", ")}`;
+      }
+      out.push({
+         ...line,
+         content: line.content.replace(
+            /\[encuesta: «([^»]*)»\]/,
+            (_m, q: string) => `[encuesta: «${q}» — ${summary}]`,
+         ),
+      });
+   }
+   return out;
+}
+
 async function readBurstManifest(dir: string) {
    try {
       const raw = await readFile(join(dir, ARTIFACTS.bursts), "utf8");
@@ -316,13 +365,16 @@ async function readBurstManifest(dir: string) {
 async function readChat(
    dir: string,
    sessionStartMs: number,
+   enrich?: (lines: ChatLine[]) => Promise<ChatLine[]>,
 ): Promise<ChatNote[]> {
    try {
       const raw = await readFile(join(dir, ARTIFACTS.chat), "utf8");
-      return raw
+      let lines = raw
          .split("\n")
          .filter((l) => l.trim())
-         .map((l) => JSON.parse(l) as ChatLine)
+         .map((l) => JSON.parse(l) as ChatLine);
+      if (enrich) lines = await enrich(lines);
+      return lines
          .map((l) => ({
             atMs: l.t - sessionStartMs,
             author: l.author,
@@ -349,12 +401,18 @@ function buildMeta(
       minutes >= 60
          ? `${Math.floor(minutes / 60)} h ${minutes % 60} min`
          : `${minutes} min`;
+   const aliases = Object.entries(manifest.aliases ?? {})
+      .map(([id, names]) => ({ name: manifest.participants[id], names }))
+      .filter((a): a is { name: string; names: string[] } => !!a.name && a.names.length > 0)
+      .map((a) => `${a.name} (también aparece como ${a.names.join(", ")})`);
    return {
       title: row.title ?? manifest.channelName ?? "sesión de voz",
       channelName: manifest.channelName ?? row.channel_id,
       dateLabel,
       durationLabel,
       participants,
+      startedAtMs: manifest.startedAt,
+      ...(aliases.length > 0 ? { aliases } : {}),
    };
 }
 

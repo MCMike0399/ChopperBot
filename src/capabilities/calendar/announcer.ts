@@ -42,6 +42,10 @@ import {
   announceNonce,
   announcementsDue,
   appendEventLink,
+  bannerKey,
+  bannerRemindersDue,
+  inventedNames,
+  renderBannerReminder,
   nudgeKey,
   nudgesDue,
   prefixMentions,
@@ -123,6 +127,8 @@ export interface AnnounceRunReport {
   announced: AnnouncementResult[];
   /** Events (today/tomorrow) still missing a Discord scheduled event. */
   nudged: Array<{ eventId: number; title: string; startAtLocal: string }>;
+  /** Tomorrow's events whose Discord event has no cover image (day-before reminder). */
+  bannerReminded?: Array<{ eventId: number; title: string; startAtLocal: string }>;
   error?: string;
 }
 
@@ -248,6 +254,36 @@ export class CalendarAnnouncer {
                 channelId: this.deps.getManagementChannelId() ?? 'admin',
                 messageId: null,
                 discordEventId: null,
+              });
+            }
+          }
+        }
+      }
+
+      // Day-before, gentle: tomorrow's Discord events with no cover image.
+      const coverless = bannerRemindersDue({
+        targets,
+        nowMs,
+        hour: opts.force ? 0 : this.deps.getAnnounceHour(),
+        isAnnounced,
+      });
+      if (coverless.length > 0) {
+        const sent = await this.postToMods(guildId, renderBannerReminder(coverless), 'banner_reminder', opts);
+        if (sent) {
+          report.bannerReminded = coverless.map((t) => ({
+            eventId: t.occurrence.id,
+            title: t.occurrence.title,
+            startAtLocal: formatInTimezone(t.occurrence.startAtMs),
+          }));
+          if (!opts.dryRun) {
+            for (const t of coverless) {
+              this.deps.store.recordAnnouncement({
+                announceKey: bannerKey(t.occurrence.id, t.occurrence.startAtMs),
+                eventId: t.occurrence.id,
+                occurrenceStartAt: t.occurrence.startAtMs,
+                channelId: this.deps.getManagementChannelId() ?? 'admin',
+                messageId: null,
+                discordEventId: t.discordEvent?.id ?? null,
               });
             }
           }
@@ -568,24 +604,41 @@ export class CalendarAnnouncer {
 
   /** The announcement text: the model in the community's voice, else the template. */
   private async writeAnnouncement(target: AnnounceTarget, nowMs: number): Promise<string> {
-    try {
-      const written = (
-        await ask({
-          system: renderAnnouncementPrompt(target, nowMs),
-          messages: [{ role: 'user', content: 'Escribe el anuncio de hoy.' }],
-          tools: NO_TOOLS,
-          // Prose written from facts the deterministic path already gathered — no
-          // tools, no multi-step plan, nothing to reason about. `low` keeps the
-          // daily announcement, which runs unattended every day, cheap.
-          effort: 'low',
-        })
-      ).trim();
-      // A model that returns nothing (or a refusal-length stub) must not become
-      // an empty community post — fall through to the template.
-      if (written.length >= 20) return written;
-      log.warn({ eventId: target.occurrence.id, length: written.length }, 'calendar.announce.model_too_short');
-    } catch (err) {
-      log.warn({ err, eventId: target.occurrence.id }, 'calendar.announce.model_failed');
+    const system = renderAnnouncementPrompt(target, nowMs);
+    let ask_ = 'Escribe el anuncio de hoy.';
+    // Two attempts: the second one is told exactly which name it invented.
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      try {
+        const written = (
+          await ask({
+            system,
+            messages: [{ role: 'user', content: ask_ }],
+            tools: NO_TOOLS,
+            // Prose written from facts the deterministic path already gathered — no
+            // tools, no multi-step plan, nothing to reason about. `low` keeps the
+            // daily announcement, which runs unattended every day, cheap. Fidelity
+            // is enforced below by code, not bought with thinking tokens.
+            effort: 'low',
+          })
+        ).trim();
+        // A model that returns nothing (or a refusal-length stub) must not become
+        // an empty community post — fall through to the template.
+        if (written.length < 20) {
+          log.warn({ eventId: target.occurrence.id, length: written.length }, 'calendar.announce.model_too_short');
+          break;
+        }
+        // A speaker the brief never named must not reach the whole server
+        // (live 2026-09-21: "Yeti" in the brief, "Andrés" in the post).
+        const invented = inventedNames(written, [system]);
+        if (invented.length === 0) return written;
+        log.warn({ eventId: target.occurrence.id, attempt, invented, text: written }, 'calendar.announce.invented_names');
+        ask_ =
+          `Escribe el anuncio de hoy. En tu intento anterior escribiste ${invented.map((n) => `"${n}"`).join(', ')}, ` +
+          'que NO aparece en los datos del evento. Nombra solo a quien aparece en "Detalles del calendario"; si no hay nadie, no nombres a nadie.';
+      } catch (err) {
+        log.warn({ err, eventId: target.occurrence.id }, 'calendar.announce.model_failed');
+        break;
+      }
     }
     return renderFallbackAnnouncement(target);
   }
@@ -623,12 +676,27 @@ export class CalendarAnnouncer {
         '(díganme también en qué sala será, si no la tiene).',
     );
 
+    return this.postToMods(guildId, lines.join('\n'), 'nudge', opts);
+  }
+
+  /**
+   * Post a mod-facing housekeeping message (missing Discord event, missing
+   * cover) to the calendar management channel with the approver roles pinged —
+   * falling back to the config channel, because a nudge nobody sees is the
+   * exact failure these exist to fix.
+   */
+  private async postToMods(
+    guildId: string,
+    text: string,
+    kind: 'nudge' | 'banner_reminder',
+    opts: RunOptions,
+  ): Promise<boolean> {
     const mentions = await this.resolveModMentions(guildId);
     const body = mentions.text
-      ? `${lines.join('\n')}\n\n${mentions.notifies ? mentions.text : `Aviso para ${mentions.text}`}`
-      : lines.join('\n');
+      ? `${text}\n\n${mentions.notifies ? mentions.text : `Aviso para ${mentions.text}`}`
+      : text;
     if (opts.dryRun) {
-      log.info({ missing: missing.length, body }, 'calendar.announce.nudge_dry_run');
+      log.info({ kind, body }, `calendar.announce.${kind}_dry_run`);
       return true;
     }
 
@@ -647,18 +715,18 @@ export class CalendarAnnouncer {
             allowedMentions: { parse: [], roles: mentions.notifyIds },
           });
           log.info(
-            { channelId: managementChannelId, missing: missing.length, notified: mentions.notifyIds.length },
-            'calendar.announce.nudge_posted',
+            { channelId: managementChannelId, notified: mentions.notifyIds.length },
+            `calendar.announce.${kind}_posted`,
           );
           return true;
         }
       } catch (err) {
-        log.warn({ err, channelId: managementChannelId }, 'calendar.announce.nudge_failed');
+        log.warn({ err, channelId: managementChannelId }, `calendar.announce.${kind}_failed`);
       }
     }
     // Fallback surface (no mod-facing channel resolvable): the nudge still has
     // to ring the approver roles, so they're passed as the explicit allowlist.
-    await sendAdminAlert(this.deps.client, [body], 'calendar.announce.nudge', mentions.notifyIds);
+    await sendAdminAlert(this.deps.client, [body], `calendar.announce.${kind}`, mentions.notifyIds);
     return true;
   }
 

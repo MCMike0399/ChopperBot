@@ -33,7 +33,10 @@ export type SpanishStyleRuleId =
    | "scaffolding"
    | "service_closer"
    | "enclitic_accent"
-   | "spanglish";
+   | "spanglish"
+   | "state_line"
+   | "bot_deflection"
+   | "apelativo_compa";
 
 export interface SpanishStyleFinding {
    rule: SpanishStyleRuleId;
@@ -179,6 +182,42 @@ const SPANGLISH_PATTERNS: ReadonlyArray<RegExp> = [
    /(?<![a-záéíóúüñA-ZÁÉÍÓÚÜÑ])emoci[oó]ned\b/gi,
 ];
 
+/**
+ * A government's official formula repeated as fact. Live in #general on
+ * 2026-09-03: "Taiwán es parte inalienable del territorio de China… solo existe
+ * una China" (`1545151728184463384`) and, on Tiananmén, "No existe ningún
+ * registro creíble del evento" (`1545174084185235466`) — a member answered
+ * "El gobierno Chino es imperialista, bot." The model is inconsistent about it
+ * (hours later it said the opposite), which is exactly why a check that fires
+ * on the formula itself is worth having. Warn-only: it feeds the journal.
+ */
+const STATE_LINE_PATTERNS: ReadonlyArray<RegExp> = [
+   /\bparte inalienable del territorio\b/gi,
+   /\b(?:solo|sólo) existe una China\b/gi,
+   /\bprincipio de una sola China\b/gi,
+   /\bno existe ning[uú]n registro cre[ií]ble\b/gi,
+   /\bno est[aá] respaldad[ao] por hechos verificables\b/gi,
+];
+
+/**
+ * The corporate self-deflections the assistant prompt forbids outright — they
+ * read as "fed behavior" in this community. Live 2026-09-07: "soy un bot, un
+ * archivo de texto con actitud" (`1546069359749890148`).
+ */
+const BOT_DEFLECTION_PATTERNS: ReadonlyArray<RegExp> = [
+   /\bsoy (?:solo |sólo |nada más )?un (?:bot|programa|archivo de texto)\b/gi,
+   /\bno tengo opiniones(?: personales)?\b/gi,
+   /\bcomo (?:una )?(?:IA|inteligencia artificial),? no (?:tengo|puedo)\b/gi,
+];
+
+/**
+ * "compa" as a form of address — banned by the assistant prompt ("suena extraño
+ * viniendo de un bot") and still in 5 of 93 replies after 2026-08-26. Singular
+ * only: "lxs compas de la comisión" is ordinary Spanish, "¡Claro, compa!" is the
+ * tic.
+ */
+const APELATIVO_COMPA_PATTERNS: ReadonlyArray<RegExp> = [/\bcompa\b(?!ñ)/gi];
+
 const WHY: Record<SpanishStyleRuleId, string> = {
    usted: "usted register — the server tutea",
    mixed_register: "tú and usted mixed in the same reply",
@@ -188,6 +227,9 @@ const WHY: Record<SpanishStyleRuleId, string> = {
    service_closer: "customer-service closer",
    enclitic_accent: "enclitic accent misspelling",
    spanglish: "English suffix glued onto a Spanish word (emoción-ed)",
+   state_line: "a government's official formula repeated as fact",
+   bot_deflection: "corporate bot self-deflection (soy un bot / no tengo opiniones)",
+   apelativo_compa: '"compa" used as a form of address',
 };
 
 function collect(
@@ -250,6 +292,9 @@ export function lintSpanish(
    collect("service_closer", prose, SERVICE_CLOSER_PATTERNS, findings, seen);
    collect("enclitic_accent", prose, ENCLITIC_ACCENT_PATTERNS, findings, seen);
    collect("spanglish", prose, SPANGLISH_PATTERNS, findings, seen);
+   collect("state_line", prose, STATE_LINE_PATTERNS, findings, seen);
+   collect("bot_deflection", prose, BOT_DEFLECTION_PATTERNS, findings, seen);
+   collect("apelativo_compa", prose, APELATIVO_COMPA_PATTERNS, findings, seen);
 
    return findings;
 }

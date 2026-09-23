@@ -285,17 +285,23 @@ export class MinutasCapability implements Capability {
     * of backlog that used to wait until 01:00.
     */
    private beginFinalize(closed: ClosedSession): void {
-      this.live?.forget(closed.dir);
-      const leftover = measureSessionDir(closed.dir);
-      log.info(
-         {
-            sessionId: closed.row.id,
-            leftoverBursts: leftover.bursts,
-            leftoverAudioSec: Math.round(leftover.audioSeconds),
-         },
-         "minutas.finalize_started",
-      );
-      void this.finalizeAndReport(closed);
+      void (async () => {
+         // Let running live batches reach the ledger first — otherwise finalize
+         // re-transcribes their bursts (see LiveTranscriber.drain).
+         const drainStarted = Date.now();
+         await this.live?.drain(closed.dir);
+         const leftover = measureSessionDir(closed.dir);
+         log.info(
+            {
+               sessionId: closed.row.id,
+               leftoverBursts: leftover.bursts,
+               leftoverAudioSec: Math.round(leftover.audioSeconds),
+               drainedMs: Date.now() - drainStarted,
+            },
+            "minutas.finalize_started",
+         );
+         await this.finalizeAndReport(closed);
+      })();
    }
 
    /** Auto-end paths (channel emptied, event over, disconnect, max duration). */

@@ -85,3 +85,22 @@ export const ARTIFACTS = {
    audioDir: "audio",
    whisperDir: "transcript",
 } as const;
+
+/**
+ * Community vocabulary fed to whisper as its initial prompt (`--prompt`),
+ * together with the session title and participants' names.
+ *
+ * Why (2026-09-23 audit of 7 real sessions): without it, the `small` model
+ * heard the community's own words as Spanish look-alikes — «Repseta» for RevZ
+ * (~20×, and it reached a published minuta), «Angelote»/«tajolote» for
+ * Ajolote, «QIOS Comorisco» for Kiosco Morisco, and one member's nickname as a
+ * Spanish word (29×, 5× in one minuta including under Compromisos). A/B on three
+ * real clips at `-t 2`: every targeted term came out right, punctuation got
+ * better, and wall time was unchanged. Keep it short: whisper only reads the
+ * last ~224 tokens of a prompt.
+ */
+export const WHISPER_VOCABULARY =
+   "Asamblea de Revolución Z (RevZ) en Discord. ChopperBot, camaradas, compañerxs, comisión, Agitprop, Comité Ajolote, Kiosco Morisco, el Chopo.";
+
+/** Hard cap on the whisper prompt (characters), well inside its token window. */
+export const WHISPER_PROMPT_MAX_CHARS = 600;

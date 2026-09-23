@@ -7,9 +7,15 @@ export interface PublishedMinutes {
 }
 
 /**
- * Post the minutes to the output channel: the composed document chunked under
- * Discord's 2000-char cap (fences preserved), with the full minuta attached to
- * the first message so a long assembly is never lost to chunk truncation.
+ * Post the minutes to the output channel as ONE message: the summary post
+ * (header + Resumen + pointer, see `renderMinutesSummaryPost`) with the full
+ * minuta attached as `minuta-<id>.md`.
+ *
+ * One message on purpose (user request 2026-09-23): the full acta used to be
+ * chunked into the channel, several messages per assembly, flooding
+ * #minutas-de-asambleas. The complete document is the attachment. If the text
+ * ever exceeds Discord's cap anyway, only the first chunk is posted — the file
+ * carries everything, so nothing is lost and the channel stays at one post.
  *
  * The raw transcript is deliberately NOT attached (user decision 2026-08-17):
  * a near-verbatim record of who said what is more than the channel needs and
@@ -34,24 +40,13 @@ export async function publishMinutes(deps: {
          `Minutas output channel ${deps.channelId} is not sendable`,
       );
    }
-   const files = [
-      new AttachmentBuilder(Buffer.from(deps.minutesMd, "utf8"), {
-         name: `minuta-${deps.fileBaseName}.md`,
-      }),
-   ];
-   const chunks = chunkBotReply(deps.docText);
-   let firstId = "";
-   let firstUrl = "";
-   for (let i = 0; i < chunks.length; i++) {
-      const sent = await channel.send({
-         content: chunks[i]!,
-         files: i === 0 ? files : undefined,
-         allowedMentions: { parse: [] },
-      });
-      if (i === 0) {
-         firstId = sent.id;
-         firstUrl = sent.url;
-      }
-   }
-   return { messageId: firstId, url: firstUrl };
+   const file = new AttachmentBuilder(Buffer.from(deps.minutesMd, "utf8"), {
+      name: `minuta-${deps.fileBaseName}.md`,
+   });
+   const sent = await channel.send({
+      content: chunkBotReply(deps.docText)[0] ?? deps.docText.slice(0, 1900),
+      files: [file],
+      allowedMentions: { parse: [] },
+   });
+   return { messageId: sent.id, url: sent.url };
 }

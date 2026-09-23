@@ -124,3 +124,87 @@ export function formatLocalClock(
     .replace(/\s+/g, ' ')
     .trim();
 }
+
+/**
+ * Named windows a member or mod actually asks about ("¿qué hay este finde?",
+ * "la próxima semana", "este mes"). Resolved here, in code, for the same
+ * reason `when` exists on the payloads: live, the model has turned UTC-6 into
+ * "subtract a calendar day" — a week boundary is the same arithmetic with more
+ * ways to be wrong. Weeks are Monday-first (the board's grid is too).
+ */
+export const NAMED_RANGES = [
+  'hoy',
+  'manana',
+  'esta_semana',
+  'fin_de_semana',
+  'proxima_semana',
+  'este_mes',
+  'proximo_mes',
+  'proximos_7_dias',
+  'proximos_30_dias',
+] as const;
+export type NamedRange = (typeof NAMED_RANGES)[number];
+
+export function isNamedRange(v: unknown): v is NamedRange {
+  return typeof v === 'string' && (NAMED_RANGES as readonly string[]).includes(v);
+}
+
+/** UTC ms of local (CDMX) midnight of the given local calendar date. */
+function localMidnight(year: number, month0: number, day: number): number {
+  return Date.UTC(year, month0, day) - WALL_CLOCK_OFFSET_MS;
+}
+
+/** UTC ms of local midnight at the start of a `YYYY-MM-DD` local date, or null. */
+export function localDateStartMs(key: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(key.trim());
+  if (!m) return null;
+  const ms = localMidnight(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  return localDateKey(ms) === key.trim() ? ms : null;
+}
+
+/**
+ * The [from, to] window (inclusive, UTC ms) for a named range, plus a Spanish
+ * label for the payload. Windows that include today start at local midnight,
+ * not now, so "¿qué hay hoy?" still lists the 10am thing at 3pm (each row's
+ * `when` says it already passed).
+ */
+export function namedRangeWindow(
+  range: NamedRange,
+  nowMs: number,
+): { fromMs: number; toMs: number; label: string } {
+  const wall = new Date(nowMs + WALL_CLOCK_OFFSET_MS);
+  const y = wall.getUTCFullYear();
+  const mo = wall.getUTCMonth();
+  const d = wall.getUTCDate();
+  const today = localMidnight(y, mo, d);
+  const DAY = 86_400_000;
+  // Monday-first index: Mon = 0 … Sun = 6.
+  const dow = (wall.getUTCDay() + 6) % 7;
+  const endOf = (startMs: number, days: number) => startMs + days * DAY - 1;
+  switch (range) {
+    case 'hoy':
+      return { fromMs: today, toMs: endOf(today, 1), label: 'hoy' };
+    case 'manana':
+      return { fromMs: today + DAY, toMs: endOf(today + DAY, 1), label: 'mañana' };
+    case 'esta_semana':
+      return { fromMs: today, toMs: endOf(today - dow * DAY, 7), label: 'esta semana (hasta el domingo)' };
+    case 'fin_de_semana': {
+      // Friday evening counts: the community's weekend events start Friday night.
+      const friday = today + (4 - dow) * DAY;
+      const from = dow > 4 ? today : friday + 18 * 3_600_000;
+      return { fromMs: from, toMs: endOf(today - dow * DAY, 7), label: 'este fin de semana (viernes en la noche a domingo)' };
+    }
+    case 'proxima_semana': {
+      const nextMonday = today + (7 - dow) * DAY;
+      return { fromMs: nextMonday, toMs: endOf(nextMonday, 7), label: 'la próxima semana (lunes a domingo)' };
+    }
+    case 'este_mes':
+      return { fromMs: today, toMs: localMidnight(y, mo + 1, 1) - 1, label: 'lo que queda de este mes' };
+    case 'proximo_mes':
+      return { fromMs: localMidnight(y, mo + 1, 1), toMs: localMidnight(y, mo + 2, 1) - 1, label: 'el próximo mes' };
+    case 'proximos_7_dias':
+      return { fromMs: today, toMs: endOf(today, 8), label: 'los próximos 7 días' };
+    case 'proximos_30_dias':
+      return { fromMs: today, toMs: endOf(today, 31), label: 'los próximos 30 días' };
+  }
+}

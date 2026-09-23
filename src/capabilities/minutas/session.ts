@@ -68,6 +68,14 @@ interface ActiveSession {
    title: string | null;
    connection: VoiceConnection;
    participants: Map<string, string>;
+   /**
+    * Users whose name is settled for this session (first voice burst or chat
+    * line). The starter is pre-seeded with their tag as a placeholder, which
+    * the first real sighting replaces.
+    */
+   named: Set<string>;
+   /** Other names a user showed up under mid-session (renames, nicknames). */
+   aliases: Map<string, Set<string>>;
    seq: number;
    openBursts: Map<string, Promise<void>>;
    maxTimer: NodeJS.Timeout | null;
@@ -89,6 +97,8 @@ export interface SessionManifest {
    startedByTag: string | null;
    startedAt: number;
    participants: Record<string, string>;
+   /** userId → other names seen this session (renames). Absent on old sessions. */
+   aliases?: Record<string, string[]>;
 }
 
 /** One line per audio burst, appended when the burst OPENS (crash-safe: the
@@ -240,6 +250,8 @@ export class MinutasSessions {
          title: params.title ?? null,
          connection,
          participants: new Map([[params.startedBy.id, params.startedBy.tag]]),
+         named: new Set(),
+         aliases: new Map(),
          seq: 0,
          openBursts: new Map(),
          maxTimer: null,
@@ -480,7 +492,7 @@ export class MinutasSessions {
    ): boolean {
       const session = this.active.get(guildId);
       if (!session || session.closed) return false;
-      session.participants.set(userId, speaker);
+      this.noteName(session, userId, speaker);
       this.startBurst(session, userId, opusStream, startedAtMs);
       return true;
    }
@@ -527,15 +539,44 @@ export class MinutasSessions {
       session: ActiveSession,
       userId: string,
    ): Promise<string> {
-      const cached = session.participants.get(userId);
-      if (cached) return cached;
+      if (session.named.has(userId)) return session.participants.get(userId)!;
       let name = userId;
       const member = await session.guild.members
          .fetch(userId)
          .catch(() => null);
       if (member) name = member.displayName || member.user.tag || userId;
-      session.participants.set(userId, name);
-      return name;
+      return this.noteName(session, userId, name);
+   }
+
+   /**
+    * Settle a user's name for the session: the FIRST name seen wins, later
+    * different ones are kept as aliases.
+    *
+    * Why (2026-09-23 audit): the name used to be overwritten by every chat
+    * line, so a member who renamed mid-assembly became two people — 0818: the
+    * same user id spoke under one nickname (8 bursts) and later chatted
+    * under another, and the minuta gave the first one a separate commitment. A new
+    * participant also rewrites session.json, because the live whisper prompt
+    * reads names from it (see `buildWhisperPrompt`).
+    */
+   private noteName(session: ActiveSession, userId: string, name: string): string {
+      if (!session.named.has(userId)) {
+         session.named.add(userId);
+         const placeholder = session.participants.get(userId);
+         session.participants.set(userId, name);
+         if (placeholder !== name) this.writeManifest(session);
+         return name;
+      }
+      const settled = session.participants.get(userId)!;
+      if (name && name !== settled) {
+         const set = session.aliases.get(userId) ?? new Set<string>();
+         if (!set.has(name)) {
+            set.add(name);
+            session.aliases.set(userId, set);
+            this.writeManifest(session);
+         }
+      }
+      return settled;
    }
 
    /** Append one voice-channel chat comment to the session's chat.jsonl. */
@@ -553,7 +594,9 @@ export class MinutasSessions {
       this.recordChatLine(session.guild.id, {
          userId: message.author.id,
          author,
-         content: message.content ?? "",
+         content: chatContentOf(message),
+         messageId: message.id,
+         ...(message.poll ? { poll: pollOf(message.poll) } : {}),
       });
    }
 
@@ -564,11 +607,18 @@ export class MinutasSessions {
     */
    recordChatLine(
       guildId: string,
-      line: { userId: string; author: string; content: string },
+      line: {
+         userId: string;
+         author: string;
+         content: string;
+         messageId?: string;
+         poll?: ChatPoll;
+      },
    ): boolean {
       const session = this.active.get(guildId);
       if (!session || session.closed) return false;
-      session.participants.set(line.userId, line.author);
+      // The line keeps the settled name, so one person reads as one person.
+      line = { ...line, author: this.noteName(session, line.userId, line.author) };
       try {
          appendFileSync(
             join(session.dir, ARTIFACTS.chat),
@@ -665,6 +715,13 @@ export class MinutasSessions {
          startedByTag: session.startedBy.tag,
          startedAt: session.startedAtMs,
          participants: Object.fromEntries(session.participants),
+         ...(session.aliases.size > 0
+            ? {
+                 aliases: Object.fromEntries(
+                    [...session.aliases].map(([id, set]) => [id, [...set]]),
+                 ),
+              }
+            : {}),
       };
       try {
          writeFileSync(
@@ -694,4 +751,51 @@ export class MinutasSessions {
       }
       this.active.clear();
    }
+}
+
+/** A Discord poll as captured into chat.jsonl (tallies are fetched at finalize). */
+export interface ChatPoll {
+   question: string;
+   answers: string[];
+}
+
+function pollOf(poll: NonNullable<Message["poll"]>): ChatPoll {
+   return {
+      question: poll.question?.text ?? "",
+      answers: [...poll.answers.values()].map((a) => a.text ?? "").filter(Boolean),
+   };
+}
+
+/**
+ * A chat message as the minutes writer should read it: one line, mentions as
+ * names, and a note for what text can't carry.
+ *
+ * Why (2026-09-23 audit): only `content` was stored, so 262 of 3,472 captured
+ * lines were EMPTY — attachments, stickers and polls — and the assemblies vote
+ * with Discord polls («Ahí está la encuesta», ~22× per long assembly); 56 lines
+ * carried raw `<@id>` the model can't resolve; 35 multi-line messages broke the
+ * one-line draft format.
+ */
+export function chatContentOf(message: Message): string {
+   const names = new Map<string, string>();
+   for (const u of message.mentions?.users?.values() ?? []) {
+      names.set(u.id, message.mentions.members?.get(u.id)?.displayName || u.globalName || u.username);
+   }
+   let text = (message.content ?? "")
+      .replace(/<@!?(\d{15,21})>/g, (whole, id: string) => (names.has(id) ? `@${names.get(id)}` : whole))
+      .replace(/<a?:([\w~]+):\d+>/g, ":$1:")
+      .replace(/\s*\n+\s*/g, " / ")
+      .trim();
+   const extras: string[] = [];
+   const files = [...(message.attachments?.values() ?? [])];
+   const images = files.filter((a) => (a.contentType ?? "").startsWith("image/"));
+   const others = files.filter((a) => !(a.contentType ?? "").startsWith("image/"));
+   if (images.length > 0) extras.push(images.length === 1 ? "[imagen]" : `[${images.length} imágenes]`);
+   if (others.length > 0) extras.push(`[archivo: ${others.map((a) => a.name).join(", ")}]`);
+   for (const st of message.stickers?.values() ?? []) extras.push(`[sticker: ${st.name}]`);
+   if (message.poll) {
+      extras.push(`[encuesta: «${message.poll.question?.text ?? ""}»]`);
+   }
+   text = [text, ...extras].filter(Boolean).join(" ");
+   return text;
 }

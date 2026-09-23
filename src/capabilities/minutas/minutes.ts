@@ -11,6 +11,10 @@ export interface MinutesMeta {
    /** Human duration, e.g. "47 min". */
    durationLabel: string;
    participants: string[];
+   /** Session start (for the date → weekday table). */
+   startedAtMs?: number;
+   /** "Nombre (también aparece como X)" for members who renamed mid-session. */
+   aliases?: string[];
 }
 
 /** Above this the draft is summarized in blocks first (map), then merged. */
@@ -28,7 +32,11 @@ export function buildMinutesSystemPrompt(): string {
 
 Reglas duras:
 - Atribuye lo dicho a las personas EXACTAMENTE con el nombre que aparece en la transcripción. Nunca inventes quién dijo algo.
+- **Nombres: la lista de participantes manda.** El texto hablado es automático y oye mal los nombres («Repseta» por «RevZ»; un apodo como «tlacuache» que se oye «Tlacuachi»). Cuando un nombre dicho en voz alta se refiere claramente a alguien de la lista de participantes, escríbelo con la ortografía EXACTA de la lista (sin los adornos decorativos: «tlacuache ✩‧₊˚» → «tlacuache»). Una persona = un solo nombre en toda el acta; si alguien aparece con un alias, usa el nombre principal.
 - No inventes contenido: si algo no está en la transcripción hablada, no existe. La transcripción es automática y puede tener errores; si un tramo es ambiguo, resume lo seguro.
+- **Nada de conocimiento externo.** No completes nombres de autorxs, títulos, fechas ni datos que no se dijeron («Calibán y la bruja» no se vuelve «de Silvia Federici» si nadie lo dijo).
+- **Fechas:** usa la tabla de fechas del encabezado para poner día de la semana y mes. Nunca agregues un mes que no se dijo si la tabla no lo resuelve; «el sábado» o «el 29» se quedan así si no hay forma segura de saber cuál.
+- **Privacidad:** esto se publica al servidor. Si alguien compartió algo personal (salud mental, terapia, diagnósticos, historia de violencia) o se habló del detalle de un caso de acoso/denuncia, NO lo registres con nombre ni con detalles identificables: resume en neutro («se compartieron experiencias personales sobre salud mental»; «se revisó un caso de convivencia y se acordó X») y registra solo lo acordado.
 - El chat NO se publica: no copies comentarios, no armes una sección de chat, no cites «lo que escribieron». Si un comentario aclara un tema hablado, incorpóralo en Resumen/Temas/Acuerdos con las palabras de la minuta, no como cita del chat.
 - Bromas, memes, hipérboles y comentarios en chiste (p. ej. «el 2do aniversario tomamos palacio nacional») NO son acuerdos, compromisos ni temas. El tono de acta es sobrio: lo jocoso del chat o de la sala no entra al registro formal.
 - Estructura EXACTA del acta (markdown de Discord), sin más secciones:
@@ -81,7 +89,7 @@ Estas son las notas de extracción de toda la reunión, parte por parte:
 
 ${notes}
 
-Con esas notas, redacta la minuta completa con la estructura indicada.`;
+Con esas notas, redacta la minuta completa con la estructura indicada. Las notas vienen por partes, pero el acta es UNA reunión: **fusiona** lo que se repite entre partes (un mismo tema, acuerdo o compromiso va una sola vez, con todo lo que se dijo de él), y no menciones «partes», «bloques» ni «en este tramo» en el acta.`;
 }
 
 function renderMetaBlock(meta: MinutesMeta): string {
@@ -91,7 +99,28 @@ function renderMetaBlock(meta: MinutesMeta): string {
       `Fecha: ${meta.dateLabel}`,
       `Duración: ${meta.durationLabel}`,
       `Participantes: ${meta.participants.join(", ") || "desconocidos"}`,
+      ...(meta.aliases?.length ? [`Alias vistos en la sesión: ${meta.aliases.join("; ")}`] : []),
+      ...(meta.startedAtMs !== undefined ? [renderDateTable(meta.startedAtMs)] : []),
    ].join("\n");
+}
+
+/**
+ * Weekday ↔ date for the two weeks before and six after the session, so "el
+ * sábado 29" resolves by lookup, not by the model's calendar arithmetic.
+ * Live miss (0818): chat «sábado 29» (= Sat 29 Aug) became «sábado 29 de
+ * septiembre», which is a Tuesday.
+ */
+export function renderDateTable(startedAtMs: number): string {
+   const fmt = new Intl.DateTimeFormat("es-MX", {
+      timeZone: "America/Mexico_City",
+      weekday: "short",
+      day: "numeric",
+      month: "short",
+   });
+   const DAY = 86_400_000;
+   const rows: string[] = [];
+   for (let d = -14; d <= 42; d++) rows.push(fmt.format(new Date(startedAtMs + d * DAY)));
+   return `Tabla de fechas (hora CDMX; la sesión es el día ${fmt.format(new Date(startedAtMs))}): ${rows.join(" · ")}`;
 }
 
 /**
@@ -109,6 +138,84 @@ export function renderMinutesPost(
       "",
       minutesBody.trim(),
    ].join("\n");
+}
+
+/** The body lines under one `## <heading>` section (empty when absent). */
+function sectionLines(body: string, heading: RegExp): string[] {
+   const out: string[] = [];
+   let inside = false;
+   for (const line of body.split("\n")) {
+      const t = line.trim();
+      if (/^##\s+\S/.test(t)) {
+         inside = heading.test(t);
+         continue;
+      }
+      if (inside) out.push(line);
+   }
+   return out;
+}
+
+/** Bullet items ("- …", "* …", "1. …") in a section, ignoring "ninguno"-style placeholders. */
+function countItems(lines: readonly string[]): number {
+   return lines.filter((l) => {
+      const m = /^\s*(?:[-*•]|\d+[.)])\s+(.*)$/.exec(l);
+      return m !== null && !/^(?:_?\(?)?(ningun[oa]s?|no hubo|sin |n\/a)/i.test(m[1]!.trim());
+   }).length;
+}
+
+/** Room for the summary inside one Discord message (2000 cap, with margin). */
+const SUMMARY_POST_MAX_CHARS = 1900;
+
+/**
+ * The Discord post for a minuta: header + **only the Resumen** + a pointer to
+ * the attached `.md`, in ONE message.
+ *
+ * Why (user request 2026-09-23): the full acta was being chunked into the
+ * channel — a 2½-hour assembly is several consecutive messages of Temas /
+ * Acuerdos / Compromisos, which floods #minutas-de-asambleas and buries the
+ * previous sessions. The whole document still ships, byte-identical, as the
+ * attachment (and in the MinIO archive); the channel gets the part people
+ * actually read first. Counting the acuerdos/compromisos in the pointer line
+ * tells a reader whether it's worth opening the file.
+ *
+ * A body with no `## Resumen` (a model that ignored the structure) falls back
+ * to its first paragraph, so the post is never empty. An over-long summary is
+ * cut on a sentence boundary — the file is complete either way.
+ */
+export function renderMinutesSummaryPost(
+   minutesBody: string,
+   meta: MinutesMeta,
+   fileName: string,
+): string {
+   const header = [
+      `# 📜 Minuta — ${meta.title}`,
+      `**Canal:** ${meta.channelName} · **Fecha:** ${meta.dateLabel} · **Duración:** ${meta.durationLabel}`,
+      `**Participaron:** ${meta.participants.join(", ") || "—"}`,
+   ].join("\n");
+   const acuerdos = countItems(sectionLines(minutesBody, /^##\s+Acuerdos/i));
+   const compromisos = countItems(sectionLines(minutesBody, /^##\s+Compromisos/i));
+   const counts = [
+      `${acuerdos} ${acuerdos === 1 ? "acuerdo" : "acuerdos"}`,
+      `${compromisos} ${compromisos === 1 ? "compromiso" : "compromisos"}`,
+   ].join(" y ");
+   const footer = `📎 La minuta completa (temas tratados, ${counts}) va en el archivo adjunto **${fileName}**.`;
+
+   let summary = sectionLines(minutesBody, /^##\s+Resumen\b/i).join("\n").trim();
+   if (!summary) {
+      summary =
+         minutesBody
+            .trim()
+            .split(/\n\s*\n/)
+            .map((p) => p.trim())
+            .find((p) => p && !p.startsWith("#")) ?? "";
+   }
+   const budget = SUMMARY_POST_MAX_CHARS - header.length - footer.length - 20;
+   if (summary.length > budget) {
+      const cut = summary.slice(0, budget);
+      const lastStop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(".\n"));
+      summary = `${(lastStop > budget * 0.5 ? cut.slice(0, lastStop + 1) : cut).trimEnd()} …`;
+   }
+   return [header, "", "## Resumen", summary || "_(sin resumen)_", "", footer].join("\n");
 }
 
 /**

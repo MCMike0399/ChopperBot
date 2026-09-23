@@ -17,6 +17,7 @@ import {
   type CalendarOccurrence,
 } from './store.js';
 import { CalendarToolSource } from './source.js';
+import { describeRecurrence, ruleOf } from './recurrence.js';
 import { OutputChannelPublisher, type CalendarPublisher, type PublishSummary } from './publisher.js';
 import { formatInTimezone, renderTemporalAwareness } from './time.js';
 import { monthPublishAction } from './publisher.js';
@@ -524,7 +525,7 @@ function renderSystemPrompt(
     return `Eres ChopperBot en **modo Calendario (solo consulta)**. Este es el canal donde lxs moderadorxs administran el **calendario GLOBAL** de Revolución Z, y quien te escribe **no es moderadorx**.
 
 # Qué puedes hacer
-- **Consultar** el calendario: \`calendar_list_upcoming\`, \`calendar_search_events\`, \`calendar_get_event\`. Responde con gusto qué eventos vienen, cuándo y dónde.
+- **Consultar** el calendario: \`calendar_list_upcoming\`, \`calendar_search_events\`, \`calendar_get_event\`. Responde con gusto qué eventos vienen, cuándo y dónde. Para "hoy", "este finde", "esta semana", "la próxima semana" o "este mes" pasa \`range\` a \`calendar_list_upcoming\` (la ventana la calcula la herramienta en hora CDMX — no hagas tú las cuentas).
 - **No puedes crear, editar, borrar ni publicar nada**, ni crear eventos de Discord: no tienes esas herramientas en esta conversación.
 
 # Cómo responder
@@ -556,8 +557,9 @@ ${
         .map((e) => {
           const startLocal = formatInTimezone(e.start_at);
           const loc = e.location ? ` @ ${e.location}` : ' @ (sin sala)';
-          const recur = e.recurrence_freq !== null
-            ? ` (serie ${e.recurrence_freq}${e.is_recurring_instance ? `, instancia #${e.occurrence_index}` : ''})`
+          const rule = ruleOf(e);
+          const recur = rule !== null
+            ? ` (serie: ${describeRecurrence(rule, e.master_start_at)}${e.is_recurring_instance ? `, instancia #${e.occurrence_index}` : ''})`
             : '';
           // Whether the Discord event exists is state the model needs BEFORE it
           // answers, not after a tool call: it's what makes "crea el evento"
@@ -649,9 +651,18 @@ No inventes el título ni la hora. Si el mensaje ya **nombra** el evento ("el ev
 ${renderTemporalAwareness(now)}
 
 # Eventos recurrentes
-- Frecuencias soportadas: \`daily\`, \`weekly\`, \`monthly\`. \`start_at_iso\` es la PRIMERA ocurrencia.
-- **UNA sola fila por serie. NUNCA crees un evento por cada ocurrencia** — ni siquiera cuando la serie tiene pocas fechas ("los 4 martes de julio" son UN evento \`weekly\` con \`recurrence_count: 4\`, **no** 4 eventos). El renderizador dibuja cada ocurrencia en su celda automáticamente. Crear una fila por fecha es un error: obliga a editar/borrar cada una por separado.
-- Frecuencias no soportadas ("cada 15 días", "entre semana"): dilo y ofrece la alternativa semanal.
+- \`start_at_iso\` es la PRIMERA ocurrencia. **UNA sola fila por serie. NUNCA crees un evento por cada ocurrencia** — ni siquiera cuando la serie tiene pocas fechas ("los 4 martes de julio" son UN evento \`weekly\` con \`recurrence_count: 4\`, **no** 4 eventos). El renderizador dibuja cada ocurrencia en su celda automáticamente. Crear una fila por fecha es un error: obliga a editar/borrar cada una por separado.
+- Ritmos que sí existen (combínalos; todo es UNA fila):
+  - "todos los días" → \`daily\` · "cada tercer día" → \`daily\` + \`recurrence_interval: 2\`
+  - "cada jueves" → \`weekly\` · **"cada 15 días" / "quincenal" / "una semana sí y otra no"** → \`weekly\` + \`recurrence_interval: 2\` · "cada 3 semanas" → \`weekly\` + \`recurrence_interval: 3\`
+  - "martes y jueves" → \`weekly\` + \`recurrence_weekdays: ["TU","TH"]\` · "entre semana / de lunes a viernes" → \`["MO","TU","WE","TH","FR"]\` · "cada 2 semanas, lunes y miércoles" → interval 2 + esos días
+  - "el 15 de cada mes" → \`monthly\` · "bimestral" / "trimestral" → \`monthly\` + interval 2 / 3
+  - "el primer lunes de cada mes" / "el tercer jueves" → \`monthly\` + \`recurrence_monthly_by: "nth_weekday"\`, con \`start_at_iso\` en ese primer lunes / tercer jueves
+  - "el último viernes de cada mes" → \`monthly\` + \`recurrence_monthly_by: "last_weekday"\`
+  - "cada año" (aniversario del server, una fecha conmemorativa) → \`yearly\`
+- "Quincenal" en México a veces significa "los días 1 y 15". Si el contexto lo sugiere (pagos, cuotas), pregunta UNA vez "¿cada dos semanas, o los días 1 y 15?" — para 1 y 15 son **dos** series mensuales (una el 1, otra el 15).
+- Al confirmar, di el ritmo con \`recurrence_label\` del resultado ("cada 2 semanas (quincenal), los martes"), nunca con los nombres en inglés. Si el resultado trae \`start_adjusted\`, avisa en qué fecha quedó la primera sesión.
+- Si piden algo que de verdad no cabe ("el día hábil 3 de cada mes", "cada luna llena"): dilo corto y ofrece el ritmo más cercano de la lista.
 
 # La peli/tema de la semana NO es un evento nuevo — IMPORTANTE
 Las actividades semanales (club de cine, club de poesía, círculo de lectura…) ya existen como **series recurrentes**, y lxs mods muchas veces deciden la peli o el tema de la semana apenas uno o dos días antes — a veces mandando solo el cartel. Cuando avisen qué se ve/lee/juega esta semana ("esta semana vemos Persepolis", "el jueves toca Persepolis", un cartel de una actividad que ya existe):
@@ -663,6 +674,7 @@ Si la actividad todavía NO existe como serie, ahí sí créala normal.
 ## Rango de una serie (\`recurrence_count\` / \`recurrence_until_iso\`) — IMPORTANTE
 Una serie puede estar **acotada** o ser **indefinida**. Dos formas equivalentes de acotarla (usa UNA, nunca las dos):
 - \`recurrence_count\` — **cuántas veces** se repite, contando la primera: "4 sesiones", "los 3 jueves", "un mes de talleres" → \`recurrence_count: 4\`.
+  Ojo con ritmos que no son semanales: "quincenal durante 2 meses" son ~4 sesiones, "martes y jueves por 3 semanas" son 6. Si dudas de la cuenta, usa \`recurrence_until_iso\` con la última fecha: es imposible contar mal una fecha.
 - \`recurrence_until_iso\` — **hasta qué fecha**: "hasta el 31 de agosto", "hasta que acabe el semestre" (si dan la fecha).
 Reglas:
 - Si la persona **ya dio un rango**, aplícalo sin preguntar. Frases como "todo julio", "durante agosto", "por un mes", "las próximas 6 semanas", "mientras dure el libro (8 capítulos)" **SON un rango** — resuélvelo a un \`recurrence_count\` o una fecha; no lo dejes indefinido.

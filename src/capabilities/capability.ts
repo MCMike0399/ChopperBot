@@ -45,6 +45,15 @@ export interface Capability {
     */
    start?(deps: CapabilityStartDeps): Promise<void>;
 
+   /**
+    * Opt in to channel context on each turn: the thread title/opening post and,
+    * for a mention that isn't a reply, the last few channel messages (see
+    * `gatherTurnContext` in discord/handlers.ts). That text is OTHER members'
+    * words, so only a capability whose tools can't write state should set it —
+    * today general_chat.
+    */
+   readonly channelContext?: boolean;
+
    /** Bot shutdown — close DB handles, flush state. Optional. */
    dispose?(): Promise<void>;
 }
@@ -99,6 +108,8 @@ export interface CapabilityTurnContext extends TurnAuthority {
    guildId: string | null;
    userId: string;
    userTag: string;
+   /** How the community sees the caller (server nickname → global name → username). */
+   userDisplayName?: string;
    /** Injected (not Date.now()) so capabilities are testable with frozen time. */
    now: Date;
    /**

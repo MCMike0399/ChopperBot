@@ -176,6 +176,15 @@ async function main(): Promise<void> {
       );
    }
 
+   if (report.bannerReminded?.length) {
+      console.log("\n--- Evento de mañana sin imagen de portada (recordatorio amable) ---");
+      for (const n of report.bannerReminded)
+         console.log(`  #${n.eventId} ${n.title} — ${n.startAtLocal}`);
+      console.log(
+         "  → en producción esto se publica una vez en el canal de gestión del calendario.",
+      );
+   }
+
    await client.destroy();
    memory.close();
    console.log(`\n${POST ? "Listo (publicado)." : "Listo (nada publicado)."}`);
