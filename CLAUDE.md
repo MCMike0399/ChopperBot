@@ -82,11 +82,11 @@ The live deployment is a **Raspberry Pi** and **this repo directory IS that depl
 
 ## Remote development — when you are on the Mac, not the Pi
 
-**The paragraph above is written from the deployment's point of view, and on the Mac it is false.** This clone at `~/Developer/ChopperBot` is **not** a deployment: no service runs here, `dist/` is only a build artifact, and nothing you edit is live until it reaches the Pi. The live bot is the Pi's working tree at `~/Documentos/ChopperBot`, supervised by `chopperbot.service`.
+**The paragraph above is written from the deployment's point of view, and on the Mac it is false.** This clone at `~/Developer/ChopperBot` is **not** a deployment: no service runs here, `dist/` is only a build artifact, and nothing you edit is live until it reaches the Pi. The live bot is the Pi's working tree at `~/Developer/ChopperBot`, supervised by `chopperbot.service`.
 
 An agent working here therefore has to reach the Pi over `ssh pi` to test anything real and to ship. The load-bearing rules:
 
-1. **Check drift before you read code.** This clone drifts behind `origin/main`, and the Pi's tree may hold uncommitted in-flight work. Run `git fetch origin && git status -sb`, then `ssh pi "cd ~/Documentos/ChopperBot && git status -sb"`. Reasoning about a stale clone is the most common way a Mac-side agent ships a regression.
+1. **Check drift before you read code.** This clone drifts behind `origin/main`, and the Pi's tree may hold uncommitted in-flight work. Run `git fetch origin && git status -sb`, then `ssh pi "cd ~/Developer/ChopperBot && git status -sb"`. Reasoning about a stale clone is the most common way a Mac-side agent ships a regression.
 2. **Test locally, but know the ceiling.** `pnpm run typecheck` + `npx vitest run` + `pnpm run build` are necessary and *not* sufficient: real Discord, MinIO/`workshop`, IG polling, `minutas` transcription and the untracked `calendar/*.pdf` templates exist only on the Pi.
 3. **Deploy = push → pull on the Pi → build on the Pi → restart → verify.** Build on the Pi (aarch64, native `better-sqlite3`); never ship the Mac's `dist/`. Verify with `systemctl --user status` reading `active (running)` **and** observed behavior — green tests are not proof.
 4. **Never** `rsync --delete`, `git reset --hard` or `git checkout .` against the Pi's tree — it may hold the only copy of in-flight work.
