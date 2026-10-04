@@ -47,10 +47,9 @@ export interface Capability {
 
    /**
     * Opt in to channel context on each turn: the thread title/opening post and,
-    * for a mention that isn't a reply, the last few channel messages (see
-    * `gatherTurnContext` in discord/handlers.ts). That text is OTHER members'
-    * words, so only a capability whose tools can't write state should set it —
-    * today general_chat.
+    * the last 100 messages within 30 days, including on replies. That text is
+    * OTHER members' words. Writes must be independently authorized from the
+    * current message; general_chat's ban is bound to an explicit mod request.
     */
    readonly channelContext?: boolean;
 
@@ -110,6 +109,9 @@ export interface CapabilityTurnContext extends TurnAuthority {
    userTag: string;
    /** How the community sees the caller (server nickname → global name → username). */
    userDisplayName?: string;
+   /** Current trigger only — never history/context. Used to bind explicit actions. */
+   requestText?: string;
+   messageId?: string;
    /** Injected (not Date.now()) so capabilities are testable with frozen time. */
    now: Date;
    /**

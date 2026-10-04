@@ -24,15 +24,18 @@ import { GENERAL_CHAT_CAPABILITY_ID } from "../capabilities/general_chat/constan
 import type { UserDirectory } from "../users/store.js";
 import { config } from "../config.js";
 import {
-   AMBIENT_MAX_MESSAGES,
    composeUserText,
    displayNameOf,
    hasImages,
    parentImagesLabel,
-   renderAmbientContext,
    renderThreadContext,
-   type ContextMessage,
 } from "./turn-context.js";
+import {
+   createDiscordConversationProvider,
+   readConversation,
+   RECENT_CHAR_LIMIT,
+   renderConversationContext,
+} from "./conversation.js";
 
 export interface HandlerDeps {
    registry: CapabilityRegistry;
@@ -199,6 +202,12 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                      userId: message.author.id,
                      userTag: message.author.tag,
                      userDisplayName: displayNameOf(message),
+                     requestText: stripBotMention(
+                        client,
+                        message.content,
+                        message.guild,
+                     ).trim(),
+                     messageId: message.id,
                      now: new Date(),
                      attachments: imageRefs,
                      ...(await resolveAuthority(message)),
@@ -271,14 +280,14 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
  * Context beyond the message's own words: the replied-to message (whose images
  * the caller attaches), and — only for capabilities that opt in via
  * `channelContext` — the thread title/opening post and the last few messages of
- * the channel when the mention isn't a reply.
+ * the channel, including replies.
  *
  * Opt-in because ambient text is OTHER members' words: fine as context for
- * general_chat, whose tools are read-only, but not something a capability with
- * write tools (calendar, config) should be steered by. Every lookup is
+ * general_chat, whose ban tool is separately bound to an explicit current
+ * moderator request. Calendar/config do not opt in. Every lookup is
  * best-effort — a failed fetch costs the context, never the turn.
  */
-async function gatherTurnContext(
+export async function gatherTurnContext(
    client: Client,
    message: Message,
    withChannelContext: boolean,
@@ -288,7 +297,9 @@ async function gatherTurnContext(
    let parent: Message | null = null;
    if (refId) {
       // Usually a cache hit: buildHistory fetched the same parent just before.
-      const fetched = await message.channel.messages.fetch(refId).catch(() => null);
+      const fetched = await message.channel.messages
+         .fetch(refId)
+         .catch(() => null);
       // Only a member's or our own message — another bot's is not context.
       if (
          fetched &&
@@ -312,20 +323,40 @@ async function gatherTurnContext(
             ),
          );
       }
-      if (!refId) {
-         const recent = await message.channel.messages.fetch({
-            before: message.id,
-            limit: AMBIENT_MAX_MESSAGES,
-         });
-         const block = renderAmbientContext(
-            [...recent.values()] as unknown as ContextMessage[],
-            message,
-            client.user?.id ?? null,
+      if (message.guildId) {
+         const recent = await readConversation(
+            createDiscordConversationProvider(
+               () => client,
+               message.guildId,
+               message.author.id,
+               message.channelId,
+               client.user?.id ?? null,
+            ),
+            message.channelId,
+            {
+               now: message.createdTimestamp,
+               before: message.id,
+               pages: 1,
+               maxChars: RECENT_CHAR_LIMIT - 600,
+            },
          );
+         const block = renderConversationContext(recent);
          if (block) blocks.push(block);
+         log.info(
+            {
+               channelId: message.channelId,
+               messages: recent.messages.length,
+               chars: block?.length ?? 0,
+               complete: recent.complete,
+            },
+            "conversation.recent_context",
+         );
       }
    } catch (err) {
-      log.debug({ err, channelId: message.channelId }, "turn_context.fetch_failed");
+      log.debug(
+         { err, channelId: message.channelId },
+         "turn_context.fetch_failed",
+      );
    }
    return { parent, blocks };
 }

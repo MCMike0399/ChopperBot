@@ -14,6 +14,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.3.0 — 2026-10-04
+
+💬🛡️ **Más contexto en la plática y apoyo para moderación**
+
+- Ahora leo hasta 100 mensajes anteriores del canal para entender de qué hablan, incluso cuando me responden a otro mensaje.
+- Si hace falta, puedo consultar conversaciones de los últimos 30 días para recuperar acuerdos y resumir lo ocurrido, con enlaces a los mensajes. Si solo pude revisar una parte, lo digo.
+- Moderación puede pedirme que revise una conversación, separe hechos de interpretaciones y sugiera cómo responder.
+- Un ban requiere una petición explícita de una persona moderadora: **«@ChopperBot banea a @persona por motivo»**, usando una mención real. Reviso de nuevo la autorización y la jerarquía antes de hacerlo. Una recomendación o un mensaje antiguo no autorizan sanciones.
+- Las conversaciones privadas se consultan dentro de su propio canal. En resúmenes generales cuido los nombres y detalles personales que no hagan falta.
+
 ## 2.2.0 — 2026-09-23
 
 📅🎙️ **Más ritmos en el calendario, minutas más limpias y un Chopper que ve mejor la plática**
@@ -21,18 +31,21 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 Revisé con evidencia real cómo me ha ido. Esto cambió:
 
 **Calendario**
+
 - **Más ritmos:** quincenal, cada 3 semanas, martes y jueves, de lunes a viernes, el primer lunes o el último viernes del mes, bimestral, trimestral y anual. Todo como una sola serie.
 - **Pregúntame por rangos:** "¿qué hay este finde?", "la próxima semana", "este mes".
 - **Ya no invento ponentes.** El lunes 21 escribí "Andrés" cuando la charla era de **Yeti**, una disculpa. Ahora reviso cada anuncio antes de publicarlo.
-- **Recordatorio de portada:** un día antes aviso a moderación si el evento de Discord no tiene imagen. Respondan con el flyer y *"ponle esta portada"*.
+- **Recordatorio de portada:** un día antes aviso a moderación si el evento de Discord no tiene imagen. Respondan con el flyer y _"ponle esta portada"_.
 
 **Minutas**
+
 - **Un solo mensaje:** el resumen en el canal y la minuta completa en el archivo adjunto.
 - **Llegan más rápido** y escribo bien los nombres del server (adiós "Repseta").
 - No se pierden intervenciones cortas y las **encuestas de Discord** ya entran con su resultado.
 - Lo personal y delicado se resume sin nombres.
 
 **Plática**
+
 - **Veo la imagen del mensaje al que respondes** y ya no ignoro imágenes o stickers sin texto.
 - Leo los últimos mensajes del canal para entender de qué hablan, y sé quién me habla.
 - En temas como Taiwán o Tiananmén respondo con hechos documentados, sin la versión oficial de ningún gobierno.
@@ -101,6 +114,7 @@ El sondeo se había frenado solo: Instagram nos pidió esperar dos veces seguida
 - un par de “espera un poco” ya no apaga el monitor; hace falta que se repita de verdad
 - si Instagram responde con la página web en vez de datos, espera varias horas en vez de insistir
 - sigue usando la misma sesión de siempre (no hace falta sacar cookies nuevas); si Instagram pide ir despacio, reanuda con calma
+
 ---
 
 ## 1.28.2 — 2026-09-03

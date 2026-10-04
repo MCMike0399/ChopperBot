@@ -285,9 +285,54 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
          "calendar_list_upcoming",
          "calendar_search_events",
          "server_channel_info",
+         "server_conversation_history",
          "server_list_channels",
          "server_list_discord_events",
       ]);
+      h.memory.close();
+   });
+
+   test("ban tool requires current explicit request AND moderator authority; ordinary mod turns get review only", async () => {
+      const h = await buildHarness();
+      const ctx = {
+         channelId: "30000000000000000000",
+         guildId: REVZ_GUILD_ID,
+         userId: CALLER_USER,
+         userTag: "tester",
+         now: NOW,
+         messageId: "300000000000000001",
+         requestText: "banea a <@200000000000000001> por acoso",
+      };
+      const member = await h.generalCap.buildTurn(ctx);
+      expect(member.tools.tools.map((t) => t.name)).not.toContain(
+         "server_ban_member",
+      );
+      expect(member.tools.tools.map((t) => t.name)).not.toContain(
+         "server_moderation_review",
+      );
+      const moderator = await h.generalCap.buildTurn({
+         ...ctx,
+         isAdministrator: true,
+         requestText: "revisa qué pasó",
+      });
+      expect(moderator.tools.tools.map((t) => t.name)).toContain(
+         "server_moderation_review",
+      );
+      expect(moderator.tools.tools.map((t) => t.name)).not.toContain(
+         "server_ban_member",
+      );
+      const ban = await h.generalCap.buildTurn({
+         ...ctx,
+         isAdministrator: true,
+      });
+      expect(ban.tools.tools.map((t) => t.name)).toContain("server_ban_member");
+      expect(ban.effort).toBe("high");
+      const generic = await h.generalCap.buildTurn({
+         ...ctx,
+         guildId: GUILD_ID,
+         isAdministrator: true,
+      });
+      expect(generic.tools.tools).toHaveLength(0);
       h.memory.close();
    });
 

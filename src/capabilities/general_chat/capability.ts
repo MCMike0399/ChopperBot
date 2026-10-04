@@ -24,6 +24,15 @@ import {
    ServerDirectoryToolSource,
 } from "./server-tools.js";
 import { loadHowToBlock } from "./howto.js";
+import { createDiscordConversationProvider } from "../../discord/conversation.js";
+import { ConversationToolSource } from "./conversation-tools.js";
+import { isModTurn } from "../mod-authority.js";
+import {
+   BanToolSource,
+   createDiscordBanExecutor,
+   parseBanRequest,
+   verifyLiveModerator,
+} from "./moderation-tools.js";
 
 /** Read-only calendar tools the assistant gets in guilds with a profile, so
  * "¿qué eventos hay esta semana?" is answerable from any channel. Writes stay
@@ -53,10 +62,10 @@ const ASSISTANT_CALENDAR_TOOLS = [
  */
 export class GeneralChatCapability implements Capability {
    readonly id = GENERAL_CHAT_CAPABILITY_ID;
-   /** Read-only tools → safe to see the channel's recent messages as context. */
+   /** Ban writes have an independent gate tied to the current mod message. */
    readonly channelContext = true;
    readonly description =
-      "Asistente de la comunidad y conversación base de ChopperBot. Responde desde los principios del servidor, orienta a los canales correctos y consulta el calendario en solo lectura.";
+      "Asistente de la comunidad: conversa con contexto reciente, consulta calendario e historial y ayuda a moderación a revisar hechos y recomendaciones.";
 
    private getDiscordClient: CapabilityInitDeps["getDiscordClient"] = undefined;
    private getRegistry: CapabilityInitDeps["getRegistry"] = undefined;
@@ -118,8 +127,47 @@ export class GeneralChatCapability implements Capability {
          );
       }
       let liveHowTo: string | null = null;
+      const moderator = isModTurn(this.db, ctx);
+      const banRequest = moderator ? parseBanRequest(ctx.requestText) : null;
       if (profile.serverDirectoryTools && ctx.guildId) {
          const getClient = this.getDiscordClient;
+         sources.push(
+            new ConversationToolSource(
+               createDiscordConversationProvider(
+                  () => getClient(),
+                  ctx.guildId,
+                  ctx.userId,
+                  ctx.channelId,
+                  getClient().user?.id ?? null,
+               ),
+               ctx.channelId,
+               ctx.now.getTime(),
+               ctx.messageId,
+               moderator,
+               () =>
+                  verifyLiveModerator(
+                     () => getClient(),
+                     ctx.guildId!,
+                     ctx.userId,
+                     this.db,
+                  ),
+            ),
+         );
+         if (banRequest && ctx.messageId)
+            sources.push(
+               new BanToolSource(
+                  banRequest,
+                  createDiscordBanExecutor(
+                     () => getClient(),
+                     ctx.guildId,
+                     ctx.userId,
+                     ctx.channelId,
+                     ctx.messageId,
+                     this.db,
+                     banRequest,
+                  ),
+               ),
+            );
          sources.push(
             new ServerDirectoryToolSource(
                createDiscordDirectoryProvider(
@@ -143,13 +191,13 @@ export class GeneralChatCapability implements Capability {
             this.resolveChannelName(ctx.channelId),
             liveHowTo,
             ctx.userDisplayName ?? null,
+            moderator,
+            banRequest && ctx.messageId ? banRequest.targetId : null,
          ),
          tools: composeToolSources(sources),
-         // Same `low` tier as the profile-less branch above, and for the same
-         // reason: the calendar/server-directory tools here are read-only lookups
-         // inside a chat turn, not a state-writing loop. See capability.ts for
-         // which capabilities legitimately declare `high`/`max`.
-         effort: "low",
+         // Chat/history/review remain low. Only a current, independently
+         // authorized moderator ban turns this into a writing loop.
+         effort: banRequest && ctx.messageId ? "high" : "low",
       };
    }
 
