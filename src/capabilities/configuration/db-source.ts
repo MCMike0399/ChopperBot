@@ -50,7 +50,7 @@ export class ConfigDbSource implements ToolSource {
             name: "config_db",
             description:
                "Read-only window into chopperbot.db for understanding application state. `action`:\n" +
-               '• "list_tables" — every user table with row count.\n' +
+               '• "list_tables" — every user table with row count, including framework_moderation_settings and framework_moderation_trail.\n' +
                '• "describe_schema" {table?} — column definitions + CREATE SQL for one table, or the CREATE SQL of every table when omitted. Use this to learn the schema before querying.\n' +
                '• "inspect_table" {name, limit?} — first N raw rows of a table (≤100).\n' +
                '• "migrations" — applied migration versions per capability.\n' +

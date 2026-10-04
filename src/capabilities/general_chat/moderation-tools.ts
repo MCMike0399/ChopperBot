@@ -112,6 +112,8 @@ export function createDiscordBanExecutor(
          const currentRequest = parseBanRequest(raw);
          if (
             trigger.author.id !== userId ||
+            trigger.editedTimestamp ||
+            trigger.webhookId ||
             !currentRequest ||
             currentRequest.targetId !== request.targetId ||
             currentRequest.reason !== request.reason

@@ -266,3 +266,15 @@ describe("stripBotMention", () => {
       );
    });
 });
+
+test("never responds in known log channels or to webhook authors, even with a mention", () => {
+   const client = makeClient();
+   for (const channelId of ["1436112159829397564", "1436110972602417253"]) {
+      const message = makeMessage({ mentioned: true });
+      Object.assign(message, { channelId });
+      expect(shouldRespond(client, message, new Set([channelId]))).toBe(false);
+   }
+   const webhook = makeMessage({ mentioned: true });
+   Object.assign(webhook, { webhookId: "1550000000000000007" });
+   expect(shouldRespond(client, webhook, new Set([CHANNEL]))).toBe(false);
+});

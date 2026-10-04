@@ -22,6 +22,10 @@
  * `{ error: "…" }` for that block instead of failing the whole report. That
  * matters most exactly when something is broken.
  */
+import {
+   ModerationStore,
+   MODERATION_GUILD_ID,
+} from "../../moderation/store.js";
 import { statSync } from "node:fs";
 import type Database from "better-sqlite3";
 import type { Client } from "discord.js";
@@ -103,6 +107,7 @@ function overallStatus(signals: {
 }
 
 export interface HealthReport {
+   moderation: unknown;
    authority: ReturnType<typeof authoritySnapshot>;
    status: "ok" | "degraded" | "down";
    /** Human-readable reasons behind a non-ok status, most important first. */
@@ -421,6 +426,14 @@ export function collectHealth(deps: HealthDeps): HealthReport {
       status: overallStatus({ llmDegraded: llmSnapshot.degraded, problems }),
       problems,
       authority: authoritySnapshot(deps.db),
+      moderation: safe(() => {
+         const store = new ModerationStore(deps.db);
+         return {
+            ...store.settings(MODERATION_GUILD_ID),
+            actions_30_days: store.summary(MODERATION_GUILD_ID, now),
+            note: "Acciones de moderación en 30 días; los rechazos incluyen resultados no confirmados, no prueba de ausencia de efectos.",
+         };
+      }),
       runtime,
       llm,
       capabilities,

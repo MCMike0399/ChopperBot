@@ -362,3 +362,35 @@ describe("live access gates", () => {
       expect(h.fetchMessages).not.toHaveBeenCalled();
    });
 });
+
+describe("partner exception preserves the public-history boundary", () => {
+   test("restricted cross-channel reads need the partner audience proof on every page", async () => {
+      const h = accessHarness();
+      h.setPublic(null);
+      const permits = vi.fn(async () => true);
+      const partner = { permits, workspace: vi.fn(async () => false) };
+      const source = createDiscordConversationProvider(
+         () => h.client,
+         "guild",
+         "caller",
+         "other",
+         "bot",
+         partner as never,
+      );
+      await source.fetchPage(CID, undefined, 100);
+      expect(permits).toHaveBeenCalledWith(h.channel);
+      permits.mockResolvedValueOnce(false);
+      await expect(source.fetchPage(CID, undefined, 100)).rejects.toThrow();
+      expect(h.fetchMessages).toHaveBeenCalledTimes(1);
+      const publicCaller = createDiscordConversationProvider(
+         () => h.client,
+         "guild",
+         "caller",
+         "other",
+         "bot",
+      );
+      await expect(
+         publicCaller.fetchPage(CID, undefined, 100),
+      ).rejects.toThrow();
+   });
+});

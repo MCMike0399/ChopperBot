@@ -18,6 +18,7 @@ import { lintSpanish } from "../spanish-style.js";
 import {
    renderGeneralChatPrompt,
    renderAssistantPrompt,
+   renderModerationPartnerPrompt,
 } from "../../capabilities/general_chat/preamble.js";
 import {
    guildProfileFor,
@@ -77,6 +78,12 @@ describe("every community-facing prompt carries the voice contract", () => {
       const profile = guildProfileFor(REVZ_GUILD_ID);
       expect(profile).not.toBeNull();
       expect(renderAssistantPrompt(profile!, NOW, [], "general")).toContain(
+         SPANISH_VOICE_RULES,
+      );
+   });
+
+   test("moderation partner", () => {
+      expect(renderModerationPartnerPrompt(NOW, "", null, null)).toContain(
          SPANISH_VOICE_RULES,
       );
    });

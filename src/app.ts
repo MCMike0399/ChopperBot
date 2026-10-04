@@ -26,6 +26,7 @@ import { FileScannerCapability } from "./capabilities/file_scanner/capability.js
 import { EventIntakeCapability } from "./capabilities/event_intake/capability.js";
 import { WorkshopCapability } from "./capabilities/workshop/capability.js";
 import { MinutasCapability } from "./capabilities/minutas/capability.js";
+import { MODERATION_MIGRATIONS } from "./moderation/store.js";
 import { TurnQueue } from "./discord/turn-queue.js";
 // NOTE: capabilities that exist only for other/private deploys must NOT be
 // registered here — a registered capability leaks into general_chat's
@@ -63,7 +64,10 @@ export async function run(): Promise<void> {
 
    // 1b. Framework-level user directory. Lives outside any capability namespace
    //     so every capability can scope state by Discord user id consistently.
-   await memory.migrate(FRAMEWORK_CAPABILITY_ID, USERS_MIGRATIONS);
+   await memory.migrate(FRAMEWORK_CAPABILITY_ID, [
+      ...USERS_MIGRATIONS,
+      ...MODERATION_MIGRATIONS,
+   ]);
    const userDirectory = new UserDirectory(memory.db());
    log.info(
       { capability: FRAMEWORK_CAPABILITY_ID },

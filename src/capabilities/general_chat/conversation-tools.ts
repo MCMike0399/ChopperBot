@@ -18,7 +18,7 @@ const inputSchema = {
       channel_id: {
          type: "string",
          description:
-            "ID del canal o hilo; por defecto el canal actual. Historial privado solo dentro de su propio canal.",
+            "ID del canal o hilo; por defecto el canal actual. Historial privado: canal propio o audiencia compatible en el espacio verificado de moderación.",
       },
       query: {
          type: "string",

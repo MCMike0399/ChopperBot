@@ -148,4 +148,6 @@ export interface CapabilityTurnBundle {
     * declaration cannot silently lose thinking.)
     */
    effort?: Effort;
+   /** Revalidate destinations after restricted evidence was read, before reply delivery. */
+   verifyDelivery?: () => Promise<boolean>;
 }

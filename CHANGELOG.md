@@ -14,6 +14,16 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.4.0 — 2026-10-04
+
+ChopperBot ya reconoce sus permisos reales y sus límites: no da órdenes a otros bots ni promete acciones que todavía no puede hacer.
+
+El equipo de moderación cuenta con un espacio para revisar incidentes con evidencia, consultar los registros y preparar advertencias o motivos. La información de canales restringidos solo se comparte cuando la audiencia tiene acceso.
+
+Los reportes serios pueden generar un aviso breve para el equipo, sin pings por defecto y con límites para evitar repeticiones. Las acciones que el bot ejecuta o rechaza quedan registradas; los bans siguen requiriendo una petición explícita y verificada de moderación.
+
+---
+
 ## 2.3.1 — 2026-10-04
 
 Corregimos quién puede dirigir las tareas de moderación de ChopperBot. La comisión de Gestión conserva el calendario, las solicitudes de eventos, los flyers y las grabaciones, pero ya no puede acceder a la consola ni pedir revisiones o expulsiones del servidor.

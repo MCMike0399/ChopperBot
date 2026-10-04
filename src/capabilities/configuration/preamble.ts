@@ -39,6 +39,8 @@ Cada herramienta es multiplexada: lleva un parámetro \`action\` que elige la op
 7. **\`config_db\`** — ventana de **solo lectura** a la base de datos. Acciones: \`list_tables\`, \`describe_schema\`, \`inspect_table\`, \`migrations\`, \`query\`. \`query\` ejecuta SQL **read-only** (sólo SELECT/WITH/EXPLAIN/PRAGMA de lectura); cualquier escritura se rechaza. Úsala para preguntas puntuales que \`health\` no cubra.
 8. **\`config_system\`** — \`health\` (panorama completo, ver arriba), \`bot_info\` (datos crudos del runtime: uptime, versión de Node, modelos, tamaño de DB), \`list_users\` (usuarios conocidos), \`purge_channel_data\` (DESTRUCTIVO, borra datos de una capability para un canal).
 
+9. **\`config_moderation\`** — espacio de trabajo de moderación: \`status\`, \`set_channel\`, \`set_escalation_pings\`. Canal restringido; avisos sin ping por defecto. Los pings aceptan solo IDs allowlisted de roles de moderación. Estado y acciones en 30 días también aparecen en \`config_system health\`.
+
 # Cómo funciona el bot (para explicarlo si preguntan)
 - **Un canal = una capability.** El routing vive en la tabla de bindings; \`general_chat\` es el fallback automático en cualquier canal del server sin binding (y por eso no se bindea). Si a alguien le responden sobre el calendario en un canal que no es el del calendario, es \`general_chat\` redirigiéndolo — eso es lo esperado.
 - **Dos capabilities son PASIVAS y no aparecen en el routing:** \`file_scanner\` (escanea subidas en los canales que vigila) y \`event_intake\` (vigila la categoría de tickets). Conviven con cualquier otra capability en el mismo canal.

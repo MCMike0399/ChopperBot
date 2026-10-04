@@ -1,3 +1,4 @@
+import { LOG_CHANNEL_IDS } from "../moderation/store.js";
 import {
    Client,
    Events,
@@ -136,6 +137,7 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
          // fallback), captured for the style lint on the way out.
          let servedBy = "";
          let turnToolNames: string[] = [];
+         let verifyDelivery: (() => Promise<boolean>) | undefined;
          try {
             // Per-channel FIFO + global cap. History is built INSIDE the queued
             // task, so a message queued behind another sees the earlier reply.
@@ -213,6 +215,7 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                      ...(await resolveAuthority(message)),
                   });
 
+                  verifyDelivery = turn.verifyDelivery;
                   turnToolNames = turn.tools.tools.map((t) => t.name);
 
                   log.info(
@@ -261,6 +264,16 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
 
          if (!reply) {
             await presenter.discard();
+            return;
+         }
+         if (verifyDelivery && !(await verifyDelivery())) {
+            log.warn(
+               { channelId: message.channelId },
+               "moderation.delivery_access_revoked",
+            );
+            await presenter.deliver([
+               "Los permisos cambiaron mientras revisaba la evidencia. No puedo compartir esa revisión aquí.",
+            ]);
             return;
          }
          reportSpanishStyle(reply, {
@@ -400,6 +413,8 @@ export function shouldRespond(
    message: Message,
    authorizedChannels: Set<string>,
 ): boolean {
+   if (message.webhookId || LOG_CHANNEL_IDS.has(message.channelId))
+      return false;
    if (message.author.bot) {
       log.debug(
          { user: message.author.tag, reason: "author_is_bot" },

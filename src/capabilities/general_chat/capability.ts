@@ -15,6 +15,7 @@ import { GENERAL_CHAT_CAPABILITY_ID } from "./constants.js";
 import {
    renderAssistantPrompt,
    renderGeneralChatPrompt,
+   renderModerationPartnerPrompt,
    type CapabilityBindingSnapshot,
    type CapabilitySnapshotEntry,
 } from "./preamble.js";
@@ -33,6 +34,17 @@ import {
    parseBanRequest,
    verifyLiveModerator,
 } from "./moderation-tools.js";
+
+import { BotSelfKnowledge } from "../../moderation/self-knowledge.js";
+import { PartnerAccess, moderationSettings } from "../../moderation/access.js";
+import { ModerationStore } from "../../moderation/store.js";
+import { withBanTrail, sendModerationLine } from "../../moderation/trail.js";
+import { AuditLogToolSource } from "./audit-tools.js";
+import {
+   EscalationToolSource,
+   escalationCandidate,
+   canEscalateFrom,
+} from "./escalation-tools.js";
 
 /** Read-only calendar tools the assistant gets in guilds with a profile, so
  * "¿qué eventos hay esta semana?" is answerable from any channel. Writes stay
@@ -74,6 +86,7 @@ export class GeneralChatCapability implements Capability {
     * are created by CalendarCapability's own migrations, which init()s earlier
     * in app.ts's candidates list — same reuse pattern as event_intake. */
    private db: Database.Database | null = null;
+   private readonly selfKnowledge = new BotSelfKnowledge();
 
    async init(deps: CapabilityInitDeps): Promise<void> {
       await deps.memory.migrate(this.id, []);
@@ -129,6 +142,24 @@ export class GeneralChatCapability implements Capability {
       let liveHowTo: string | null = null;
       const moderator = isModTurn(this.db, ctx);
       const banRequest = moderator ? parseBanRequest(ctx.requestText) : null;
+      const client = this.getDiscordClient();
+      const knowledge = ctx.guildId
+         ? await this.selfKnowledge.block(client, ctx.guildId, moderator)
+         : "";
+      const access =
+         ctx.guildId &&
+         moderator &&
+         moderationSettings(this.db, ctx.guildId).moderation_channel_id ===
+            ctx.channelId
+            ? new PartnerAccess(
+                 () => client,
+                 this.db,
+                 ctx.guildId,
+                 ctx.userId,
+                 ctx.channelId,
+              )
+            : null;
+      const partner = access && (await access.workspace()) ? access : null;
       if (profile.serverDirectoryTools && ctx.guildId) {
          const getClient = this.getDiscordClient;
          sources.push(
@@ -139,6 +170,7 @@ export class GeneralChatCapability implements Capability {
                   ctx.userId,
                   ctx.channelId,
                   getClient().user?.id ?? null,
+                  partner ?? undefined,
                ),
                ctx.channelId,
                ctx.now.getTime(),
@@ -153,21 +185,86 @@ export class GeneralChatCapability implements Capability {
                   ),
             ),
          );
-         if (banRequest && ctx.messageId)
+         if (partner)
+            sources.push(
+               new AuditLogToolSource(() => client, ctx.guildId, partner),
+            );
+         if (banRequest && ctx.messageId && this.db) {
+            const store = new ModerationStore(this.db);
+            const executor = createDiscordBanExecutor(
+               () => client,
+               ctx.guildId,
+               ctx.userId,
+               ctx.channelId,
+               ctx.messageId,
+               this.db,
+               banRequest,
+            );
             sources.push(
                new BanToolSource(
                   banRequest,
-                  createDiscordBanExecutor(
-                     () => getClient(),
-                     ctx.guildId,
-                     ctx.userId,
-                     ctx.channelId,
-                     ctx.messageId,
-                     this.db,
-                     banRequest,
+                  withBanTrail(
+                     executor,
+                     store,
+                     {
+                        guildId: ctx.guildId,
+                        actorId: ctx.userId,
+                        targetId: banRequest.targetId,
+                        action: "ban",
+                        reason: banRequest.reason,
+                        triggerMessageId: ctx.messageId,
+                        channelId: ctx.channelId,
+                        outcome: "executed",
+                        timestamp: Date.now(),
+                     },
+                     (line) =>
+                        sendModerationLine(
+                           client,
+                           store,
+                           ctx.guildId!,
+                           line,
+                           false,
+                           `m${ctx.messageId}`,
+                        ),
                   ),
                ),
             );
+         }
+         if (
+            this.db &&
+            !moderator &&
+            ctx.messageId &&
+            escalationCandidate(ctx.requestText) &&
+            moderationSettings(this.db, ctx.guildId).moderation_channel_id !==
+               ctx.channelId &&
+            (await canEscalateFrom(client, ctx))
+         ) {
+            sources.push(
+               new EscalationToolSource(
+                  () => client,
+                  new ModerationStore(this.db),
+                  ctx,
+               ),
+            );
+         }
+         const refused = !moderator ? parseBanRequest(ctx.requestText) : null;
+         if (refused && this.db && ctx.messageId) {
+            try {
+               new ModerationStore(this.db).record({
+                  guildId: ctx.guildId,
+                  actorId: ctx.userId,
+                  targetId: refused.targetId,
+                  action: "ban",
+                  reason: refused.reason,
+                  triggerMessageId: ctx.messageId,
+                  channelId: ctx.channelId,
+                  outcome: "refused:caller_not_moderation",
+                  timestamp: Date.now(),
+               });
+            } catch {
+               /* no member effect; degraded DB cannot authorize one */
+            }
+         }
          sources.push(
             new ServerDirectoryToolSource(
                createDiscordDirectoryProvider(
@@ -184,17 +281,26 @@ export class GeneralChatCapability implements Capability {
          );
       }
       return {
-         system: renderAssistantPrompt(
-            profile,
-            ctx.now,
-            snapshot,
-            this.resolveChannelName(ctx.channelId),
-            liveHowTo,
-            ctx.userDisplayName ?? null,
-            moderator,
-            banRequest && ctx.messageId ? banRequest.targetId : null,
-         ),
+         system: partner
+            ? renderModerationPartnerPrompt(
+                 ctx.now,
+                 knowledge,
+                 ctx.userDisplayName ?? null,
+                 banRequest?.targetId ?? null,
+              )
+            : renderAssistantPrompt(
+                 profile,
+                 ctx.now,
+                 snapshot,
+                 this.resolveChannelName(ctx.channelId),
+                 liveHowTo,
+                 ctx.userDisplayName ?? null,
+                 moderator,
+                 banRequest && ctx.messageId ? banRequest.targetId : null,
+                 knowledge,
+              ),
          tools: composeToolSources(sources),
+         verifyDelivery: partner ? () => partner.verifyDelivery() : undefined,
          // Chat/history/review remain low. Only a current, independently
          // authorized moderator ban turns this into a writing loop.
          effort: banRequest && ctx.messageId ? "high" : "low",

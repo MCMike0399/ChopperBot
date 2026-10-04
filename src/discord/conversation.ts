@@ -1,4 +1,5 @@
 import { PermissionFlagsBits, type Client, type Message } from "discord.js";
+import type { PartnerAccess } from "../moderation/access.js";
 import {
    displayNameOf,
    hasImages,
@@ -70,6 +71,7 @@ export function createDiscordConversationProvider(
    userId: string,
    destinationChannelId: string,
    botId: string | null,
+   partner?: PartnerAccess,
 ): ConversationProvider {
    return {
       async fetchPage(channelId, before, limit) {
@@ -97,9 +99,11 @@ export function createDiscordConversationProvider(
                   ?.permissionsFor(guild.roles.everyone)
                   ?.has(READ_PERMISSIONS))
          ) {
-            throw new Error(
-               "Consulta ese historial dentro de su propio canal.",
-            );
+            if (!partner || !(await partner.permits(channel))) {
+               throw new Error(
+                  "Consulta ese historial dentro de su propio canal.",
+               );
+            }
          }
          if (
             channel.isThread() &&
@@ -111,6 +115,7 @@ export function createDiscordConversationProvider(
          ) {
             await channel.members.fetch(userId); // membership check; failure closes access
          }
+         const includeLogs = !!partner && (await partner.workspace());
          const messages = await channel.messages.fetch({
             before,
             limit: Math.min(100, limit),
@@ -119,7 +124,25 @@ export function createDiscordConversationProvider(
          return [...messages.values()].map((m) => {
             const result = conversationMessage(m, guildId, channelId);
             // Keep the slot/cursor even when an unrelated bot has no useful text.
-            if (m.author.bot && m.author.id !== botId) result.text = "";
+            if (m.author.bot && m.author.id !== botId && !includeLogs)
+               result.text = "";
+            if (includeLogs) {
+               result.text = [
+                  result.text,
+                  ...m.embeds.map((e) =>
+                     [
+                        e.title,
+                        e.description,
+                        ...e.fields.map((f) => `${f.name}: ${f.value}`),
+                     ]
+                        .filter(Boolean)
+                        .join("\n"),
+                  ),
+               ]
+                  .filter(Boolean)
+                  .join("\n")
+                  .slice(0, 4_000);
+            }
             if (m.author.id === botId) result.author = "ChopperBot (tú)";
             return result;
          });
