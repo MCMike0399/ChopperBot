@@ -14,6 +14,13 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.6.1 — 2026-10-04
+
+- Si se repite un fallo, ChopperBot evita llenar el canal con el mismo mensaje de error.
+- Los anuncios repetidos del mismo evento ya no generan nuevas copias ni avisos inmediatos. También recupera publicaciones aceptadas cuando se pierde la respuesta de Discord.
+- Al arrancar, espera y vuelve a intentar si hay un fallo temporal de conexión con Discord.
+- La revisión de publicaciones de Instagram vuelve a intentar una vez cuando la IA responde vacía, antes de dejar la publicación pendiente.
+
 ## 2.6.0 — 2026-10-04
 
 - ChopperBot tiene más contexto de la conversación para entender referencias y seguir lo que se habla, también en el canal del calendario. Respeta los cambios y mensajes borrados.

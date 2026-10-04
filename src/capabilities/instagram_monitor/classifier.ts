@@ -157,6 +157,7 @@ export async function classifyPost(
          messages: [turn],
          tools,
          effort: "low",
+         retryNoChoicesOnce: true,
       });
    } catch (err) {
       log.warn(

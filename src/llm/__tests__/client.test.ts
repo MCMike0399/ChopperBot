@@ -448,4 +448,32 @@ describe("ask — only one backend exists", () => {
       );
       logged.mockRestore();
    });
+   test("classifier retries no choices exactly once without replaying tools", async () => {
+      createMock
+         .mockResolvedValueOnce({
+            choices: [],
+            usage: { prompt_tokens: 5, completion_tokens: 0 },
+         })
+         .mockResolvedValueOnce(end('{"relevant":true}'));
+      expect(
+         await ask({
+            system: "classifier",
+            messages: [{ role: "user", content: "synthetic post" }],
+            tools: fakeTools(),
+            effort: "low",
+            retryNoChoicesOnce: true,
+         }),
+      ).toBe('{"relevant":true}');
+      expect(createMock).toHaveBeenCalledTimes(2);
+      createMock.mockReset();
+      createMock.mockResolvedValue({ choices: [] });
+      await ask({
+         system: "classifier",
+         messages: [{ role: "user", content: "synthetic post" }],
+         tools: fakeTools(),
+         effort: "low",
+         retryNoChoicesOnce: true,
+      });
+      expect(createMock).toHaveBeenCalledTimes(2);
+   });
 });

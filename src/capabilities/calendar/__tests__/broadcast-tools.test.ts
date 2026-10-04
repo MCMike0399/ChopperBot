@@ -143,6 +143,15 @@ beforeEach(async () => {
 });
 
 describe('calendar_draft_announcement', () => {
+  test('replaying the observed three differing publish-now drafts creates one copy per destination', async () => {
+    const ev = createSeries();
+    for (const instruction of ['Texto ficticio uno', 'Texto ficticio dos', 'Texto ficticio tres']) {
+      const result = await draft(makeSource(), { event_id: ev.id, channels: ['general', 'eventos'], instruction, publish_now: true });
+      expect(result.status).toBe('success');
+    }
+    expect(posts).toHaveLength(2);
+    expect(posts.map((p) => p.channelId).sort()).toEqual([CHANNELS.general.id, CHANNELS.eventos.id].sort());
+  });
   test('drafts the text, names the channels, and posts NOTHING', async () => {
     const ev = createSeries();
     const { status, payload: p } = await draft(makeSource(), {

@@ -1310,16 +1310,29 @@ export class CalendarToolSource implements ToolSource {
     const mentions: BroadcastMentions = { roleIds: draft.roleIds, everyone: draft.everyone };
     const posted: Array<{ channel_id: string; message_id: string }> = [];
     const failed: Array<{ channel_id: string; error: string }> = [];
+    const deduped: string[] = [];
     for (const target of draft.targets) {
+      const reservation = this.store.reserveBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, draft.token, this.nowMs);
+      if (!reservation.reserved) {
+        log.info({ eventId: draft.eventId, channelId: target.id, outcome: reservation.outcome }, 'calendar.broadcast.duplicate_suppressed');
+        if (reservation.messageId) {
+          posted.push({ channel_id: target.id, message_id: reservation.messageId });
+          deduped.push(target.id);
+        } else failed.push({ channel_id: target.id, error: 'previous_delivery_unconfirmed_no_retry' });
+        continue;
+      }
       const res = await broadcaster.post({
         target,
         content: draft.content,
         mentions,
         imageUrl: null,
         threadTitle: draft.threadTitle,
-        token: draft.token,
+        token: reservation.token,
       });
-      if (res.ok) posted.push({ channel_id: target.id, message_id: res.messageId });
+      if (res.ok) {
+        this.store.finishBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, reservation.token, res.messageId);
+        posted.push({ channel_id: target.id, message_id: res.messageId });
+      }
       else failed.push({ channel_id: target.id, error: res.error });
     }
     this.store.markDraftPosted(draft.token, posted.map((p) => p.message_id));
@@ -1347,10 +1360,13 @@ export class CalendarToolSource implements ToolSource {
       payload: {
         posted: true,
         event_id: draft.eventId,
+        ...(deduped.length ? { deduped_channel_ids: deduped, already_posted: true } : {}),
         channels: posted.map((p) => ({ ...p, mention: `<#${p.channel_id}>` })),
         ...(failed.length > 0 ? { failed } : {}),
         note:
-          failed.length > 0
+          deduped.length > 0
+            ? 'Los canales de deduped_channel_ids ya tenían este anuncio reciente; no se publicó otra copia ni se enviaron nuevos pings allí. No afirmes que el texto cambió.'
+            : failed.length > 0
             ? 'Confirma solo los canales de `channels`; di claramente en cuáles NO se pudo.'
             : 'Confirma en una línea, nombrando los canales.',
       },

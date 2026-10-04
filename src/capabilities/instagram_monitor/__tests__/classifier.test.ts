@@ -191,5 +191,6 @@ describe("classifyPost — ONE multimodal call (v4.1)", () => {
       const out = await classifyPost("acc", post, { nowMs: Date.now() });
       expect(out.undecided).toBe(true);
       expect(out.reason).toBe("parse_error");
+      expect(askMock.mock.calls[0][0].retryNoChoicesOnce).toBe(true);
    });
 });

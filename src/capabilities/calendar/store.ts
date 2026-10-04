@@ -354,6 +354,21 @@ export const CALENDAR_MIGRATIONS: Migration[] = [
       ALTER TABLE calendar_events ADD COLUMN recurrence_monthly TEXT;
     `,
   },
+  {
+    version: 12,
+    up: `
+      CREATE TABLE calendar_broadcast_deliveries (
+        event_id INTEGER NOT NULL,
+        occurrence_start_at INTEGER NOT NULL,
+        channel_id TEXT NOT NULL,
+        token TEXT NOT NULL,
+        reserved_at INTEGER NOT NULL,
+        message_id TEXT,
+        outcome TEXT NOT NULL,
+        PRIMARY KEY(event_id, occurrence_start_at, channel_id)
+      );
+    `,
+  },
 ];
 
 interface OverrideRow {
@@ -895,6 +910,31 @@ export class CalendarStore {
       .prepare(`SELECT * FROM calendar_announcement_drafts WHERE token = ?`)
       .get(token) as AnnouncementDraftRow | undefined;
     return row ? toDraft(row) : null;
+  }
+
+  /** Across draft tokens/restarts: one occurrence/destination attempt per 10min.
+   * Reserve before POST; an unconfirmed result is never blindly replayed.
+   */
+  reserveBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, now: number):
+    { reserved: boolean; token: string; messageId: string | null; outcome: string } {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT * FROM calendar_broadcast_deliveries
+        WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ?`)
+        .get(eventId, occurrenceStartAt, channelId) as { token: string; reserved_at: number; message_id: string | null; outcome: string } | undefined;
+      if (row && now - row.reserved_at < 10 * 60_000)
+        return { reserved: false, token: row.token, messageId: row.message_id, outcome: row.outcome };
+      this.db.prepare(`INSERT INTO calendar_broadcast_deliveries VALUES (?, ?, ?, ?, ?, NULL, 'unconfirmed')
+        ON CONFLICT(event_id, occurrence_start_at, channel_id) DO UPDATE SET
+        token = excluded.token, reserved_at = excluded.reserved_at, message_id = NULL, outcome = 'unconfirmed'`)
+        .run(eventId, occurrenceStartAt, channelId, token, now);
+      return { reserved: true, token, messageId: null, outcome: 'unconfirmed' };
+    })();
+  }
+
+  finishBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, messageId: string): void {
+    this.db.prepare(`UPDATE calendar_broadcast_deliveries SET message_id = ?, outcome = 'posted'
+      WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND token = ?`)
+      .run(messageId, eventId, occurrenceStartAt, channelId, token);
   }
 
   /** Newest unposted draft for this source channel — the "sí, publícalo" fallback. */

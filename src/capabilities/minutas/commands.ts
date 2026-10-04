@@ -17,6 +17,7 @@ import { modRoleTokens } from "../mod-authority.js";
 import { JOIN_COMMAND, LEAVE_COMMAND } from "./constants.js";
 import { UserVisibleError, type MinutasSessions } from "./session.js";
 import type { MinutasStore } from "./store.js";
+import { allowErrorReply } from "../../discord/error-replies.js";
 
 export function minutasCommandDefinitions(): ApplicationCommandData[] {
    return [
@@ -155,13 +156,22 @@ export function buildMinutasInteractionHandler(
       } catch (err) {
          log.error({ err }, "minutas.interaction_error");
          try {
-            if (interaction.deferred)
-               await interaction.editReply(
-                  "Se me atravesó un error. Inténtalo de nuevo.",
-               );
+            const content = "Se me atravesó un error. Inténtalo de nuevo.";
+            if (
+               !allowErrorReply(
+                  interaction.channelId ?? interaction.guildId ?? "unknown",
+                  content,
+               )
+            ) {
+               if (!interaction.deferred && !interaction.replied)
+                  await interaction.deferReply({ ephemeral: true });
+               if (interaction.deferred) await interaction.deleteReply();
+               return;
+            }
+            if (interaction.deferred) await interaction.editReply(content);
             else if (!interaction.replied)
                await interaction.reply({
-                  content: "Se me atravesó un error. Inténtalo de nuevo.",
+                  content,
                   ephemeral: true,
                });
          } catch {

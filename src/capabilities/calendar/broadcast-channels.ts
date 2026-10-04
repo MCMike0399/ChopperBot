@@ -140,16 +140,7 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
         if (!channel.isTextBased() || !('send' in channel)) {
           return { ok: false, error: 'channel_not_sendable' };
         }
-        const sent = await (
-          channel as unknown as {
-            send(o: {
-              content: string;
-              allowedMentions: { parse: string[]; roles: string[] };
-              nonce?: string;
-              enforceNonce?: boolean;
-            }): Promise<{ id: string }>;
-          }
-        ).send({
+        const sent = await sendBroadcastExactlyOnce(channel, client.user?.id ?? '', {
           content,
           allowedMentions,
           nonce: broadcastNonce(token, target.id),
@@ -163,6 +154,43 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
       }
     },
   };
+}
+
+/** Same repair boundary as the daily announcer: adopt an accepted POST after
+ * a lost response and delete only our identical, newly-created duplicates.
+ * Semantic cross-token prevention is the store reservation; this is a backstop.
+ */
+export async function sendBroadcastExactlyOnce(
+  rawChannel: unknown,
+  botId: string,
+  payload: { content: string; allowedMentions: { parse: string[]; roles: string[] }; nonce: string; enforceNonce: boolean },
+): Promise<{ id: string }> {
+  type Copy = { id: string; content: string; author?: { id: string }; createdTimestamp?: number; delete?: () => Promise<unknown> };
+  const channel = rawChannel as { id?: string; send(input: typeof payload): Promise<Copy>; messages?: { fetch(input: { limit: number; cache: false }): Promise<Map<string, Copy>> } };
+  const before = await channel.messages?.fetch({ limit: 1, cache: false }).catch(() => null);
+  const boundary = before?.size ? [...before.keys()].sort((a,b) => BigInt(a) > BigInt(b) ? -1 : 1)[0] : null;
+  const started = Date.now();
+  let sent: Copy | undefined, failure: unknown;
+  try { sent = await channel.send(payload); } catch (err) { failure = err; }
+  const after = await channel.messages?.fetch({ limit: 100, cache: false }).catch(() => null);
+  const copies = [...(after?.values() ?? [])].filter((m) => botId && m.author?.id === botId &&
+    m.content === payload.content && (boundary ? BigInt(m.id) > BigInt(boundary) : (m.createdTimestamp ?? 0) >= started))
+    .sort((a,b) => BigInt(a.id) < BigInt(b.id) ? -1 : 1);
+  if (copies.length) {
+    let removed = 0;
+    for (const duplicate of copies.slice(1)) {
+      try {
+        if (!duplicate.delete) throw new Error('duplicate_delete_unavailable');
+        await duplicate.delete(); removed++;
+      }
+      catch (err) { log.warn({ err, messageId: duplicate.id }, 'calendar.broadcast.duplicate_cleanup_failed'); }
+    }
+    if (copies.length > 1 || !sent)
+      log.warn({ channelId: channel.id, copies: copies.length, duplicatesRemoved: removed, adopted: !sent }, 'calendar.broadcast.duplicate_send_repaired');
+    return { id: copies[0].id };
+  }
+  if (sent) return { id: sent.id };
+  throw failure ?? new Error('broadcast_delivery_unconfirmed');
 }
 
 /**

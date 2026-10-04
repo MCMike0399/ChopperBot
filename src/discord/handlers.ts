@@ -37,6 +37,7 @@ import {
    renderConversationContext,
 } from "./conversation.js";
 import { transcriptCacheFor } from "./transcript-cache.js";
+import { allowErrorReply } from "./error-replies.js";
 
 export interface HandlerDeps {
    registry: CapabilityRegistry;
@@ -265,7 +266,9 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
             // the channel got the English "check the logs" — which read as the bot
             // brushing the question off. The filter case now recovers inside ask();
             // this is the generic last resort.)
-            await presenter.fail(GENERIC_ERROR_REPLY);
+            if (allowErrorReply(message.channelId, GENERIC_ERROR_REPLY))
+               await presenter.fail(GENERIC_ERROR_REPLY);
+            else await presenter.discard();
             return;
          }
 
@@ -311,7 +314,8 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
          await presenter.deliver(chunkBotReply(reply));
       } catch (err) {
          log.error({ err }, "Failed to handle message");
-         await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
+         if (allowErrorReply(message.channelId, GENERIC_ERROR_REPLY))
+            await message.reply(GENERIC_ERROR_REPLY).catch(() => {});
       }
    });
 }

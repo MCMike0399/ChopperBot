@@ -88,6 +88,8 @@ export interface AskInput {
    stableSystem?: string;
    systemTail?: string;
    channelTranscript?: string;
+   /** Classifier-only bounded retry for HTTP 200 with no choices. */
+   retryNoChoicesOnce?: boolean;
    messages: Turn[];
    tools: ComposedTools;
    /** Thinking tier. Defaults to `'high'`. See {@link Effort}. */
@@ -313,6 +315,7 @@ async function askDeepSeek({
    stableSystem,
    systemTail,
    channelTranscript,
+   retryNoChoicesOnce = false,
    messages,
    tools,
    effort = "high",
@@ -368,6 +371,7 @@ async function askDeepSeek({
    // the input on the next try).
    const toolCache = new Map<string, ToolHandlerResult>();
    const openAiTools = buildOpenAiTools(tools.tools);
+   let noChoicesRetried = false;
 
    for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
       trace.iterations = i + 1;
@@ -378,24 +382,39 @@ async function askDeepSeek({
       // and the penalty params entirely (DeepSeek deprecated them), and top_p is
       // clamped to >= 0.95. Sending them would be noise; the contract test pins
       // that we don't.
-      const response = await observedTextCompletion(
-         () =>
-            deepseekGate.run(() =>
-               client.chat.completions.create({
-                  model: modelId,
-                  messages: convo.slice() as never,
-                  tools:
-                     openAiTools.length > 0
-                        ? (openAiTools as never)
-                        : undefined,
-                  max_tokens: textBackend.maxOutputTokens,
-                  ...thinking,
-               } as never),
-            ),
-         trace,
-      );
+      const requestCompletion = () =>
+         observedTextCompletion(
+            () =>
+               deepseekGate.run(() =>
+                  client.chat.completions.create({
+                     model: modelId,
+                     messages: convo.slice() as never,
+                     tools:
+                        openAiTools.length > 0
+                           ? (openAiTools as never)
+                           : undefined,
+                     max_tokens: textBackend.maxOutputTokens,
+                     ...thinking,
+                  } as never),
+               ),
+            trace,
+         );
+      let response = await requestCompletion();
 
       accumulateUsage(trace, response.usage);
+      if (
+         !response.choices?.[0] &&
+         retryNoChoicesOnce &&
+         !noChoicesRetried &&
+         trace.toolCalls.length === 0
+      ) {
+         log.warn("DeepSeek returned no choices");
+         noChoicesRetried = true;
+         log.info({ attempt: 1 }, "llm.no_choices_retry");
+         if (shouldAbort?.()) throw abortTurn(trace, "deepseek");
+         response = await requestCompletion();
+         accumulateUsage(trace, response.usage);
+      }
 
       const choice = response.choices?.[0];
       if (!choice) {

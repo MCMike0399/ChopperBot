@@ -35,6 +35,7 @@ import { TurnQueue } from "./discord/turn-queue.js";
 import { createClient } from "./discord/client.js";
 import { registerHandlers } from "./discord/handlers.js";
 import { registerTranscriptCache } from "./discord/transcript-cache.js";
+import { loginWithDnsRetry } from "./discord/login-retry.js";
 import { sendAdminAlert } from "./discord/admin-alert.js";
 import { llmHealth } from "./llm/health.js";
 import { checkBootAndDetectCrash, markCleanShutdown } from "./lifecycle.js";
@@ -206,16 +207,17 @@ export async function run(): Promise<void> {
          activeSession: (guildId) => minutasCap.adminStatus(guildId).active,
       });
    }
-   registerHandlers(client, {
+   const handlerDeps = {
       registry,
       router,
       userDirectory,
       turnQueue,
       claimedChannel:
          claimGuards.length > 0
-            ? (message) => claimGuards.some((g) => g(message))
+            ? (message: Message) => claimGuards.some((g) => g(message))
             : undefined,
-   });
+   };
+   registerHandlers(client, handlerDeps);
 
    const shutdown = async (signal: string) => {
       log.info({ signal }, "Shutting down");
@@ -240,7 +242,17 @@ export async function run(): Promise<void> {
    process.on("SIGINT", () => void shutdown("SIGINT"));
    process.on("SIGTERM", () => void shutdown("SIGTERM"));
 
-   await client.login(config.DISCORD_TOKEN);
+   let loginAttempt = 0;
+   await loginWithDnsRetry(async () => {
+      // discord.js destroys its sweepers/websocket state on a failed login.
+      // Recreate it for a DNS retry; getters and handlers follow the live client.
+      if (loginAttempt++ > 0) {
+         client = createClient();
+         registerTranscriptCache(client);
+         registerHandlers(client, handlerDeps);
+      }
+      await client!.login(config.DISCORD_TOKEN);
+   });
 
    // LLM health → admin channel. From here on, ask() failures (chat replies,
    // IG classifier) can page the operator instead of dying in the journal.
