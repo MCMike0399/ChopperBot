@@ -1,5 +1,11 @@
 import { describe, test, expect, vi, afterEach } from "vitest";
-import { TranscriptCache } from "../transcript-cache.js";
+import { EventEmitter } from "node:events";
+import { Events, type Client } from "discord.js";
+import {
+   TranscriptCache,
+   registerTranscriptCache,
+   transcriptCacheFor,
+} from "../transcript-cache.js";
 import type {
    ConversationMessage,
    ConversationProvider,
@@ -179,4 +185,15 @@ test("raw nickname tokens become real mentions only for one readable identity", 
          { id: String(BASE + 1n), name: "Persona ficticia" },
       ]),
    ).toBe("@Persona ficticia");
+});
+
+test("a new gateway session (ShardReady) drops the cache; a resume keeps it", () => {
+   const client = new EventEmitter() as unknown as Client;
+   registerTranscriptCache(client);
+   const cache = transcriptCacheFor(client);
+   const clear = vi.spyOn(cache, "clear");
+   (client as unknown as EventEmitter).emit(Events.ShardResume, 0, 0);
+   expect(clear).not.toHaveBeenCalled();
+   (client as unknown as EventEmitter).emit(Events.ShardReady, 0);
+   expect(clear).toHaveBeenCalledTimes(1);
 });

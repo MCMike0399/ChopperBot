@@ -78,6 +78,14 @@ const WRITE_TOOL_NAMES = new Set([
  * Writing an announcement in the community's voice, injected so the tool layer
  * stays free of the LLM client (and so tests get deterministic text).
  */
+/** Broadcaster errors raised before any POST — safe to retry immediately. */
+const PRE_SEND_BROADCAST_ERRORS = new Set([
+  'channel_not_found',
+  'channel_not_sendable',
+  'forum_not_postable',
+  'forum_needs_title',
+]);
+
 export type AnnouncementWriter = (system: string) => Promise<string>;
 
 /**
@@ -1333,7 +1341,11 @@ export class CalendarToolSource implements ToolSource {
         this.store.finishBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, reservation.token, res.messageId);
         posted.push({ channel_id: target.id, message_id: res.messageId });
       }
-      else failed.push({ channel_id: target.id, error: res.error });
+      else {
+        if (PRE_SEND_BROADCAST_ERRORS.has(res.error))
+          this.store.releaseBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, reservation.token);
+        failed.push({ channel_id: target.id, error: res.error });
+      }
     }
     this.store.markDraftPosted(draft.token, posted.map((p) => p.message_id));
 

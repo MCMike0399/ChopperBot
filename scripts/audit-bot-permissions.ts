@@ -183,7 +183,9 @@ try {
       );
    need(
       workshop.welcome_channel_id,
-      text | P.ManageMessages | P.AddReactions,
+      // Discord split pinning out of ManageMessages: the welcome/session
+      // panels are pinned, and that failure is swallowed at runtime.
+      text | P.ManageMessages | P.PinMessages | P.AddReactions,
       "workshop_welcome",
    );
    need(
@@ -192,6 +194,7 @@ try {
          P.ManageChannels |
          P.ManageRoles |
          P.ManageMessages |
+         P.PinMessages |
          P.AttachFiles |
          P.EmbedLinks |
          P.AddReactions,

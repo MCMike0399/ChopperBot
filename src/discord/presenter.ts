@@ -32,7 +32,11 @@ export interface TurnPresenter {
     * An empty `parts` means "no reply" — progress is cleaned up silently.
     */
    deliver(parts: string[]): Promise<Message | null>;
-   /** The turn failed: surface `text` as the user-facing (Spanish) error. */
+   /**
+    * The turn failed: surface `text` as the user-facing (Spanish) error. An
+    * empty `text` marks the failure (❌) without posting — used when the
+    * per-channel error-flood guard suppresses a repeated identical message.
+    */
    fail(text: string): Promise<void>;
    /** The turn was superseded/aborted: remove progress surfaces, post nothing. */
    discard(): Promise<void>;
@@ -51,7 +55,11 @@ const STATUS_TICK_MS = 10_000;
 
 /** The message shape presenters actually use (structural — test seam). */
 export interface PresentableMessage {
-   reply(content: string): Promise<Message>;
+   author: { id: string };
+   reply(
+      options:
+         string | { content: string; allowedMentions?: MessageMentionOptions },
+   ): Promise<Message>;
    channel: {
       send(
          options:
@@ -63,17 +71,20 @@ export interface PresentableMessage {
 }
 
 /**
- * Mention policy for the presenter's channel sends. It must be spelled out
- * here: a message-level `allowedMentions` REPLACES the client default
- * (`createClient`), so sending `{ repliedUser: false }` alone would drop the
- * `parse` allowlist and hand @everyone/role pings back to whatever the model
- * wrote. Same policy as the default, minus the reply ping (these are plain
- * channel sends, not replies).
+ * Mention policy for public replies and channel sends: notify ONLY the asker.
+ * It must be spelled out: a message-level `allowedMentions` REPLACES the client
+ * default (`createClient`), so a partial policy would hand @everyone/role
+ * pings back to whatever the model wrote. And since v2.6.0 the model sees every
+ * transcript author's id and writes real `<@id>` tokens, so a channel summary
+ * ("¿de qué hablaban?") would otherwise ping everyone it names. Other mentions
+ * still render as names; they just don't notify.
  */
-const SEND_MENTIONS: MessageMentionOptions = {
-   parse: ["users"],
-   repliedUser: false,
-};
+function askerOnly(
+   authorId: string,
+   repliedUser: boolean,
+): MessageMentionOptions {
+   return { parse: [], users: [authorId], roles: [], repliedUser };
+}
 
 /** Base: the status reaction + typing heartbeat both styles share. */
 abstract class BasePresenter implements TurnPresenter {
@@ -146,7 +157,10 @@ export class ReactionTurnPresenter extends BasePresenter {
       // Typing stays alive until the first chunk is actually posted — clearing
       // it earlier is what left the gap members read as "stuck".
       let anchor: Message | null = await this.message
-         .reply(parts[0])
+         .reply({
+            content: parts[0],
+            allowedMentions: askerOnly(this.message.author.id, true),
+         })
          .catch((err) => {
             log.warn({ err }, "presenter.reply_failed_falling_back_to_send");
             return null;
@@ -154,7 +168,10 @@ export class ReactionTurnPresenter extends BasePresenter {
       if (!anchor) {
          // The user's message may be gone (deleted) — the answer must still land.
          anchor = await this.message.channel
-            .send({ content: parts[0], allowedMentions: SEND_MENTIONS })
+            .send({
+               content: parts[0],
+               allowedMentions: askerOnly(this.message.author.id, false),
+            })
             .catch((err) => {
                log.error({ err }, "presenter.reply_delivery_failed");
                return null;
@@ -163,7 +180,10 @@ export class ReactionTurnPresenter extends BasePresenter {
       this.stopTimers();
       for (let i = 1; anchor && i < parts.length; i++) {
          anchor = await this.message.channel
-            .send({ content: parts[i], allowedMentions: SEND_MENTIONS })
+            .send({
+               content: parts[i],
+               allowedMentions: askerOnly(this.message.author.id, false),
+            })
             .catch(() => anchor);
       }
       this.reactor.resolve();
@@ -175,7 +195,7 @@ export class ReactionTurnPresenter extends BasePresenter {
       this.done = true;
       this.stopTimers();
       this.reactor.fail();
-      await this.message.reply(text).catch(() => {});
+      if (text) await this.message.reply(text).catch(() => {});
    }
 
    async discard(): Promise<void> {
@@ -260,7 +280,11 @@ export class WorkshopTurnPresenter extends BasePresenter {
       if (this.done) return;
       this.done = true;
       this.stopAll();
-      if (this.begun) {
+      if (!text) {
+         // Suppressed repeat: drop the status line, keep only the ❌.
+         await this.status.discard();
+         this.reactor.fail();
+      } else if (this.begun) {
          // The status line becomes the error message.
          await this.status.fail(text);
       } else {

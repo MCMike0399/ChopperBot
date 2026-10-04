@@ -19,7 +19,7 @@ vi.mock("openai", () => ({
    },
 }));
 
-const { ask } = await import("../client.js");
+const { ask, MEMBER_TEXT_FENCE } = await import("../client.js");
 import { config } from "../../config.js";
 import type { ComposedTools } from "../../tools/source.js";
 import { ImageAttachable } from "../../attachments/attachable.js";
@@ -436,7 +436,7 @@ describe("ask — only one backend exists", () => {
          { role: "assistant", content: "reply chain" },
          {
             role: "user",
-            content: "clock speaker authority\n\ncurrent trigger",
+            content: `clock speaker authority\n\n${MEMBER_TEXT_FENCE}\ncurrent trigger`,
          },
       ]);
       expect(logged).toHaveBeenCalledWith(

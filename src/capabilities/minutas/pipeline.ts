@@ -2,9 +2,14 @@ import { existsSync } from "node:fs";
 import { readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import type { Client } from "discord.js";
+import { verifyAudienceContainment } from "../../discord/audience.js";
 import { log } from "../../log.js";
 import type { ObjectStorage } from "../../storage/object-storage.js";
-import { ARTIFACTS, MIN_BURST_BYTES } from "./constants.js";
+import {
+   ARTIFACTS,
+   MIN_BURST_BYTES,
+   MODERATION_MINUTES_CHANNEL_ID,
+} from "./constants.js";
 import {
    planBatches,
    readLedger,
@@ -27,6 +32,7 @@ import {
 import { minioPrefixFor, type SessionManifest } from "./session.js";
 import type { MinutasSessionRow, MinutasStore } from "./store.js";
 import { publishMinutes } from "./publisher.js";
+import { chunkBotReply } from "../../discord/chunk.js";
 import type { Transcriber } from "./transcriber.js";
 
 export interface FinalizeDeps {
@@ -131,13 +137,21 @@ export async function finalizeSession(
       `${renderTranscriptHeader(meta)}\n\n${transcriptMd}\n`,
    );
    const minutesBody = await generateMinutes(transcriptMd, meta);
-   const publicActa = publicMinutes(transcriptMd, minutesBody, meta);
+   const publicActa = publicMinutes(minutesBody, meta);
    if (publicActa.redacted) {
       await writeFile(
          join(dir, "minuta-interna.md"),
          `${renderMinutesPost(minutesBody, meta)}\n`,
       );
       log.info({ sessionId }, "minutas.conduct_redacted");
+      if (publicActa.internal)
+         await postInternalConduct(
+            deps.client,
+            row.guild_id,
+            `**Minuta ${sessionId} — convivencia (interna)**\n${publicActa.internal}`,
+         ).catch((err: unknown) =>
+            log.warn({ err, sessionId }, "minutas.internal_conduct_not_posted"),
+         );
    }
    const minutesMd = `${renderMinutesPost(publicActa.body, publicActa.meta)}\n`;
    await writeFile(join(dir, ARTIFACTS.minutes), minutesMd);
@@ -197,6 +211,30 @@ export async function finalizeSession(
 }
 
 // ── Internals ───────────────────────────────────────────────────────────────
+
+/**
+ * Conduct items go to the moderation minutes channel only when every viewer
+ * of it is staff (the same ViewAuditLog containment as the mod workspace).
+ * Otherwise they stay in the MinIO archive only — never a wider audience.
+ */
+async function postInternalConduct(
+   client: Client,
+   guildId: string,
+   content: string,
+): Promise<void> {
+   const guild = await client.guilds.fetch(guildId);
+   const channel = await guild.channels.fetch(MODERATION_MINUTES_CHANNEL_ID, {
+      force: true,
+   });
+   if (
+      !channel ||
+      !channel.isSendable() ||
+      !(await verifyAudienceContainment(guild, null, channel))
+   )
+      throw new Error("moderation_minutes_audience_unverified");
+   for (const chunk of chunkBotReply(content))
+      await channel.send({ content: chunk, allowedMentions: { parse: [] } });
+}
 
 async function readManifest(
    dir: string,

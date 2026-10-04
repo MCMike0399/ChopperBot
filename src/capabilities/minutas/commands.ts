@@ -157,15 +157,19 @@ export function buildMinutasInteractionHandler(
          log.error({ err }, "minutas.interaction_error");
          try {
             const content = "Se me atravesó un error. Inténtalo de nuevo.";
+            // Ephemeral replies reach only the caller and can't flood a
+            // channel, so the flood guard must not leave a moderator unsure
+            // whether /chopperbot-join worked. A deferred reply may be public:
+            // only that path is guarded (and then answered ephemerally).
             if (
+               interaction.deferred &&
                !allowErrorReply(
                   interaction.channelId ?? interaction.guildId ?? "unknown",
                   content,
                )
             ) {
-               if (!interaction.deferred && !interaction.replied)
-                  await interaction.deferReply({ ephemeral: true });
-               if (interaction.deferred) await interaction.deleteReply();
+               await interaction.deleteReply();
+               await interaction.followUp({ content, ephemeral: true });
                return;
             }
             if (interaction.deferred) await interaction.editReply(content);

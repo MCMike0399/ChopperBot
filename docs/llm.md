@@ -59,7 +59,7 @@ Measured upside worth remembering: **DeepSeek does not refuse RevZ-shaped politi
 
 ## Loop mechanics (unchanged in spirit, one loop now)
 
-- Stable system → oldest-first quoted channel transcript → reply chain → per-turn tail/current trigger; API cache-hit/miss usage is accumulated across requests in agent_turn. Legacy callers without split fields keep their original full system.
+- Stable system → oldest-first quoted channel transcript → reply chain → per-turn tail/current trigger (the trusted tail shares the last user message for caching, with the member's words fenced below `MEMBER_TEXT_FENCE` so typed "# Autoridad…" text reads as theirs); API cache-hit/miss usage is accumulated across requests in agent_turn. Legacy callers without split fields keep their original full system.
 - `system` + turns → `chat.completions.create`; `tool_calls` → run handlers → one `role:'tool'` message per result → repeat to `MAX_TOOL_ITERATIONS`, then a forcing pass **without `tools`** carrying a prose nudge, with one bounded retry.
 - **`reasoning_content` is echoed back** on every assistant turn. DeepSeek's docs make this a hard requirement whenever the request carries `tools` ("If your code does not correctly pass back `reasoning_content`, the API will return a 400 error"). Probed 2026-09-14: omitting it happened to still return 200 — keep the echo anyway; the documented failure mode is a mid-tool-loop 400 and the echo costs nothing.
 - **Per-turn tool dedup cache** keyed on `(name, stableStringify(input))`; only successes are cached. This is what makes the empty-response retry _and_ the forcing pass safe: a retry that re-emits an identical write call is served from cache and does not re-execute.

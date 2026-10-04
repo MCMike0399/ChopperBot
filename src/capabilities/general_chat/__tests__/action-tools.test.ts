@@ -27,42 +27,38 @@ const G = "1435843683541979248",
    BOT = "200000000000000003",
    MSG = "200000000000000004",
    DELETED = "200000000000000005",
-   STAFF = "1436055845392879778";
+   STAFF = "1436055845392879778",
+   OTHER = "200000000000000008";
+// Deletion is link-only, and never inside the workspace (C) itself.
+const DEL = `borra https://discord.com/channels/${G}/${OTHER}/${DELETED}`;
 const text = `timeout <@${TARGET}> 1h por motivo ficticio`;
-const request = parseActionRequest(text, G, C)!;
+const request = parseActionRequest(text, G)!;
 afterEach(() => vi.restoreAllMocks());
 
 describe("standalone code authorization", () => {
-   test("duration default, bounded units, removal, exact reply and link", () => {
-      expect(parseActionRequest(`timeout <@${TARGET}>`, G, C)).toMatchObject({
+   test("duration default, bounded units, removal and exact link", () => {
+      expect(parseActionRequest(`timeout <@${TARGET}>`, G)).toMatchObject({
          durationMs: 3_600_000,
       });
       expect(
          parseActionRequest(
             `silencia a <@${TARGET}> 30m por motivo ficticio`,
             G,
-            C,
          ),
       ).toMatchObject({ durationMs: 1_800_000 });
-      expect(parseActionRequest(`timeout <@${TARGET}> 7d`, G, C)).toMatchObject(
-         { durationMs: 604_800_000 },
-      );
+      expect(parseActionRequest(`timeout <@${TARGET}> 7d`, G)).toMatchObject({
+         durationMs: 604_800_000,
+      });
       expect(
-         parseActionRequest(`quita el timeout a <@${TARGET}>`, G, C),
+         parseActionRequest(`quita el timeout a <@${TARGET}>`, G),
       ).toMatchObject({ action: "timeout_removed", durationMs: null });
-      expect(
-         parseActionRequest(
-            "borra este mensaje por motivo ficticio",
-            G,
-            C,
-            DELETED,
-         ),
-      ).toMatchObject({ targetId: DELETED, channelId: C });
+      expect(parseActionRequest(`${DEL} por motivo ficticio`, G)).toMatchObject(
+         { targetId: DELETED, channelId: OTHER },
+      );
       expect(
          parseActionRequest(
             `borra https://discord.com/channels/${G}/${C}/${DELETED}`,
             G,
-            C,
          ),
       ).toMatchObject({ targetId: DELETED, channelId: C });
    });
@@ -80,11 +76,29 @@ describe("standalone code authorization", () => {
       `timeout <@${TARGET}> por jajaja`,
       `timeout <@${TARGET}>\npor motivo`,
       "borra este mensaje",
+      "borra este mensaje por motivo ficticio",
       `borra https://discord.com/channels/${TARGET}/${C}/${DELETED}`,
+      // Hedged/conditional reasons are not orders (the regexes accept any
+      // text after "por", so this is the only thing stopping them).
+      `timeout <@${TARGET}> 1h por spam si lo vuelve a hacer`,
+      `timeout <@${TARGET}> 1h por spam, mejor no`,
+      `timeout <@${TARGET}> por spam, no`,
+      `quita el timeout a <@${TARGET}> por error cuando termine`,
+      `${DEL} por spam tal vez`,
+      // A duration after the reason would be silently ignored.
+      `timeout <@${TARGET}> por spam 24h`,
       `borra todos los mensajes de <@${TARGET}>`,
    ])("rejects ambiguous or unsupported request %s", (s) =>
-      expect(parseActionRequest(s, G, C)).toBeNull(),
+      expect(parseActionRequest(s, G)).toBeNull(),
    );
+   test("ordinary reasons containing 'no' as a word still parse", () => {
+      expect(
+         parseActionRequest(
+            `timeout <@${TARGET}> 1h por no respetar las reglas`,
+            G,
+         ),
+      ).toMatchObject({ reason: "no respetar las reglas" });
+   });
    test("model substitution, extra effects and replay are refused", async () => {
       const execute = vi.fn(async () => {}),
          source = new ActionToolSource(request, { execute });
@@ -113,7 +127,7 @@ describe("standalone code authorization", () => {
    });
 });
 
-function harness(command = text, replyMessageId?: string) {
+function harness(command = text) {
    const memory = new SqliteMemoryStore({ path: ":memory:" });
    void memory.migrate("__framework__", MODERATION_MIGRATIONS);
    const perms = P.ViewChannel | P.ReadMessageHistory | P.ManageMessages;
@@ -139,12 +153,12 @@ function harness(command = text, replyMessageId?: string) {
       roles: { cache: new Collection(), highest: {} },
       moderatable: true,
       timeout: vi.fn(async () => {}),
+      isCommunicationDisabled: vi.fn(() => true),
    };
    const trigger = {
       id: MSG,
       author: { id: CALLER, bot: false },
       content: `<@${BOT}> ${command}`,
-      reference: replyMessageId ? { messageId: replyMessageId } : undefined,
       editedTimestamp: null as number | null,
       webhookId: null as string | null,
    };
@@ -191,7 +205,7 @@ function harness(command = text, replyMessageId?: string) {
    const containment = vi
       .spyOn(audience, "verifyAudienceContainment")
       .mockResolvedValue(true);
-   const bound = parseActionRequest(command, G, C, replyMessageId)!;
+   const bound = parseActionRequest(command, G)!;
    const executor = createDiscordActionExecutor(
       () => client,
       memory.db(),
@@ -222,8 +236,50 @@ function harness(command = text, replyMessageId?: string) {
 }
 
 describe("live effect gates with mocked Discord effects", () => {
+   test("the workspace's own messages are not deletion targets", async () => {
+      const h = harness(
+         `borra https://discord.com/channels/${G}/${C}/${DELETED}`,
+      );
+      await expect(h.executor.execute(h.bound)).rejects.toThrow(
+         "Objetivo protegido",
+      );
+      expect(h.message.delete).not.toHaveBeenCalled();
+      h.memory.close();
+   });
+   test("a departed author's message can still be deleted; requester/owner stay protected", async () => {
+      const departed = () =>
+         Object.assign(new Error("Unknown Member"), { code: 10007 });
+      const h = harness(DEL);
+      h.guild.members.fetch.mockImplementation(async ({ user }: any) => {
+         if (user === CALLER) return h.caller;
+         throw departed();
+      });
+      await h.executor.execute(h.bound);
+      expect(h.message.delete).toHaveBeenCalledTimes(1);
+      h.memory.close();
+      const owner = harness(DEL);
+      owner.guild.ownerId = TARGET;
+      owner.guild.members.fetch.mockImplementation(async ({ user }: any) => {
+         if (user === CALLER) return owner.caller;
+         throw departed();
+      });
+      await expect(owner.executor.execute(owner.bound)).rejects.toThrow(
+         "Objetivo protegido",
+      );
+      expect(owner.message.delete).not.toHaveBeenCalled();
+      owner.memory.close();
+   });
+   test("removing a timeout that is not active is refused, not logged as executed", async () => {
+      const h = harness(`quita el timeout a <@${TARGET}>`);
+      h.target.isCommunicationDisabled.mockReturnValue(false);
+      await expect(h.executor.execute(h.bound)).rejects.toThrow(
+         "timeout activo",
+      );
+      expect(h.target.timeout).not.toHaveBeenCalled();
+      h.memory.close();
+   });
    test("a human trigger already cited by the action trail remains evidence even without staff roles", async () => {
-      const h = harness("borra este mensaje", DELETED);
+      const h = harness(DEL);
       new ModerationStore(h.memory.db()).record({
          guildId: G,
          actorId: TARGET,
@@ -231,7 +287,7 @@ describe("live effect gates with mocked Discord effects", () => {
          action: "escalation",
          reason: "Reporte ficticio",
          triggerMessageId: DELETED,
-         channelId: C,
+         channelId: OTHER,
          outcome: "escalated",
          timestamp: Date.now(),
       });
@@ -242,7 +298,7 @@ describe("live effect gates with mocked Discord effects", () => {
       h.memory.close();
    });
    test("public thread deletion proves the parent's audience", async () => {
-      const h = harness("borra este mensaje", DELETED);
+      const h = harness(DEL);
       h.channel.type = 11;
       h.channel.isThread = () => true;
       const parent = { id: "200000000000000007", type: 15 };
@@ -255,9 +311,9 @@ describe("live effect gates with mocked Discord effects", () => {
    test.each([
       text,
       `quita el timeout a <@${TARGET}>`,
-      "borra este mensaje por motivo ficticio",
+      `${DEL} por motivo ficticio`,
    ])("effect and trail %s work without Administrator", async (command) => {
-      const h = harness(command, DELETED),
+      const h = harness(command),
          store = new ModerationStore(h.memory.db()),
          sendLog = vi.fn(async () => {
             throw new Error("delivery failed");
@@ -286,7 +342,7 @@ describe("live effect gates with mocked Discord effects", () => {
       if (h.bound.action === "message_deleted") {
          expect(h.message.delete).toHaveBeenCalledTimes(1);
          expect(h.message.delete).toHaveBeenCalledWith(
-            `/channels/${C}/messages/${DELETED}`,
+            `/channels/${OTHER}/messages/${DELETED}`,
             { reason: expect.stringContaining(CALLER) },
          );
          const line = sendLog.mock.calls[0][0];
@@ -349,16 +405,16 @@ describe("live effect gates with mocked Discord effects", () => {
       "missing-manage",
       "bot-authored",
       "audience",
-      "changed-reply",
+      "changed-link",
       "private-thread",
    ])("single deletion refuses %s", async (scenario) => {
-      const h = harness("borra este mensaje", DELETED);
+      const h = harness(DEL);
       if (scenario === "missing-manage")
          h.caller.permissions.remove(P.ManageMessages);
       if (scenario === "bot-authored") h.message.author.bot = true;
       if (scenario === "audience") h.containment.mockResolvedValue(false);
-      if (scenario === "changed-reply")
-         h.trigger.reference = { messageId: TARGET };
+      if (scenario === "changed-link")
+         h.trigger.content = `<@${BOT}> borra https://discord.com/channels/${G}/${OTHER}/${TARGET}`;
       if (scenario === "private-thread") {
          h.channel.type = 12;
          h.channel.isThread = () => true;

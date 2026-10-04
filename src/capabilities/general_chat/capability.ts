@@ -169,12 +169,7 @@ export class GeneralChatCapability implements Capability {
             : null;
       const partner = access && (await access.workspace()) ? access : null;
       const parsedAction = ctx.guildId
-         ? parseActionRequest(
-              ctx.requestText,
-              ctx.guildId,
-              ctx.channelId,
-              ctx.replyMessageId,
-           )
+         ? parseActionRequest(ctx.requestText, ctx.guildId)
          : null;
       // New effects are restricted to the verified staff workspace. Public
       // ban compatibility is unchanged; public timeout jokes expose no tool.

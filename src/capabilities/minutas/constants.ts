@@ -104,3 +104,9 @@ export const WHISPER_VOCABULARY =
 
 /** Hard cap on the whisper prompt (characters), well inside its token window. */
 export const WHISPER_PROMPT_MAX_CHARS = 600;
+
+/**
+ * Revolución Z's restricted `minutas-moderación` channel: conduct items from an
+ * acta go here (only after an audience check), never to the public minutes.
+ */
+export const MODERATION_MINUTES_CHANNEL_ID = "1456850926806503555";

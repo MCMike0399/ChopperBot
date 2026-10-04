@@ -40,6 +40,9 @@ describe("current explicit ban request", () => {
       `banea a <@${TARGET}>\npor acoso`,
       "sí, hazlo",
       "ban @apodo",
+      `banea a <@${TARGET}> por acoso si lo vuelve a hacer`,
+      `banea a <@${TARGET}> por acoso, mejor no`,
+      `banea a <@${TARGET}> por acoso tal vez`,
    ])(
       "does not authorize quoted/conditional/ambiguous/implicit actions: %s",
       (text) => {

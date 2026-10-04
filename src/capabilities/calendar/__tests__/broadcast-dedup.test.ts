@@ -37,3 +37,18 @@ test.each([false, true])("repair/adopt our own new duplicate copies after REST a
    expect(deleteDuplicate).toHaveBeenCalledTimes(1);
    expect(deleteOld).not.toHaveBeenCalled();
 });
+test("a pre-send failure releases the reservation so a fixed channel can retry at once", async () => {
+   const memory = new SqliteMemoryStore({ path: ":memory:" });
+   await memory.migrate("calendar", CALENDAR_MIGRATIONS);
+   const store = new CalendarStore(memory.db());
+   expect(store.reserveBroadcast(12, 1000, "channel", "first", 100)).toMatchObject({ reserved: true });
+   // e.g. channel_not_sendable before any POST: nothing can have been sent.
+   store.releaseBroadcast(12, 1000, "channel", "first");
+   expect(store.reserveBroadcast(12, 1000, "channel", "retry", 200)).toMatchObject({ reserved: true });
+   // A posted delivery is never released, and a stale token can't release it.
+   store.finishBroadcast(12, 1000, "channel", "retry", "message");
+   store.releaseBroadcast(12, 1000, "channel", "retry");
+   store.releaseBroadcast(12, 1000, "channel", "first");
+   expect(store.reserveBroadcast(12, 1000, "channel", "third", 300)).toMatchObject({ reserved: false, messageId: "message" });
+   memory.close();
+});

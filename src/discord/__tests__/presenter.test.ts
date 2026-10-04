@@ -14,6 +14,7 @@ import {
 function fakeMessage() {
    const ops: string[] = [];
    const sends: Array<{ content: string; allowedMentions?: unknown }> = [];
+   const replies: Array<{ content: string; allowedMentions?: unknown }> = [];
    let typingCount = 0;
    const mkPosted = (): Message =>
       ({
@@ -33,10 +34,24 @@ function fakeMessage() {
          ops.push(`react:${emoji}`);
          return reaction;
       }),
-      reply: vi.fn(async (content: string) => {
-         ops.push(`reply:${content}`);
-         return mkPosted();
-      }),
+      author: { id: "200000000000000001" },
+      reply: vi.fn(
+         async (
+            options: string | { content: string; allowedMentions?: unknown },
+         ) => {
+            const content =
+               typeof options === "string" ? options : options.content;
+            replies.push({
+               content,
+               allowedMentions:
+                  typeof options === "string"
+                     ? undefined
+                     : options.allowedMentions,
+            });
+            ops.push(`reply:${content}`);
+            return mkPosted();
+         },
+      ),
       reactions: { cache: { get: () => undefined } },
       channel: {
          send: vi.fn(
@@ -64,6 +79,7 @@ function fakeMessage() {
    return {
       ops,
       sends,
+      replies,
       message: message as unknown as PresentableMessage,
       typing: () => typingCount,
    };
@@ -94,6 +110,30 @@ describe("ReactionTurnPresenter (public conversation style)", () => {
       ).toHaveLength(0);
       expect(ops).toContain("reply:hola");
       expect(ops).toContain("send:sigo aquí");
+   });
+
+   test("a public reply notifies only the asker, never other members it names", async () => {
+      const { message, replies, sends } = fakeMessage();
+      const p = new ReactionTurnPresenter(message, "bot");
+      await p.begin();
+      await p.deliver([
+         "Hablaban <@200000000000000002> y <@200000000000000003>.",
+         "Y también <@200000000000000004>.",
+      ]);
+      await settle();
+      const asker = {
+         parse: [],
+         users: ["200000000000000001"],
+         roles: [],
+      };
+      expect(replies[0].allowedMentions).toEqual({
+         ...asker,
+         repliedUser: true,
+      });
+      expect(sends[0].allowedMentions).toEqual({
+         ...asker,
+         repliedUser: false,
+      });
    });
 
    test("keeps typing alive until the reply posts, then stops", async () => {
@@ -147,7 +187,17 @@ describe("ReactionTurnPresenter (public conversation style)", () => {
     * used to pass `{ repliedUser: false }` alone, which handed @everyone and
     * role pings back to whatever the model wrote.
     */
-   test("every channel send carries the users-only mention policy", async () => {
+   test("an empty failure text marks ❌ without posting (suppressed repeat)", async () => {
+      const { ops, message } = fakeMessage();
+      const p = new ReactionTurnPresenter(message, "bot");
+      await p.begin();
+      await p.fail("");
+      await settle();
+      expect(ops.filter((o) => o.startsWith("reply:"))).toHaveLength(0);
+      expect(ops).toContain("react:❌");
+   });
+
+   test("every channel send carries the asker-only mention policy", async () => {
       const { sends, message } = fakeMessage();
       (message as unknown as { reply: unknown }).reply = vi.fn(async () => {
          throw new Error("Unknown Message"); // force the fallback path too
@@ -158,8 +208,11 @@ describe("ReactionTurnPresenter (public conversation style)", () => {
 
       expect(sends).toHaveLength(2);
       for (const s of sends) {
+         // No @everyone/role parse, and only the asker can be notified.
          expect(s.allowedMentions).toEqual({
-            parse: ["users"],
+            parse: [],
+            users: ["200000000000000001"],
+            roles: [],
             repliedUser: false,
          });
       }

@@ -54,8 +54,8 @@ Acciones implementadas, solo con solicitud explícita actual verificada en códi
 @ChopperBot banea a @persona por motivo.
 @ChopperBot timeout @persona 1h por motivo (también silencia a @persona 30m por motivo; m/h/d, predeterminado 1h, máximo 7d).
 @ChopperBot quita el timeout a @persona.
-@ChopperBot borra este mensaje por motivo (respuesta directa), o borra un enlace real de mensaje por motivo.
-Timeouts y borrado se solicitan aquí en el espacio restringido. Solo una mención real o un mensaje; nunca por historial, recomendación o confirmación implícita. Protejo al dueño, bots, quien lo pide y staff de eventos (incluida Gestión); compruebo jerarquía y permisos en vivo. El borrado necesita ViewChannel y ManageMessages de quien lo pide en el canal objetivo. Solo promete ejecutar cuando la herramienta correspondiente está adjunta este turno.`
+@ChopperBot borra <enlace real del mensaje> por motivo (un solo mensaje; no borro mensajes de este espacio de moderación).
+Timeouts y borrado se solicitan aquí en el espacio restringido. Solo una mención real o un enlace; nunca por historial, recomendación, condición ("si…", "tal vez") o confirmación implícita. Protejo al dueño, bots, quien lo pide y staff de eventos (incluida Gestión); compruebo jerarquía y permisos en vivo. El borrado necesita ViewChannel y ManageMessages de quien lo pide en el canal objetivo. Solo promete ejecutar cuando la herramienta correspondiente está adjunta este turno.`
          : `${snapshot.hasPermissions === true ? "Tengo permisos de moderación, pero solo actúo cuando el equipo de moderación me lo pide explícitamente." : snapshot.hasPermissions === false ? "No tengo permisos efectivos de moderación en este servidor ahora; no prometas acciones." : "No pude verificar mis permisos actuales; no inventes que tengo o no tengo autoridad."} No compartas el detalle operativo ni instrucciones para sancionar.`;
       // Role names and permission values are operational details: only the
       // restricted moderator workspace sees them, never a public channel.

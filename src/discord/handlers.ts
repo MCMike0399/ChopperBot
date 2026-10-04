@@ -266,9 +266,12 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
             // the channel got the English "check the logs" — which read as the bot
             // brushing the question off. The filter case now recovers inside ask();
             // this is the generic last resort.)
-            if (allowErrorReply(message.channelId, GENERIC_ERROR_REPLY))
-               await presenter.fail(GENERIC_ERROR_REPLY);
-            else await presenter.discard();
+            // A suppressed repeat still shows ❌ so the member isn't ignored.
+            await presenter.fail(
+               allowErrorReply(message.channelId, GENERIC_ERROR_REPLY)
+                  ? GENERIC_ERROR_REPLY
+                  : "",
+            );
             return;
          }
 

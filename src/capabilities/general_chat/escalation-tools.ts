@@ -42,7 +42,10 @@ export function sanitizeEscalationSummary(summary: string): string {
    return summary
       .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
       .replace(/<(?:@[!&]?|#|\/[^:>]*:)\d+>/g, "[mención]")
-      .replace(/\b(?:https?:\/\/|www\.)\S+/gi, "[enlace omitido]")
+      .replace(
+         /\b(?:https?:\/\/|www\.|discord\.gg\/|discord(?:app)?\.com\/invite\/)\S+/gi,
+         "[enlace omitido]",
+      )
       .replace(/[\\*_`~|>#\[\]()«»]/g, "")
       .replace(/@(everyone|here)/gi, "$1")
       .replace(/\s+/g, " ")

@@ -931,6 +931,19 @@ export class CalendarStore {
     })();
   }
 
+  /**
+   * Drop a reservation whose failure happened BEFORE any POST (channel gone,
+   * not sendable, forum not postable/untitled): nothing can have been sent, so
+   * a retry after the mod fixes the cause must not wait out the 10-min lock.
+   * Ambiguous failures (a thrown send) keep the reservation — Discord may have
+   * accepted the POST.
+   */
+  releaseBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string): void {
+    this.db.prepare(`DELETE FROM calendar_broadcast_deliveries
+      WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND token = ? AND message_id IS NULL`)
+      .run(eventId, occurrenceStartAt, channelId, token);
+  }
+
   finishBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, messageId: string): void {
     this.db.prepare(`UPDATE calendar_broadcast_deliveries SET message_id = ?, outcome = 'posted'
       WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND token = ?`)

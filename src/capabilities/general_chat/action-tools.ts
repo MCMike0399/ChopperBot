@@ -9,6 +9,7 @@ import type { CapabilityTurnContext } from "../capability.js";
 import { eventRoleTokens, isModTurn } from "../mod-authority.js";
 import { isModCaller } from "../../discord/mod-roles.js";
 import { stripBotMention } from "../../discord/handlers.js";
+import { isHedgedReason } from "./moderation-tools.js";
 import { LOG_CHANNEL_IDS, ModerationStore } from "../../moderation/store.js";
 import { verifyAudienceContainment } from "../../discord/audience.js";
 import { PartnerAccess } from "../../moderation/access.js";
@@ -35,12 +36,14 @@ export type ActionRequest =
      };
 export const MAX_TIMEOUT_MS = 7 * 86_400_000;
 
-/** Only the current standalone imperative and real IDs can authorize an effect. */
+/**
+ * Only the current standalone imperative and real IDs can authorize an effect.
+ * Deletion is link-only: a reply form could only ever reach messages inside
+ * the workspace itself (the only place these tools attach).
+ */
 export function parseActionRequest(
    text: string | undefined,
    guildId: string,
-   channelId: string,
-   replyMessageId?: string,
 ): ActionRequest | null {
    if (!text || /[\n\r`"?¿]|<@&|jaj+a*|\bxd\b|broma|😂|🤣/iu.test(text))
       return null;
@@ -55,6 +58,10 @@ export function parseActionRequest(
    );
    if (timeout || remove) {
       if ((text.match(/<@!?\d+>/g) ?? []).length !== 1 || /https?:/i.test(text))
+         return null;
+      const why = timeout ? timeout[4] : remove![2];
+      // "por spam 24h": a duration after the reason would be silently ignored.
+      if (isHedgedReason(why) || /\d+\s*[mhd]\.?$/i.test(why ?? ""))
          return null;
       if (remove)
          return {
@@ -82,20 +89,10 @@ export function parseActionRequest(
          reason: reason(timeout![4]),
       };
    }
-   const reply = command.match(
-      /^borra\s+este\s+mensaje(?:\s+por\s+(.{1,300}))?[.!]?$/i,
-   );
-   if (reply && replyMessageId && /^\d{17,20}$/.test(replyMessageId))
-      return {
-         action: "message_deleted",
-         targetId: replyMessageId,
-         channelId,
-         reason: reason(reply[1]),
-      };
    const link = command.match(
       /^borra\s+https:\/\/(?:www\.)?discord\.com\/channels\/(\d{17,20})\/(\d{17,20})\/(\d{17,20})(?:\s+por\s+(.{1,300}))?[.!]?$/i,
    );
-   if (link && link[1] === guildId)
+   if (link && link[1] === guildId && !isHedgedReason(link[4]))
       return {
          action: "message_deleted",
          targetId: link[3],
@@ -167,8 +164,6 @@ export function createDiscordActionExecutor(
          const current = parseActionRequest(
             stripBotMention(client, trigger.content, guild).trim(),
             guild.id,
-            source.id,
-            trigger.reference?.messageId,
          );
          if (
             trigger.author.id !== ctx.userId ||
@@ -224,6 +219,9 @@ export function createDiscordActionExecutor(
             const destinationId = new ModerationStore(db).settings(
                guild.id,
             ).moderation_channel_id;
+            // The workspace's own discussion is not a deletion target.
+            if (request.channelId === destinationId)
+               throw new Error("Objetivo protegido o jerarquía insuficiente.");
             const destination = destinationId
                ? await guild.channels.fetch(destinationId, { force: true })
                : null;
@@ -262,31 +260,53 @@ export function createDiscordActionExecutor(
                evidence: `Autor: ${targetId} · Canal: ${channel.id} · Fecha UTC: ${message.createdAt.toISOString()}\nExtracto citado: «${sanitizeEscalationSummary(message.content).slice(0, 200)}»`,
             };
          }
-         const target = await guild.members.fetch({
-            user: targetId,
-            force: true,
-         });
+         // A deleted message's author may have left or been banned (the
+         // commonest raid cleanup): no member means no hierarchy to protect,
+         // but the requester, owner and bot stay off-limits.
+         const target = await guild.members
+            .fetch({ user: targetId, force: true })
+            .catch((err: unknown) => {
+               if (
+                  request.action === "message_deleted" &&
+                  (err as { code?: unknown })?.code === 10007
+               )
+                  return null;
+               throw err;
+            });
          if (
-            target.id === caller.id ||
-            target.id === bot.id ||
-            target.id === guild.ownerId ||
-            target.user.bot ||
-            isModCaller(authority(target), eventRoleTokens(db)) ||
-            (caller.id !== guild.ownerId &&
-               caller.roles.highest.comparePositionTo(target.roles.highest) <=
-                  0) ||
-            bot.roles.highest.comparePositionTo(target.roles.highest) <= 0 ||
-            (request.action !== "message_deleted" &&
-               (!bot.permissions.has(P.ModerateMembers) || !target.moderatable))
+            target === null &&
+            [caller.id, bot.id, guild.ownerId].includes(targetId)
          )
             throw new Error("Objetivo protegido o jerarquía insuficiente.");
+         if (
+            target !== null &&
+            (target.id === caller.id ||
+               target.id === bot.id ||
+               target.id === guild.ownerId ||
+               target.user.bot ||
+               isModCaller(authority(target), eventRoleTokens(db)) ||
+               (caller.id !== guild.ownerId &&
+                  caller.roles.highest.comparePositionTo(
+                     target.roles.highest,
+                  ) <= 0) ||
+               bot.roles.highest.comparePositionTo(target.roles.highest) <= 0 ||
+               (request.action !== "message_deleted" &&
+                  (!bot.permissions.has(P.ModerateMembers) ||
+                     !target.moderatable)))
+         )
+            throw new Error("Objetivo protegido o jerarquía insuficiente.");
+         if (
+            request.action === "timeout_removed" &&
+            !target?.isCommunicationDisabled()
+         )
+            throw new Error("No tiene un timeout activo.");
          if (deletion && request.action === "message_deleted")
             await client.rest.delete(
                Routes.channelMessage(request.channelId, deletion.message.id),
                { reason: auditReason },
             );
          else if (request.action !== "message_deleted")
-            await target.timeout(request.durationMs, auditReason);
+            await target!.timeout(request.durationMs, auditReason);
          log.info(
             {
                guildId: guild.id,

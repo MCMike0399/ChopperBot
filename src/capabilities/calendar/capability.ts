@@ -1,4 +1,4 @@
-import { type Client, type Message } from 'discord.js';
+import { type Client } from 'discord.js';
 import type Database from 'better-sqlite3';
 import { config } from '../../config.js';
 import { log } from '../../log.js';
@@ -143,7 +143,12 @@ export class CalendarCapability implements Capability {
     // always said "cualquier moderadorx de este canal", but nothing checked, so
     // the guarantee was really "whoever can post here". Non-mods keep the read
     // tools (asking what's coming up is fair game); write is fail-closed.
-    const isMod = isEventTurn(this.db, ctx) && await currentCalendarWrite(ctx, this.getDiscordClient);
+    // Gated on WHO is asking, live (events tier), never on phrasing: ambient
+    // transcript text can't change the trigger's author, and a phrase list
+    // ("crea…", "agenda…") silently stripped write tools from real mod turns
+    // ("créalo", "cámbialo a las 8", a bare "a las 7" follow-up). The
+    // transcript stays labelled as quoted data, not instructions.
+    const isMod = isEventTurn(this.db, ctx);
 
     const upcoming = store.listUpcoming(ctx.now.getTime(), SNAPSHOT_LIMIT);
     const outputChannelId = this.resolveOutputChannel();
@@ -453,39 +458,6 @@ export class CalendarCapability implements Capability {
   private approverRoles(): string[] {
     return eventRoleTokens(this.db);
   }
-}
-
-/** Ambient transcripts never supply write consent: only current text or a
- * recent direct bot reply rooted in this caller's explicit write request. */
-export function calendarWriteIntent(text: string | undefined): boolean {
-  if (!text) return false;
-  const folded = text.normalize('NFD').replace(/\p{M}/gu, '').toLowerCase().trim().replace(/^¿/, '');
-  return /^(?:(?:por favor|puedes|podrias|quiero que|ayudame a)\s+)*(?:crea(?:r|me)?|agrega(?:r)?|anade|agenda(?:r|lo)?|edita(?:r)?|actualiza(?:r)?|cambia(?:r)?|mueve(?:lo)?|mover|borra(?:r|lo)?|elimina(?:r|lo)?|cancela(?:r|lo)?|programa(?:r)?|anuncia(?:lo|r)?|publica(?:lo|r)?|sincroniza(?:r)?|pon(?:le|lo)?|re\s*haz|haz)\b/.test(folded);
-}
-
-export async function currentCalendarWrite(
-  ctx: CapabilityTurnContext,
-  getClient: (() => Client) | undefined,
-): Promise<boolean> {
-  if (calendarWriteIntent(ctx.requestText)) return true;
-  if (!getClient || !ctx.replyMessageId || !ctx.requestText ||
-    /[?¿]|^\s*(?:hola|gracias|jaj|no\b)/i.test(ctx.requestText) || ctx.requestText.length > 500) return false;
-  try {
-    const client = getClient(), channel = await client.channels.fetch(ctx.channelId);
-    if (!channel?.isTextBased() || !('messages' in channel)) return false;
-    let before: string | undefined = ctx.replyMessageId;
-    for (let i = 0; i < 8 && before; i++) {
-      const message: Message = await channel.messages.fetch({ message: before, force: true, cache: false });
-      if (i === 0 && message.author.id !== client.user?.id) return false;
-      if (message.webhookId || message.editedTimestamp || ctx.now.getTime() - message.createdTimestamp > 30 * 60_000) return false;
-      if (message.author.id === ctx.userId) {
-        const content = message.content.replace(/<@!?\d+>/g, '').replace(/@ChopperBot/gi, '').trim();
-        if (calendarWriteIntent(content)) return true;
-      } else if (message.author.id !== client.user?.id) return false;
-      before = message.reference?.messageId;
-    }
-  } catch { /* Unknown reply-chain consent fails closed. */ }
-  return false;
 }
 
 /**

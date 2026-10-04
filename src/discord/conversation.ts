@@ -10,7 +10,6 @@ import {
 
 export const CONVERSATION_WINDOW_MS = 30 * 86_400_000;
 export const RECENT_MESSAGE_LIMIT = 100;
-export const RECENT_CHAR_LIMIT = 32_000;
 export const HISTORY_CHAR_LIMIT = 100_000;
 
 export interface ConversationMessage {
@@ -333,7 +332,9 @@ export function renderConversationContext(
       ),
       ...(!window.complete
          ? [
-              "[Ventana parcial: hay más historial; consulta server_conversation_history si hace falta.]",
+              // Tool-neutral on purpose: this block also reaches capabilities
+              // (calendar) that have no history tool to promise.
+              "[Ventana parcial: hay historial anterior que no aparece aquí; no supongas que esto es todo lo que se dijo.]",
            ]
          : []),
    ].join("\n");

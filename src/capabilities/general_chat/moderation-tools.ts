@@ -16,6 +16,21 @@ export interface BanRequest {
 }
 
 /**
+ * A reason that hedges or conditions the order ("por spam si lo vuelve a
+ * hacer", "por spam, mejor no", "tal vez") is not an explicit order: the
+ * command regexes accept any text after "por", so this check is what keeps
+ * conditionals from authorizing an effect. Shared by every sanction parser.
+ */
+export function isHedgedReason(reason: string | undefined): boolean {
+   return (
+      !!reason &&
+      /(?<![\p{L}\d])(?:si|cuando|en\s+caso|quiz[aá]s?|tal\s+vez|a\s+lo\s+mejor|mejor\s+no|espera|todav[ií]a\s+no|a[uú]n\s+no|pero\s+no|no\s+lo\s+hagas)(?![\p{L}\d])|,\s*no(?![\p{L}\d])/iu.test(
+         reason,
+      )
+   );
+}
+
+/**
  * Only a standalone, current imperative naming ONE member authorizes a ban.
  * Questions, conditionals, quotes, reply history and model interpretation do
  * not. Broader natural-language requests get directed to this explicit syntax.
@@ -27,7 +42,12 @@ export function parseBanRequest(text: string | undefined): BanRequest | null {
       .match(
          /^(?:por favor[,:]?\s+)?(?:banea|banee|banear|baneá|ban)\s+(?:a\s+)?<@!?(\d{17,20})>(?:\s+(?:por|for|motivo:|reason:)\s+(.{1,300}))?[.!]?$/i,
       );
-   if (!match || (text.match(/<@!?\d+>/g) ?? []).length !== 1) return null;
+   if (
+      !match ||
+      (text.match(/<@!?\d+>/g) ?? []).length !== 1 ||
+      isHedgedReason(match[2])
+   )
+      return null;
    return {
       targetId: match[1],
       reason: match[2]?.trim() || "Solicitud explícita de moderación.",

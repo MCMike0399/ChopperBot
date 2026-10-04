@@ -220,6 +220,13 @@ export class TranscriptCache {
                (!m.bot || m.authorId === options.botId) &&
                m.text,
          )
+         // Gateway-fed rows lack the REST path's self label; apply it at read
+         // time so the model never mistakes its own replies for a member's.
+         .map((m) =>
+            m.authorId === options.botId && m.author !== "ChopperBot (tú)"
+               ? { ...m, author: "ChopperBot (tú)" }
+               : m,
+         )
          .sort((a, b) => (BigInt(a.id) < BigInt(b.id) ? -1 : 1));
       let selected = all.filter(
          (m) => !entry.windowStart || BigInt(m.id) >= BigInt(entry.windowStart),
@@ -277,6 +284,10 @@ export class TranscriptCache {
       fetch: () => Promise<ConversationMessage>,
    ): void {
       this.delete(channelId, messageId);
+      // Nothing cached or loading for this channel: a later backfill reads the
+      // current text via REST anyway, so skip the per-edit GET (other bots
+      // editing old embeds guild-wide would otherwise cost one each).
+      if (!this.entries.has(channelId)) return;
       if (this.partialFetches.size >= 1000) return;
       const key = `${channelId}:${messageId}`,
          revision = ++this.revision;
@@ -367,4 +378,10 @@ export function registerTranscriptCache(client: Client): void {
    client.on(Events.ChannelDelete, (channel) => cache.drop(channel.id));
    client.on(Events.ThreadDelete, (thread) => cache.drop(thread.id));
    client.on(Events.ShardDisconnect, () => cache.clear());
+   // ShardDisconnect only fires on unrecoverable closes. A reconnect that
+   // opens a NEW session (no resume) replays nothing, so deletes during the
+   // gap would never arrive and a removed message (e.g. doxxing) could live
+   // on in ambient context. ShardReady fires exactly on a new session;
+   // a successful resume (ShardResume) replays missed events and keeps it.
+   client.on(Events.ShardReady, () => cache.clear());
 }

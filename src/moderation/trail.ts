@@ -17,7 +17,7 @@ export function renderModLog(entry: TrailEntry): string {
       message_deleted: "mensaje borrado",
       escalation: "reporte enviado",
    }[entry.action];
-   return `**Acción de moderación: ${label}**\nSolicitó: <@${entry.actorId}> · Objetivo ID: ${entry.targetId}\nSolicitud: https://discord.com/channels/${entry.guildId}/${entry.channelId}/${entry.triggerMessageId}\nResultado: ejecutado. Motivo citado: «${sanitizeEscalationSummary(entry.reason).slice(0, 300)}»`;
+   return `**Acción de moderación: ${label}**\nSolicitó: <@${entry.actorId}> · ${entry.action === "message_deleted" ? "Mensaje" : "Objetivo"} ID: ${entry.targetId}\nSolicitud: https://discord.com/channels/${entry.guildId}/${entry.channelId}/${entry.triggerMessageId}\nResultado: ejecutado. Motivo citado: «${sanitizeEscalationSummary(entry.reason).slice(0, 300)}»`;
 }
 
 /** Record success before private evidence delivery; failed logs never replay effects. */
@@ -86,9 +86,16 @@ export async function sendModerationLine(
       !(await verifyAudienceContainment(guild, null, channel))
    )
       throw new Error("workspace_audience_unverified");
-   const roles = ping ? settings.escalation_ping_role_ids : [];
-   if (roles.some((id) => !guild.roles.cache.has(id)))
-      throw new Error("ping_role_unresolved");
+   // A deleted/renamed-away ping role must not lose the note itself — urgent
+   // reports are the only ones that ping, so failing here would drop exactly
+   // the most serious class. Deliver unpinged and say so in the journal.
+   const configured = ping ? settings.escalation_ping_role_ids : [];
+   const roles = configured.filter((id) => guild.roles.cache.has(id));
+   if (roles.length < configured.length)
+      log.warn(
+         { guildId, missing: configured.filter((id) => !roles.includes(id)) },
+         "moderation.ping_role_unresolved",
+      );
    await channel.send({
       content: `${roles.map((id) => `<@&${id}>`).join(" ")}${roles.length ? "\n" : ""}${content}`,
       allowedMentions: { parse: [], users: [], roles, repliedUser: false },
@@ -104,6 +111,7 @@ function refusalCode(err: unknown): string {
    if (text.includes("Objetivo protegido"))
       return "protected_target_or_hierarchy";
    if (text.includes("Canal no disponible")) return "channel_unavailable";
+   if (text.includes("timeout activo")) return "not_timed_out";
    return "effect_unconfirmed";
 }
 

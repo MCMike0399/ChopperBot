@@ -16,7 +16,8 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ## 2.6.1 — 2026-10-04
 
-- Si se repite un fallo, ChopperBot evita llenar el canal con el mismo mensaje de error.
+- Si se repite un fallo, ChopperBot evita llenar el canal con el mismo mensaje de error (deja solo la ❌).
+- En sus respuestas, ChopperBot solo notifica a quien le habla: las personas que nombra ya no reciben ping.
 - Los anuncios repetidos del mismo evento ya no generan nuevas copias ni avisos inmediatos. También recupera publicaciones aceptadas cuando se pierde la respuesta de Discord.
 - Al arrancar, espera y vuelve a intentar si hay un fallo temporal de conexión con Discord.
 - La revisión de publicaciones de Instagram vuelve a intentar una vez cuando la IA responde vacía, antes de dejar la publicación pendiente.
@@ -26,12 +27,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 - ChopperBot tiene más contexto de la conversación para entender referencias y seguir lo que se habla, también en el canal del calendario. Respeta los cambios y mensajes borrados.
 - Consulta mejor los eventos y el directorio antes de responder que no sabe. Puede ubicar nombres vistos en el canal y usar menciones reales, sin activar avisos de entrada.
 - Los talleres conservan más conversación y resúmenes con más detalle.
-- Las minutas largas se redactan de una sola vez cuando caben. Si aparecen asuntos de convivencia o moderación, la publicación queda sin nombres ni detalles identificables y el acta completa se conserva para revisión interna.
+- Las minutas largas se redactan de una sola vez cuando caben. Si aparecen asuntos de convivencia o moderación sobre personas concretas, esos puntos se separan del acta pública, sin nombres, y el detalle queda para revisión del equipo de moderación. El resto de la minuta se publica normal.
 - Los mensajes que sirven de evidencia en el registro de moderación quedan protegidos frente al borrado.
 
 ## 2.5.0 — 2026-10-04
 
-- Moderación puede pedir un silencio temporal, retirarlo o borrar un mensaje concreto desde su espacio de trabajo. Cada acción exige una orden explícita, comprueba quién la pide y deja registro; el bot no sanciona por su cuenta.
+- Moderación puede pedir un silencio temporal, retirarlo o borrar un mensaje concreto (con su enlace) desde su espacio de trabajo. Cada acción exige una orden explícita y sin condiciones, comprueba quién la pide y deja registro; el bot no sanciona por su cuenta.
 - Los silencios admiten minutos, horas o días: una hora si no se indica duración y siete días como máximo. El equipo de eventos sigue protegido.
 - Solo los reportes urgentes avisan al rol de Moderación. Los de gravedad alta llegan sin ping.
 - Iniciar o cerrar una grabación de minutas queda reservado a moderación.
