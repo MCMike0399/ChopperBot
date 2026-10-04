@@ -30,13 +30,13 @@ import {
    hasImages,
    parentImagesLabel,
    renderThreadContext,
+   repairMemberMentions,
 } from "./turn-context.js";
 import {
    createDiscordConversationProvider,
-   readConversation,
-   RECENT_CHAR_LIMIT,
    renderConversationContext,
 } from "./conversation.js";
+import { transcriptCacheFor } from "./transcript-cache.js";
 
 export interface HandlerDeps {
    registry: CapabilityRegistry;
@@ -190,7 +190,10 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                         );
                      }
                   }
-                  const turnText = [...context.blocks, userText].join("\n\n");
+                  const turnText = [
+                     ...context.blocks.filter((b) => b !== context.transcript),
+                     userText,
+                  ].join("\n\n");
                   const turns: Turn[] = normalizeTurns([
                      ...history,
                      { role: "user", content: turnText, attachments },
@@ -234,6 +237,9 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
 
                   return ask({
                      system: turn.system,
+                     stableSystem: turn.stableSystem,
+                     systemTail: turn.systemTail,
+                     channelTranscript: context.transcript,
                      messages: turns,
                      tools: turn.tools,
                      // Capability-declared tier. `ask()` normalises, so omitting it
@@ -277,6 +283,26 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
             ]);
             return;
          }
+         if (message.guildId && /<@!?[^!&\d]/.test(reply)) {
+            try {
+               const provider = createDiscordConversationProvider(
+                  () => client,
+                  message.guildId,
+                  message.author.id,
+                  message.channelId,
+                  client.user?.id ?? null,
+               );
+               reply = repairMemberMentions(
+                  reply,
+                  await transcriptCacheFor(client).identities(
+                     provider,
+                     message.channelId,
+                  ),
+               );
+            } catch {
+               reply = repairMemberMentions(reply, []);
+            }
+         }
          reportSpanishStyle(reply, {
             capability: servedBy,
             channelId: message.channelId,
@@ -293,27 +319,37 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
 /**
  * Context beyond the message's own words: the replied-to message (whose images
  * the caller attaches), and — only for capabilities that opt in via
- * `channelContext` — the thread title/opening post and the last few messages of
+ * `channelContext` — the thread title/opening post and the bounded rolling transcript of
  * the channel, including replies.
  *
  * Opt-in because ambient text is OTHER members' words: fine as context for
- * general_chat, whose ban tool is separately bound to an explicit current
- * moderator request. Calendar/config do not opt in. Every lookup is
+ * general_chat and calendar. Writes have independent current-request gates;
+ * configuration does not opt in. Every lookup is
  * best-effort — a failed fetch costs the context, never the turn.
  */
 export async function gatherTurnContext(
    client: Client,
    message: Message,
    withChannelContext: boolean,
-): Promise<{ parent: Message | null; blocks: string[] }> {
+): Promise<{ parent: Message | null; blocks: string[]; transcript?: string }> {
    const blocks: string[] = [];
+   let transcript: string | undefined;
    const refId = message.reference?.messageId;
    let parent: Message | null = null;
    if (refId) {
       // Usually a cache hit: buildHistory fetched the same parent just before.
-      const fetched = await message.channel.messages
-         .fetch(refId)
-         .catch(() => null);
+      const fetched = await (async () => {
+         if (message.guildId) {
+            await createDiscordConversationProvider(
+               () => client,
+               message.guildId,
+               message.author.id,
+               message.channelId,
+               client.user?.id ?? null,
+            ).checkAccess!(message.channelId);
+         }
+         return message.channel.messages.fetch(refId);
+      })().catch(() => null);
       // Only a member's or our own message — another bot's is not context.
       if (
          fetched &&
@@ -338,7 +374,14 @@ export async function gatherTurnContext(
          );
       }
       if (message.guildId) {
-         const recent = await readConversation(
+         const cache = transcriptCacheFor(client);
+         const tokenBudget = cache.busy(
+            message.channelId,
+            message.createdTimestamp,
+         )
+            ? config.CONTEXT_AMBIENT_TOKENS
+            : config.CONTEXT_QUIET_TOKENS;
+         const recent = await cache.read(
             createDiscordConversationProvider(
                () => client,
                message.guildId,
@@ -350,18 +393,25 @@ export async function gatherTurnContext(
             {
                now: message.createdTimestamp,
                before: message.id,
-               pages: 1,
-               maxChars: RECENT_CHAR_LIMIT - 600,
+               pages: config.CONTEXT_BACKFILL_PAGES,
+               maxChars:
+                  Math.min(config.CONTEXT_AMBIENT_CHARS, tokenBudget * 3) - 600,
+               botId: client.user?.id ?? null,
             },
          );
          const block = renderConversationContext(recent);
-         if (block) blocks.push(block);
+         if (block) {
+            blocks.push(block);
+            transcript = block;
+         }
          log.info(
             {
                channelId: message.channelId,
                messages: recent.messages.length,
                chars: block?.length ?? 0,
                complete: recent.complete,
+               estimatedTokens: Math.ceil((block?.length ?? 0) / 3),
+               tokenBudget,
             },
             "conversation.recent_context",
          );
@@ -372,7 +422,7 @@ export async function gatherTurnContext(
          "turn_context.fetch_failed",
       );
    }
-   return { parent, blocks };
+   return { parent, blocks, transcript };
 }
 
 /**

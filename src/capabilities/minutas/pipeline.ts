@@ -21,6 +21,7 @@ import {
    generateMinutes,
    renderMinutesPost,
    renderMinutesSummaryPost,
+   publicMinutes,
    type MinutesMeta,
 } from "./minutes.js";
 import { minioPrefixFor, type SessionManifest } from "./session.js";
@@ -130,7 +131,15 @@ export async function finalizeSession(
       `${renderTranscriptHeader(meta)}\n\n${transcriptMd}\n`,
    );
    const minutesBody = await generateMinutes(transcriptMd, meta);
-   const minutesMd = `${renderMinutesPost(minutesBody, meta)}\n`;
+   const publicActa = publicMinutes(transcriptMd, minutesBody, meta);
+   if (publicActa.redacted) {
+      await writeFile(
+         join(dir, "minuta-interna.md"),
+         `${renderMinutesPost(minutesBody, meta)}\n`,
+      );
+      log.info({ sessionId }, "minutas.conduct_redacted");
+   }
+   const minutesMd = `${renderMinutesPost(publicActa.body, publicActa.meta)}\n`;
    await writeFile(join(dir, ARTIFACTS.minutes), minutesMd);
 
    // ── 5. Publish ────────────────────────────────────────────────────────────
@@ -141,7 +150,11 @@ export async function finalizeSession(
       const published = await publishMinutes({
          client: deps.client,
          channelId: outputChannelId,
-         docText: renderMinutesSummaryPost(minutesBody, meta, `minuta-${sessionId}.md`),
+         docText: renderMinutesSummaryPost(
+            publicActa.body,
+            publicActa.meta,
+            `minuta-${sessionId}.md`,
+         ),
          minutesMd,
          fileBaseName: sessionId,
       });
@@ -319,11 +332,15 @@ async function withPollResults(
    lines: ChatLine[],
 ): Promise<ChatLine[]> {
    if (!lines.some((l) => l.poll && l.messageId)) return lines;
-   const channel = await deps.client.channels.fetch(channelId).catch(() => null);
+   const channel = await deps.client.channels
+      .fetch(channelId)
+      .catch(() => null);
    const fetchMessage =
       channel && "messages" in channel
          ? (id: string) =>
-              (channel as import("discord.js").TextBasedChannel).messages.fetch(id).catch(() => null)
+              (channel as import("discord.js").TextBasedChannel).messages
+                 .fetch(id)
+                 .catch(() => null)
          : null;
    const out: ChatLine[] = [];
    for (const line of lines) {
@@ -335,7 +352,8 @@ async function withPollResults(
       const msg = fetchMessage ? await fetchMessage(line.messageId) : null;
       if (msg?.poll) {
          const tallies = [...msg.poll.answers.values()].map(
-            (a) => `${a.text ?? "?"} (${a.voteCount} ${a.voteCount === 1 ? "voto" : "votos"})`,
+            (a) =>
+               `${a.text ?? "?"} (${a.voteCount} ${a.voteCount === 1 ? "voto" : "votos"})`,
          );
          summary = `${msg.poll.resultsFinalized ? "resultado final" : "votos al cierre"}: ${tallies.join(", ")}`;
       }
@@ -374,12 +392,11 @@ async function readChat(
          .filter((l) => l.trim())
          .map((l) => JSON.parse(l) as ChatLine);
       if (enrich) lines = await enrich(lines);
-      return lines
-         .map((l) => ({
-            atMs: l.t - sessionStartMs,
-            author: l.author,
-            content: l.content,
-         }));
+      return lines.map((l) => ({
+         atMs: l.t - sessionStartMs,
+         author: l.author,
+         content: l.content,
+      }));
    } catch {
       return [];
    }
@@ -403,7 +420,10 @@ function buildMeta(
          : `${minutes} min`;
    const aliases = Object.entries(manifest.aliases ?? {})
       .map(([id, names]) => ({ name: manifest.participants[id], names }))
-      .filter((a): a is { name: string; names: string[] } => !!a.name && a.names.length > 0)
+      .filter(
+         (a): a is { name: string; names: string[] } =>
+            !!a.name && a.names.length > 0,
+      )
       .map((a) => `${a.name} (también aparece como ${a.names.join(", ")})`);
    return {
       title: row.title ?? manifest.channelName ?? "sesión de voz",

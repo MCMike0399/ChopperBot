@@ -52,6 +52,7 @@ import {
 } from "./action-tools.js";
 import { withActionTrail } from "../../moderation/trail.js";
 import { verifyAudienceContainment } from "../../discord/audience.js";
+import { MemberLookupToolSource } from "./member-tools.js";
 
 /** Read-only calendar tools the assistant gets in guilds with a profile, so
  * "¿qué eventos hay esta semana?" is answerable from any channel. Writes stay
@@ -189,6 +190,15 @@ export class GeneralChatCapability implements Capability {
       if (profile.serverDirectoryTools && ctx.guildId) {
          const getClient = this.getDiscordClient;
          sources.push(
+            new MemberLookupToolSource(
+               () => client,
+               this.db,
+               ctx.guildId,
+               ctx.userId,
+               ctx.channelId,
+            ),
+         );
+         sources.push(
             new ConversationToolSource(
                createDiscordConversationProvider(
                   () => getClient(),
@@ -254,6 +264,10 @@ export class GeneralChatCapability implements Capability {
                               actionRequest.channelId,
                               { force: true },
                            );
+                           if (source?.isThread() && source.parentId)
+                              await guild.channels.fetch(source.parentId, {
+                                 force: true,
+                              });
                            const evidenceSource = source?.isThread()
                               ? source.type === 12
                                  ? null
@@ -398,28 +412,32 @@ export class GeneralChatCapability implements Capability {
             ctx.userId,
          );
       }
+      const system = partner
+         ? renderModerationPartnerPrompt(
+              ctx.now,
+              knowledge,
+              ctx.userDisplayName ?? null,
+              banRequest?.targetId ?? null,
+              actionRequest
+                 ? `${actionToolName(actionRequest)} para el ID ${actionRequest.targetId}`
+                 : null,
+           )
+         : renderAssistantPrompt(
+              profile,
+              ctx.now,
+              snapshot,
+              this.resolveChannelName(ctx.channelId),
+              liveHowTo,
+              ctx.userDisplayName ?? null,
+              moderator,
+              banRequest?.targetId ?? null,
+              knowledge,
+           );
+      const tailAt = system.indexOf("# Contexto del turno");
       return {
-         system: partner
-            ? renderModerationPartnerPrompt(
-                 ctx.now,
-                 knowledge,
-                 ctx.userDisplayName ?? null,
-                 banRequest?.targetId ?? null,
-                 actionRequest
-                    ? `${actionToolName(actionRequest)} para el ID ${actionRequest.targetId}`
-                    : null,
-              )
-            : renderAssistantPrompt(
-                 profile,
-                 ctx.now,
-                 snapshot,
-                 this.resolveChannelName(ctx.channelId),
-                 liveHowTo,
-                 ctx.userDisplayName ?? null,
-                 moderator,
-                 banRequest?.targetId ?? null,
-                 knowledge,
-              ),
+         system,
+         stableSystem: tailAt >= 0 ? system.slice(0, tailAt).trimEnd() : system,
+         systemTail: tailAt >= 0 ? system.slice(tailAt) : undefined,
          tools: composeToolSources(sources),
          verifyDelivery: partner ? () => partner.verifyDelivery() : undefined,
          // Chat/history/review remain low. Only a current, independently

@@ -60,15 +60,15 @@ describe("composeUserText", () => {
             users: coll([
                {
                   id: "123456789012345678",
-                  username: "darko_",
-                  globalName: "Darko",
+                  username: "persona_ficticia",
+                  globalName: "Persona ficticia",
                },
             ]),
-            members: { get: () => ({ displayName: "Darko ☭" }) },
+            members: { get: () => ({ displayName: "Persona ficticia" }) },
          },
       });
       expect(composeUserText("dile a <@123456789012345678> que sí", msg)).toBe(
-         "dile a @Darko ☭ que sí",
+         "dile a @Persona ficticia (<@123456789012345678>) que sí",
       );
    });
 

@@ -59,6 +59,7 @@ Measured upside worth remembering: **DeepSeek does not refuse RevZ-shaped politi
 
 ## Loop mechanics (unchanged in spirit, one loop now)
 
+- Stable system → oldest-first quoted channel transcript → reply chain → per-turn tail/current trigger; API cache-hit/miss usage is accumulated across requests in agent_turn. Legacy callers without split fields keep their original full system.
 - `system` + turns → `chat.completions.create`; `tool_calls` → run handlers → one `role:'tool'` message per result → repeat to `MAX_TOOL_ITERATIONS`, then a forcing pass **without `tools`** carrying a prose nudge, with one bounded retry.
 - **`reasoning_content` is echoed back** on every assistant turn. DeepSeek's docs make this a hard requirement whenever the request carries `tools` ("If your code does not correctly pass back `reasoning_content`, the API will return a 400 error"). Probed 2026-09-14: omitting it happened to still return 200 — keep the echo anyway; the documented failure mode is a mid-tool-loop 400 and the echo costs nothing.
 - **Per-turn tool dedup cache** keyed on `(name, stableStringify(input))`; only successes are cached. This is what makes the empty-response retry _and_ the forcing pass safe: a retry that re-emits an identical write call is served from cache and does not re-execute.
@@ -67,7 +68,7 @@ Measured upside worth remembering: **DeepSeek does not refuse RevZ-shaped politi
 - **`shouldAbort`** is checked before each model request and each tool run — never mid-tool, so a write is never half-applied. Workshop uses it so a new message interrupts a running turn.
 - **No sampling params.** Thinking mode ignores `temperature` and DeepSeek deprecated `presence_penalty`/`frequency_penalty`; `top_p` is clamped to ≥0.95 in thinking mode and pinned to 1.0 otherwise. The contract test asserts we send none of them.
 - **`deepseekGate`** (a `Semaphore`, `src/llm/gate.ts`) caps concurrent upstream requests at `DEEPSEEK_MAX_CONCURRENT` (default 3). DeepSeek's own concurrency limit is 2500, so this is a Pi-protection knob, not a provider limit — it used to be `1` because the Kimi coding endpoint degraded under overlap.
-- **Usage is logged per turn** (`agent_turn`): `backend`, `effort`, `model`, iterations, tool names, `inputTokens`, `outputTokens`, **`reasoningTokens`** and `stopReason`. Reasoning bills at the _output_ rate, so it is tracked explicitly — it is the single biggest cost lever the tier controls.
+- **Usage is logged per turn** (`agent_turn`): `backend`, `effort`, `model`, iterations, tool names, `inputTokens`, `outputTokens`, **`reasoningTokens`**, `prompt_cache_hit_tokens`, `prompt_cache_miss_tokens` and `stopReason`. Reasoning bills at the _output_ rate, so it is tracked explicitly — it is the single biggest cost lever the tier controls.
 
 ## Health watchdog (`src/llm/health.ts`)
 

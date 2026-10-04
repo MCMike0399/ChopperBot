@@ -22,9 +22,18 @@ export interface ConversationMessage {
    text: string;
    replyTo: string | null;
    url: string;
+   mentions?: { id: string; name: string }[];
 }
 
 export interface ConversationProvider {
+   /** Fresh authorization without fetching message content, for cached reads. */
+   checkAccess?(channelId: string): Promise<void>;
+   /** Cache-only backfill, bracketed by fresh checkAccess before and after. */
+   fetchBackfillPage?(
+      channelId: string,
+      before: string | undefined,
+      limit: number,
+   ): Promise<ConversationMessage[]>;
    /** Must check caller AND bot access on each invocation, including private threads. */
    fetchPage(
       channelId: string,
@@ -56,6 +65,15 @@ export function conversationMessage(
          .join("\n"),
       replyTo: extra.reference?.messageId ?? null,
       url: `https://discord.com/channels/${guildId}/${channelId}/${m.id}`,
+      mentions: [...(m.mentions?.users?.values() ?? [])]
+         .slice(0, 50)
+         .map((user) => ({
+            id: user.id,
+            name:
+               m.mentions?.members?.get(user.id)?.displayName ||
+               user.globalName ||
+               user.username,
+         })),
    };
 }
 
@@ -73,79 +91,109 @@ export function createDiscordConversationProvider(
    botId: string | null,
    partner?: PartnerAccess,
 ): ConversationProvider {
+   const access = async (channelId: string) => {
+      const guild = await getClient().guilds.fetch(guildId);
+      await guild.roles.fetch();
+      const member = await guild.members.fetch({
+         user: userId,
+         force: true,
+      });
+      const bot = await guild.members.fetchMe({ force: true });
+      const channel = await guild.channels.fetch(channelId, { force: true });
+      if (
+         !channel?.isTextBased() ||
+         !("messages" in channel) ||
+         channel.guildId !== guildId
+      )
+         throw new Error("Canal no disponible.");
+      if (channel.isThread()) {
+         if (!channel.parentId) throw new Error("Canal no disponible.");
+         await guild.channels.fetch(channel.parentId, { force: true });
+      }
+      if (
+         !channel.permissionsFor(member)?.has(READ_PERMISSIONS) ||
+         !channel.permissionsFor(bot)?.has(READ_PERMISSIONS)
+      )
+         throw new Error("Canal no disponible.");
+      // A moderator asking in public must not get staff/private history in
+      // their public reply. Restricted history is only read in its own channel.
+      const audienceChannel = channel.isThread() ? channel.parent : channel;
+      if (
+         channelId !== destinationChannelId &&
+         ((channel.isThread() && channel.type === 12) ||
+            !audienceChannel
+               ?.permissionsFor(guild.roles.everyone)
+               ?.has(READ_PERMISSIONS))
+      ) {
+         if (!partner || !(await partner.permits(channel))) {
+            throw new Error(
+               "Consulta ese historial dentro de su propio canal.",
+            );
+         }
+      }
+      if (channel.isThread() && channel.type === 12) {
+         for (const reader of [member, bot]) {
+            if (
+               !reader.permissions.has(PermissionFlagsBits.Administrator) &&
+               !channel
+                  .permissionsFor(reader)
+                  ?.has(PermissionFlagsBits.ManageThreads)
+            )
+               await channel.members.fetch(reader.id); // failure closes access
+         }
+      }
+      const includeLogs = !!partner && (await partner.workspace());
+      return { guild, channel, includeLogs };
+   };
+   type ReadAccess = Awaited<ReturnType<typeof access>>;
+   let checked: ReadAccess | undefined;
+   const loadPage = async (
+      { channel, includeLogs }: ReadAccess,
+      before: string | undefined,
+      limit: number,
+   ) => {
+      const messages = await channel.messages.fetch({
+         before,
+         limit: Math.min(100, limit),
+         cache: false,
+      });
+      return [...messages.values()].map((m) => {
+         const result = conversationMessage(m, guildId, channel.id);
+         // Keep the slot/cursor even when an unrelated bot has no useful text.
+         if (m.author.bot && m.author.id !== botId && !includeLogs)
+            result.text = "";
+         if (includeLogs) {
+            result.text = [
+               result.text,
+               ...m.embeds.map((e) =>
+                  [
+                     e.title,
+                     e.description,
+                     ...e.fields.map((f) => `${f.name}: ${f.value}`),
+                  ]
+                     .filter(Boolean)
+                     .join("\n"),
+               ),
+            ]
+               .filter(Boolean)
+               .join("\n")
+               .slice(0, 4_000);
+         }
+         if (m.author.id === botId) result.author = "ChopperBot (tú)";
+         return result;
+      });
+   };
    return {
+      async checkAccess(channelId) {
+         checked = await access(channelId);
+      },
       async fetchPage(channelId, before, limit) {
-         const guild = await getClient().guilds.fetch(guildId);
-         const member = await guild.members.fetch({
-            user: userId,
-            force: true,
-         });
-         const bot = await guild.members.fetchMe({ force: true });
-         const channel = await guild.channels.fetch(channelId, { force: true });
-         if (!channel?.isTextBased() || !("messages" in channel))
-            throw new Error("Canal no disponible.");
-         if (
-            !channel.permissionsFor(member)?.has(READ_PERMISSIONS) ||
-            !channel.permissionsFor(bot)?.has(READ_PERMISSIONS)
-         )
-            throw new Error("Canal no disponible.");
-         // A moderator asking in public must not get staff/private history in
-         // their public reply. Restricted history is only read in its own channel.
-         const audienceChannel = channel.isThread() ? channel.parent : channel;
-         if (
-            channelId !== destinationChannelId &&
-            ((channel.isThread() && channel.type === 12) ||
-               !audienceChannel
-                  ?.permissionsFor(guild.roles.everyone)
-                  ?.has(READ_PERMISSIONS))
-         ) {
-            if (!partner || !(await partner.permits(channel))) {
-               throw new Error(
-                  "Consulta ese historial dentro de su propio canal.",
-               );
-            }
-         }
-         if (
-            channel.isThread() &&
-            channel.type === 12 &&
-            !member.permissions.has(PermissionFlagsBits.Administrator) &&
-            !channel
-               .permissionsFor(member)
-               ?.has(PermissionFlagsBits.ManageThreads)
-         ) {
-            await channel.members.fetch(userId); // membership check; failure closes access
-         }
-         const includeLogs = !!partner && (await partner.workspace());
-         const messages = await channel.messages.fetch({
-            before,
-            limit: Math.min(100, limit),
-            cache: false,
-         });
-         return [...messages.values()].map((m) => {
-            const result = conversationMessage(m, guildId, channelId);
-            // Keep the slot/cursor even when an unrelated bot has no useful text.
-            if (m.author.bot && m.author.id !== botId && !includeLogs)
-               result.text = "";
-            if (includeLogs) {
-               result.text = [
-                  result.text,
-                  ...m.embeds.map((e) =>
-                     [
-                        e.title,
-                        e.description,
-                        ...e.fields.map((f) => `${f.name}: ${f.value}`),
-                     ]
-                        .filter(Boolean)
-                        .join("\n"),
-                  ),
-               ]
-                  .filter(Boolean)
-                  .join("\n")
-                  .slice(0, 4_000);
-            }
-            if (m.author.id === botId) result.author = "ChopperBot (tú)";
-            return result;
-         });
+         return loadPage(await access(channelId), before, limit);
+      },
+      async fetchBackfillPage(channelId, before, limit) {
+         if (!checked || checked.channel.id !== channelId)
+            throw new Error("Backfill access unverified.");
+         return loadPage(checked, before, limit);
       },
    };
 }
@@ -169,6 +217,7 @@ export function conversationMessageCost(m: ConversationMessage): number {
          reply_to: m.replyTo,
          text: m.text,
          url: m.url,
+         mentions: m.mentions,
       }).length + 2
    );
 }
@@ -274,6 +323,8 @@ export function renderConversationContext(
          JSON.stringify({
             fecha: new Date(m.timestamp).toISOString(),
             autor: m.author,
+            autor_id: m.authorId,
+            menciones: m.mentions,
             id: m.id,
             responde_a: m.replyTo,
             texto: m.text,

@@ -47,7 +47,7 @@ export interface Capability {
 
    /**
     * Opt in to channel context on each turn: the thread title/opening post and,
-    * the last 100 messages within 30 days, including on replies. That text is
+    * a bounded rolling transcript within 30 days, including on replies. That text is
     * OTHER members' words. Writes must be independently authorized from the
     * current message; general_chat's ban is bound to an explicit mod request.
     */
@@ -128,6 +128,9 @@ export interface CapabilityTurnContext extends TurnAuthority {
 export interface CapabilityTurnBundle {
    /** The full system prompt for this turn. */
    system: string;
+   /** Stable prefix and code-generated tail used by the shared ask pipeline. */
+   stableSystem?: string;
+   systemTail?: string;
    /** Already collision-checked, ready to pass to llm/client.ts:ask(). */
    tools: ComposedTools;
    /**

@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.6.0 — 2026-10-04
+
+- ChopperBot tiene más contexto de la conversación para entender referencias y seguir lo que se habla, también en el canal del calendario. Respeta los cambios y mensajes borrados.
+- Consulta mejor los eventos y el directorio antes de responder que no sabe. Puede ubicar nombres vistos en el canal y usar menciones reales, sin activar avisos de entrada.
+- Los talleres conservan más conversación y resúmenes con más detalle.
+- Las minutas largas se redactan de una sola vez cuando caben. Si aparecen asuntos de convivencia o moderación, la publicación queda sin nombres ni detalles identificables y el acta completa se conserva para revisión interna.
+- Los mensajes que sirven de evidencia en el registro de moderación quedan protegidos frente al borrado.
+
 ## 2.5.0 — 2026-10-04
 
 - Moderación puede pedir un silencio temporal, retirarlo o borrar un mensaje concreto desde su espacio de trabajo. Cada acción exige una orden explícita, comprueba quién la pide y deja registro; el bot no sanciona por su cuenta.

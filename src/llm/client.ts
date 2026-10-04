@@ -85,6 +85,9 @@ export type AskPhase = "thinking" | "tool";
 
 export interface AskInput {
    system: string;
+   stableSystem?: string;
+   systemTail?: string;
+   channelTranscript?: string;
    messages: Turn[];
    tools: ComposedTools;
    /** Thinking tier. Defaults to `'high'`. See {@link Effort}. */
@@ -128,6 +131,8 @@ interface AgentTrace {
    inputTokens: number;
    outputTokens: number;
    reasoningTokens: number;
+   promptCacheHitTokens: number;
+   promptCacheMissTokens: number;
 }
 
 /** Run one LLM call, reporting its outcome to the LLM health watchdog
@@ -305,6 +310,9 @@ type OpenAiContentPart =
  */
 async function askDeepSeek({
    system,
+   stableSystem,
+   systemTail,
+   channelTranscript,
    messages,
    tools,
    effort = "high",
@@ -322,8 +330,17 @@ async function askDeepSeek({
    const tier = normalizeEffort(effort);
    let thinking = buildThinkingParam(tier);
    const convo: ChatMessage[] = [
-      { role: "system", content: system },
-      ...messages.map(buildChatMessage),
+      { role: "system", content: stableSystem ?? system },
+      ...(channelTranscript
+         ? [{ role: "user" as const, content: channelTranscript }]
+         : []),
+      ...messages.map((message, i) =>
+         buildChatMessage(
+            systemTail && i === messages.length - 1
+               ? { ...message, content: `${systemTail}\n\n${message.content}` }
+               : message,
+         ),
+      ),
    ];
 
    const trace: AgentTrace = {
@@ -332,6 +349,8 @@ async function askDeepSeek({
       inputTokens: 0,
       outputTokens: 0,
       reasoningTokens: 0,
+      promptCacheHitTokens: 0,
+      promptCacheMissTokens: 0,
    };
    let finalText = "";
    let lastFinishReason: string | undefined;
@@ -617,6 +636,8 @@ async function askDeepSeek({
          inputTokens: trace.inputTokens,
          outputTokens: trace.outputTokens,
          reasoningTokens: trace.reasoningTokens,
+         prompt_cache_hit_tokens: trace.promptCacheHitTokens,
+         prompt_cache_miss_tokens: trace.promptCacheMissTokens,
          stopReason: lastFinishReason,
       },
       "agent_turn",
@@ -682,6 +703,8 @@ function accumulateUsage(
    usage:
       | {
            prompt_tokens?: number;
+           prompt_cache_hit_tokens?: number;
+           prompt_cache_miss_tokens?: number;
            completion_tokens?: number;
            completion_tokens_details?: { reasoning_tokens?: number };
         }
@@ -689,10 +712,13 @@ function accumulateUsage(
 ): void {
    if (!usage) return;
    trace.inputTokens += usage.prompt_tokens ?? 0;
+   trace.promptCacheHitTokens += usage.prompt_cache_hit_tokens ?? 0;
+   trace.promptCacheMissTokens += usage.prompt_cache_miss_tokens ?? 0;
    trace.outputTokens += usage.completion_tokens ?? 0;
    // Reasoning bills at the OUTPUT rate, so it is tracked explicitly: it is the
    // single biggest cost lever the effort tier controls.
-   trace.reasoningTokens += usage.completion_tokens_details?.reasoning_tokens ?? 0;
+   trace.reasoningTokens +=
+      usage.completion_tokens_details?.reasoning_tokens ?? 0;
 }
 
 function buildOpenAiTools(specs: ToolSpec[]): unknown[] {

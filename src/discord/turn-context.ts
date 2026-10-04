@@ -65,7 +65,7 @@ export function displayNameOf(
 }
 
 /**
- * Replace `<@id>` / `<@!id>` user mentions with `@Name`. The bot's own mention
+ * Annotate real user mentions with `@Name (<@id>)`, retaining usable IDs. The bot's own mention
  * is expected to be stripped already; anything unresolvable stays as-is.
  */
 export function resolveUserMentions(
@@ -83,7 +83,30 @@ export function resolveUserMentions(
    }
    return text.replace(/<@!?(\d{15,21})>/g, (whole, id: string) => {
       const name = names.get(id);
-      return name ? `@${name}` : whole;
+      return name ? `@${name} (<@${id}>)` : whole;
+   });
+}
+
+/** Repair a model's invalid <@nickname> only from an unambiguous readable
+ * identity. Unknown names become plain text; real IDs and mention policy stay.
+ */
+export function repairMemberMentions(
+   reply: string,
+   identities: readonly { id: string; name: string }[],
+): string {
+   const fold = (text: string) =>
+      text.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase().trim();
+   return reply.replace(/<@!?([^!&\d][^>]{0,99})>/g, (_token, name: string) => {
+      const candidates = [
+         ...new Set(
+            identities
+               .filter((i) => fold(i.name) === fold(name))
+               .map((i) => i.id),
+         ),
+      ];
+      return candidates.length === 1
+         ? `<@${candidates[0]}>`
+         : `@${name.replace(/[\r\n]/g, " ")}`;
    });
 }
 

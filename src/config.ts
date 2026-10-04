@@ -46,6 +46,61 @@ const ConfigSchema = z
       // content for messages that @mention it (Discord always delivers those), so
       // the mention-driven flows keep working; passive listeners do not.
       DISCORD_MESSAGE_CONTENT_INTENT: z.string().optional(),
+      // Ambient context is bounded independently from DeepSeek's 1M ceiling.
+      CONTEXT_AMBIENT_TOKENS: z.coerce
+         .number()
+         .int()
+         .min(1000)
+         .max(150000)
+         .default(60000),
+      CONTEXT_AMBIENT_CHARS: z.coerce
+         .number()
+         .int()
+         .min(4000)
+         .max(600000)
+         .default(240000),
+      CONTEXT_QUIET_TOKENS: z.coerce
+         .number()
+         .int()
+         .min(1000)
+         .max(60000)
+         .default(12000),
+      CONTEXT_BACKFILL_PAGES: z.coerce
+         .number()
+         .int()
+         .min(1)
+         .max(40)
+         .default(20),
+      CONTEXT_CACHE_CHANNEL_CHARS: z.coerce
+         .number()
+         .int()
+         .min(40000)
+         .max(2000000)
+         .default(600000),
+      CONTEXT_CACHE_GLOBAL_CHARS: z.coerce
+         .number()
+         .int()
+         .min(100000)
+         .max(32000000)
+         .default(12000000),
+      WORKSHOP_HISTORY_TURNS: z.coerce
+         .number()
+         .int()
+         .min(20)
+         .max(300)
+         .default(100),
+      WORKSHOP_HISTORY_CHARS: z.coerce
+         .number()
+         .int()
+         .min(16000)
+         .max(600000)
+         .default(240000),
+      MINUTAS_SINGLE_PASS_CHARS: z.coerce
+         .number()
+         .int()
+         .min(48000)
+         .max(900000)
+         .default(900000),
       DISCORD_CHANNEL_ID: z.preprocess(
          emptyToUndefined,
          z

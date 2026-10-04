@@ -95,6 +95,7 @@ const ctx = (over: Partial<{ channelId: string; userId: string; isMod: boolean }
   guildId: null,
   userId: over.userId ?? 'MOD_1',
   userTag: 'mod',
+  requestText: 'crea un evento de prueba',
   now: NOW,
   isAdministrator: over.isMod ?? true,
 });
@@ -363,6 +364,7 @@ describe('CalendarCapability — write is mod-only (fail closed)', () => {
       guildId: 'GUILD_1',
       userId: 'MOD_9',
       userTag: 'mod',
+      requestText: 'crea un evento de prueba',
       now: NOW,
       isAdministrator: false,
       memberRoles: [{ id: DEFAULT_MOD_ROLES[0], name: '🚓Moderación🚓' }],

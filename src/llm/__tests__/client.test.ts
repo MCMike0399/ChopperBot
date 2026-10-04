@@ -23,6 +23,7 @@ const { ask } = await import("../client.js");
 import { config } from "../../config.js";
 import type { ComposedTools } from "../../tools/source.js";
 import { ImageAttachable } from "../../attachments/attachable.js";
+import { log } from "../../log.js";
 
 function fakeTools(
    handle?: (
@@ -405,5 +406,46 @@ describe("ask — only one backend exists", () => {
          tools: fakeTools(),
       });
       expect(reqAt(0).model).toBe(config.DEEPSEEK_MODEL_ID);
+   });
+   test("stable prefix then transcript then reply chain then tail, with measured cache usage", async () => {
+      const logged = vi.spyOn(log, "info");
+      createMock.mockResolvedValueOnce({
+         ...end("respuesta ficticia"),
+         usage: {
+            prompt_tokens: 100,
+            completion_tokens: 10,
+            prompt_cache_hit_tokens: 90,
+            prompt_cache_miss_tokens: 10,
+         },
+      });
+      await ask({
+         system: "full prompt",
+         stableSystem: "stable prefix",
+         systemTail: "clock speaker authority",
+         channelTranscript: "oldest-first quoted transcript",
+         messages: [
+            { role: "assistant", content: "reply chain" },
+            { role: "user", content: "current trigger" },
+         ],
+         tools: fakeTools(),
+         effort: "low",
+      });
+      expect(reqAt(0).messages).toEqual([
+         { role: "system", content: "stable prefix" },
+         { role: "user", content: "oldest-first quoted transcript" },
+         { role: "assistant", content: "reply chain" },
+         {
+            role: "user",
+            content: "clock speaker authority\n\ncurrent trigger",
+         },
+      ]);
+      expect(logged).toHaveBeenCalledWith(
+         expect.objectContaining({
+            prompt_cache_hit_tokens: 90,
+            prompt_cache_miss_tokens: 10,
+         }),
+         "agent_turn",
+      );
+      logged.mockRestore();
    });
 });

@@ -9,6 +9,7 @@ import {
    QUEUE_BUSY_REPLY,
 } from "../../discord/handlers.js";
 import type { Turn } from "../../discord/history.js";
+import { config } from "../../config.js";
 
 /**
  * Bot messages that are OPERATIONAL noise, not conversation — they must never
@@ -46,8 +47,8 @@ export function isNoiseAssistantMessage(content: string): boolean {
  * LLM chat. No reply-chains needed.
  */
 
-const MAX_TURNS = 20;
-const MAX_TOTAL_CHARS = 16_000;
+const MAX_TURNS = config.WORKSHOP_HISTORY_TURNS;
+const MAX_TOTAL_CHARS = config.WORKSHOP_HISTORY_CHARS;
 
 export interface ChannelHistoryOptions {
    /** Ignore messages at/before this timestamp ("limpiar contexto"). */
@@ -110,10 +111,22 @@ export async function buildChannelHistory(
    const maxTurns = opts.maxTurns ?? MAX_TURNS;
    const maxChars = opts.maxChars ?? MAX_TOTAL_CHARS;
 
-   const fetched = await message.channel.messages
-      .fetch({ limit: 50, before: message.id })
-      .catch(() => null);
-   if (!fetched) return { turns: [], older: [], olderNewestMs: null };
+   const fetched: Message[] = [];
+   let before = message.id;
+   // Bounded pagination, with one overflow page available to the compactor.
+   for (let page = 0; page < Math.ceil(maxTurns / 100) + 1; page++) {
+      const batch = await message.channel.messages
+         .fetch({ limit: 100, before })
+         .catch(() => null);
+      if (!batch?.size) break;
+      fetched.push(...batch.values());
+      before = batch.last()!.id;
+      if (
+         batch.size < 100 ||
+         fetched.reduce((n, m) => n + m.content.length, 0) >= maxChars * 1.5
+      )
+         break;
+   }
 
    // fetch() returns newest-first; walk newest → oldest filling the live
    // window, then keep collecting into `older` for compaction; reverse both.
@@ -121,7 +134,7 @@ export async function buildChannelHistory(
    const older: Turn[] = [];
    let olderNewestMs: number | null = null;
    let chars = 0;
-   for (const m of fetched.values()) {
+   for (const m of fetched) {
       const turn = classifyMessage(
          {
             id: m.id,
@@ -135,7 +148,10 @@ export async function buildChannelHistory(
          opts,
       );
       if (!turn) continue;
-      if (collected.length >= maxTurns || chars >= maxChars) {
+      if (
+         collected.length >= maxTurns ||
+         chars + turn.content.length > maxChars
+      ) {
          older.push(turn);
          if (olderNewestMs === null) olderNewestMs = m.createdTimestamp;
          continue;

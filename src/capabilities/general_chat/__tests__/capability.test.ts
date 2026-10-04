@@ -288,6 +288,7 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
          "server_conversation_history",
          "server_list_channels",
          "server_list_discord_events",
+         "server_member_lookup",
       ]);
       h.memory.close();
    });
@@ -331,6 +332,7 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       expect(console.tools.tools).toHaveLength(0);
       const calendar = await h.calCap.buildTurn({
          ...ctx,
+         requestText: "crea un evento de prueba",
          memberRoles: [
             { id: "1483694810253492235", name: "COMISIÓN | GESTIÓN" },
          ],

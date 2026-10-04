@@ -12,14 +12,14 @@ import type { Turn } from "../../discord/history.js";
  */
 
 /** Turns kept verbatim in the live window (the rest is compactable). */
-export const KEEP_RECENT_TURNS = 10;
+export const KEEP_RECENT_TURNS = 50;
 /** Compaction triggers when the overflow reaches either threshold. */
-export const COMPACT_MIN_OLD_TURNS = 6;
-export const COMPACT_MIN_OLD_CHARS = 5_000;
+export const COMPACT_MIN_OLD_TURNS = 20;
+export const COMPACT_MIN_OLD_CHARS = 40_000;
 /** Hard cap on the stored summary (rides every turn's system prompt). */
-export const SUMMARY_MAX_CHARS = 1_800;
+export const SUMMARY_MAX_CHARS = 12_000;
 /** Cap on the transcript chunk sent to the summarizer. */
-const TRANSCRIPT_MAX_CHARS = 14_000;
+const TRANSCRIPT_MAX_CHARS = 120_000;
 
 /** Whether the overflow is worth a compaction call. Pure — tested. */
 export function shouldCompact(olderTurns: readonly Turn[]): boolean {
@@ -32,7 +32,7 @@ export function shouldCompact(olderTurns: readonly Turn[]): boolean {
 function renderCompactionPrompt(): string {
    return `Eres el compactador de contexto de una sesión de asistencia (escuela/trabajo) en Discord.
 Recibirás el resumen previo de la sesión (puede estar vacío) y un fragmento de conversación más antiguo que va a salir de la ventana de contexto.
-Devuelve SOLO el nuevo resumen consolidado (sin encabezados ni comentarios), en español, máximo ~250 palabras, conservando:
+Devuelve SOLO el nuevo resumen consolidado (sin encabezados ni comentarios), en español, hasta ~1800 palabras cuando el material lo necesite. No comprimas decisiones, detalles o referencias importantes en una frase. Conserva:
 - qué está estudiando/trabajando la persona y su objetivo,
 - decisiones tomadas y preferencias expresadas (formato, tono, estilo),
 - archivos del workspace relevantes (nombres exactos) y qué contienen,

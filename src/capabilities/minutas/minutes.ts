@@ -1,6 +1,7 @@
 import { ask } from "../../llm/client.js";
 import { composeToolSources } from "../../tools/source.js";
 import { SPANISH_VOICE_RULES } from "../../lang/voice.js";
+import { config } from "../../config.js";
 
 /** Context the final minutes carry in their header + the prompts reason about. */
 export interface MinutesMeta {
@@ -18,9 +19,9 @@ export interface MinutesMeta {
 }
 
 /** Above this the draft is summarized in blocks first (map), then merged. */
-export const SINGLE_PASS_MAX_CHARS = 48_000;
+export const SINGLE_PASS_MAX_CHARS = config.MINUTAS_SINGLE_PASS_CHARS;
 /** Block size for the map pass; splits fall on line boundaries. */
-export const BLOCK_MAX_CHARS = 48_000;
+export const BLOCK_MAX_CHARS = 240_000;
 
 /**
  * The minutes writer is a community-facing surface: the output is posted
@@ -36,7 +37,7 @@ Reglas duras:
 - No inventes contenido: si algo no está en la transcripción hablada, no existe. La transcripción es automática y puede tener errores; si un tramo es ambiguo, resume lo seguro.
 - **Nada de conocimiento externo.** No completes nombres de autorxs, títulos, fechas ni datos que no se dijeron («Calibán y la bruja» no se vuelve «de Silvia Federici» si nadie lo dijo).
 - **Fechas:** usa la tabla de fechas del encabezado para poner día de la semana y mes. Nunca agregues un mes que no se dijo si la tabla no lo resuelve; «el sábado» o «el 29» se quedan así si no hay forma segura de saber cuál.
-- **Privacidad:** esto se publica al servidor. Si alguien compartió algo personal (salud mental, terapia, diagnósticos, historia de violencia) o se habló del detalle de un caso de acoso/denuncia, NO lo registres con nombre ni con detalles identificables: resume en neutro («se compartieron experiencias personales sobre salud mental»; «se revisó un caso de convivencia y se acordó X») y registra solo lo acordado.
+- **Privacidad:** esto se publica al servidor. Los asuntos de conducta, convivencia o moderación NUNCA nombran personas: ni quien denunció ni la persona señalada, aunque sean participantes. Resume en neutro y marca claramente el tema como convivencia/moderación. Si alguien compartió algo personal (salud mental, terapia, diagnósticos, historia de violencia), tampoco registres nombres ni detalles identificables.
 - El chat NO se publica: no copies comentarios, no armes una sección de chat, no cites «lo que escribieron». Si un comentario aclara un tema hablado, incorpóralo en Resumen/Temas/Acuerdos con las palabras de la minuta, no como cita del chat.
 - Bromas, memes, hipérboles y comentarios en chiste (p. ej. «el 2do aniversario tomamos palacio nacional») NO son acuerdos, compromisos ni temas. El tono de acta es sobrio: lo jocoso del chat o de la sala no entra al registro formal.
 - Estructura EXACTA del acta (markdown de Discord), sin más secciones:
@@ -99,8 +100,12 @@ function renderMetaBlock(meta: MinutesMeta): string {
       `Fecha: ${meta.dateLabel}`,
       `Duración: ${meta.durationLabel}`,
       `Participantes: ${meta.participants.join(", ") || "desconocidos"}`,
-      ...(meta.aliases?.length ? [`Alias vistos en la sesión: ${meta.aliases.join("; ")}`] : []),
-      ...(meta.startedAtMs !== undefined ? [renderDateTable(meta.startedAtMs)] : []),
+      ...(meta.aliases?.length
+         ? [`Alias vistos en la sesión: ${meta.aliases.join("; ")}`]
+         : []),
+      ...(meta.startedAtMs !== undefined
+         ? [renderDateTable(meta.startedAtMs)]
+         : []),
    ].join("\n");
 }
 
@@ -119,7 +124,8 @@ export function renderDateTable(startedAtMs: number): string {
    });
    const DAY = 86_400_000;
    const rows: string[] = [];
-   for (let d = -14; d <= 42; d++) rows.push(fmt.format(new Date(startedAtMs + d * DAY)));
+   for (let d = -14; d <= 42; d++)
+      rows.push(fmt.format(new Date(startedAtMs + d * DAY)));
    return `Tabla de fechas (hora CDMX; la sesión es el día ${fmt.format(new Date(startedAtMs))}): ${rows.join(" · ")}`;
 }
 
@@ -159,7 +165,10 @@ function sectionLines(body: string, heading: RegExp): string[] {
 function countItems(lines: readonly string[]): number {
    return lines.filter((l) => {
       const m = /^\s*(?:[-*•]|\d+[.)])\s+(.*)$/.exec(l);
-      return m !== null && !/^(?:_?\(?)?(ningun[oa]s?|no hubo|sin |n\/a)/i.test(m[1]!.trim());
+      return (
+         m !== null &&
+         !/^(?:_?\(?)?(ningun[oa]s?|no hubo|sin |n\/a)/i.test(m[1]!.trim())
+      );
    }).length;
 }
 
@@ -193,14 +202,18 @@ export function renderMinutesSummaryPost(
       `**Participaron:** ${meta.participants.join(", ") || "—"}`,
    ].join("\n");
    const acuerdos = countItems(sectionLines(minutesBody, /^##\s+Acuerdos/i));
-   const compromisos = countItems(sectionLines(minutesBody, /^##\s+Compromisos/i));
+   const compromisos = countItems(
+      sectionLines(minutesBody, /^##\s+Compromisos/i),
+   );
    const counts = [
       `${acuerdos} ${acuerdos === 1 ? "acuerdo" : "acuerdos"}`,
       `${compromisos} ${compromisos === 1 ? "compromiso" : "compromisos"}`,
    ].join(" y ");
    const footer = `📎 La minuta completa (temas tratados, ${counts}) va en el archivo adjunto **${fileName}**.`;
 
-   let summary = sectionLines(minutesBody, /^##\s+Resumen\b/i).join("\n").trim();
+   let summary = sectionLines(minutesBody, /^##\s+Resumen\b/i)
+      .join("\n")
+      .trim();
    if (!summary) {
       summary =
          minutesBody
@@ -215,7 +228,14 @@ export function renderMinutesSummaryPost(
       const lastStop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf(".\n"));
       summary = `${(lastStop > budget * 0.5 ? cut.slice(0, lastStop + 1) : cut).trimEnd()} …`;
    }
-   return [header, "", "## Resumen", summary || "_(sin resumen)_", "", footer].join("\n");
+   return [
+      header,
+      "",
+      "## Resumen",
+      summary || "_(sin resumen)_",
+      "",
+      footer,
+   ].join("\n");
 }
 
 /**
@@ -314,4 +334,40 @@ export async function generateMinutes(
       });
    }
    return stripMinutesChatSection(body);
+}
+
+/** Fail-closed public rendering for conduct material. Mixed meetings with
+ * identifiable moderation material get a neutral public notice; the complete
+ * acta remains in the internal archive instead of risking another named case.
+ * No private-channel post or additional model call is needed for redaction.
+ */
+export function publicMinutes(
+   draft: string,
+   body: string,
+   meta: MinutesMeta,
+): { body: string; meta: MinutesMeta; redacted: boolean } {
+   const spoken = draft
+      .split("\n")
+      .filter((line) => !line.includes("💬"))
+      .join("\n");
+   const evidence = `${spoken}\n${body}\n${meta.title}\n${meta.channelName}`
+      .normalize("NFD")
+      .replace(/\p{M}/gu, "")
+      .toLowerCase();
+   const conduct =
+      /\b(?:moderacion|convivencia|conducta|acoso|denuncia\w*|hostig\w*|sancion\w*|banea\w*|banear|timeout|expuls\w*|doxx\w*|maltrato|difam\w*|bullying|insult\w*|disculpa\w*)\b/.test(
+         evidence,
+      );
+   if (!conduct) return { body, meta, redacted: false };
+   return {
+      redacted: true,
+      meta: {
+         ...meta,
+         title: "Reunión con asuntos de convivencia",
+         channelName: "Reunión",
+         participants: [`${meta.participants.length} personas`],
+         aliases: undefined,
+      },
+      body: `## Resumen\nSe trataron asuntos de convivencia o moderación. Los nombres y detalles identificables se omiten de la minuta pública; el acta completa se conserva en el archivo interno para revisión del equipo de moderación.\n\n## Temas tratados\n- Revisión de asuntos de convivencia.\n\n## Acuerdos y decisiones\nLos detalles se conservan en el archivo interno.\n\n## Compromisos\nLos detalles se conservan en el archivo interno.`,
+   };
 }

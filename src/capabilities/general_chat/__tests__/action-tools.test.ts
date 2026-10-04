@@ -222,6 +222,25 @@ function harness(command = text, replyMessageId?: string) {
 }
 
 describe("live effect gates with mocked Discord effects", () => {
+   test("a human trigger already cited by the action trail remains evidence even without staff roles", async () => {
+      const h = harness("borra este mensaje", DELETED);
+      new ModerationStore(h.memory.db()).record({
+         guildId: G,
+         actorId: TARGET,
+         targetId: "",
+         action: "escalation",
+         reason: "Reporte ficticio",
+         triggerMessageId: DELETED,
+         channelId: C,
+         outcome: "escalated",
+         timestamp: Date.now(),
+      });
+      await expect(h.executor.execute(h.bound)).rejects.toThrow(
+         "Objetivo protegido",
+      );
+      expect(h.message.delete).not.toHaveBeenCalled();
+      h.memory.close();
+   });
    test("public thread deletion proves the parent's audience", async () => {
       const h = harness("borra este mensaje", DELETED);
       h.channel.type = 11;

@@ -186,11 +186,21 @@ export function createDiscordActionExecutor(
          let targetId = request.targetId;
          let deletion: { message: Message; evidence: string } | null = null;
          if (request.action === "message_deleted") {
+            const trailEvidence = db
+               .prepare(
+                  `SELECT 1 FROM framework_moderation_trail
+               WHERE guild_id = ? AND channel_id = ? AND trigger_message_id = ? LIMIT 1`,
+               )
+               .get(guild.id, request.channelId, request.targetId);
+            if (trailEvidence)
+               throw new Error("Objetivo protegido o jerarquía insuficiente.");
             if (LOG_CHANNEL_IDS.has(request.channelId))
                throw new Error("Objetivo protegido o jerarquía insuficiente.");
             const channel = await guild.channels.fetch(request.channelId, {
                force: true,
             });
+            if (channel?.isThread() && channel.parentId)
+               await guild.channels.fetch(channel.parentId, { force: true });
             if (
                !channel?.isTextBased() ||
                !("messages" in channel) ||

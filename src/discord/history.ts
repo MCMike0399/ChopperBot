@@ -1,6 +1,7 @@
 import { Client, Message } from "discord.js";
 import { stripContinuationFooter } from "./chunk.js";
 import type { Attachable } from "../attachments/attachable.js";
+import { createDiscordConversationProvider } from "./conversation.js";
 
 export interface Turn {
    role: "user" | "assistant";
@@ -28,6 +29,19 @@ export async function buildHistory(
    client: Client,
    message: Message,
 ): Promise<Turn[]> {
+   if (message.guildId && message.reference?.messageId) {
+      try {
+         await createDiscordConversationProvider(
+            () => client,
+            message.guildId,
+            message.author.id,
+            message.channelId,
+            client.user?.id ?? null,
+         ).checkAccess!(message.channelId);
+      } catch {
+         return [];
+      }
+   }
    const turns: Turn[] = [];
    let chars = 0;
    let cursor: Message = message;
@@ -66,6 +80,19 @@ export async function buildHistory(
       cursor = parent;
    }
 
+   if (message.guildId && turns.length) {
+      try {
+         await createDiscordConversationProvider(
+            () => client,
+            message.guildId,
+            message.author.id,
+            message.channelId,
+            client.user?.id ?? null,
+         ).checkAccess!(message.channelId);
+      } catch {
+         return [];
+      }
+   }
    return turns.reverse();
 }
 

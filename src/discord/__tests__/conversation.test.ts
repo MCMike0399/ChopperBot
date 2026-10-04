@@ -144,7 +144,7 @@ function accessHarness() {
       PermissionFlagsBits.ReadMessageHistory,
    ]);
    const caller = { id: "caller", permissions: new PermissionsBitField() };
-   const bot = { id: "bot" };
+   const bot = { id: "bot", permissions: new PermissionsBitField() };
    const everyone = { id: "everyone" };
    const fetchMessages = vi.fn(async () => new Map());
    const fetchMembership = vi.fn(async () => ({}));
@@ -154,6 +154,8 @@ function accessHarness() {
    let thread = false;
    const channel = {
       id: CID,
+      guildId: "guild",
+      parentId: "parent",
       type: 0,
       name: "prueba",
       parent: null as unknown,
@@ -174,7 +176,7 @@ function accessHarness() {
          fetchMe: vi.fn(async () => bot),
       },
       channels: { fetch: vi.fn(async () => channel) },
-      roles: { everyone },
+      roles: { everyone, fetch: vi.fn(async () => new Map()) },
    };
    const client = {
       user: { id: "bot" },
@@ -319,6 +321,23 @@ describe("live access gates", () => {
          "bot",
       );
       await expect(source.fetchPage(CID, undefined, 100)).rejects.toThrow();
+      expect(h.fetchMessages).not.toHaveBeenCalled();
+   });
+
+   test("cached authorization also requires the bot's private-thread membership", async () => {
+      const h = accessHarness();
+      h.privateThread();
+      h.fetchMembership
+         .mockResolvedValueOnce({})
+         .mockRejectedValueOnce(new Error("bot not joined"));
+      const source = createDiscordConversationProvider(
+         () => h.client,
+         "guild",
+         "caller",
+         CID,
+         "bot",
+      );
+      await expect(source.checkAccess!(CID)).rejects.toThrow("bot not joined");
       expect(h.fetchMessages).not.toHaveBeenCalled();
    });
 

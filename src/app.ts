@@ -34,6 +34,7 @@ import { TurnQueue } from "./discord/turn-queue.js";
 // `candidates` limited to what this deployment actually serves.
 import { createClient } from "./discord/client.js";
 import { registerHandlers } from "./discord/handlers.js";
+import { registerTranscriptCache } from "./discord/transcript-cache.js";
 import { sendAdminAlert } from "./discord/admin-alert.js";
 import { llmHealth } from "./llm/health.js";
 import { checkBootAndDetectCrash, markCleanShutdown } from "./lifecycle.js";
@@ -175,6 +176,7 @@ export async function run(): Promise<void> {
 
    // 4. Discord.
    client = createClient();
+   registerTranscriptCache(client);
    // Channels owned by a passive capability's own listener (event_intake's
    // ticket categories, workshop's private session channels): the main
    // mention handler stays out — no double-reply.
