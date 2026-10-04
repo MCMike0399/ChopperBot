@@ -1,9 +1,9 @@
-import { ConfigModerationSource } from "./moderation-source.js";
 import { resolve } from "node:path";
 import type Database from "better-sqlite3";
 import { config } from "../../config.js";
 import { log } from "../../log.js";
 import { composeToolSources } from "../../tools/source.js";
+import { ConfigModerationSource } from "./moderation-source.js";
 import type {
    Capability,
    CapabilityInitDeps,

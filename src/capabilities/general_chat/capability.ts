@@ -34,7 +34,6 @@ import {
    parseBanRequest,
    verifyLiveModerator,
 } from "./moderation-tools.js";
-
 import { BotSelfKnowledge } from "../../moderation/self-knowledge.js";
 import { PartnerAccess, moderationSettings } from "../../moderation/access.js";
 import { ModerationStore } from "../../moderation/store.js";
@@ -141,11 +140,11 @@ export class GeneralChatCapability implements Capability {
       }
       let liveHowTo: string | null = null;
       const moderator = isModTurn(this.db, ctx);
-      const banRequest = moderator ? parseBanRequest(ctx.requestText) : null;
+      const parsedBan = moderator ? parseBanRequest(ctx.requestText) : null;
+      // Only a request the ban tool can actually serve may be promised in the prompt.
+      const banRequest =
+         parsedBan && ctx.messageId && this.db ? parsedBan : null;
       const client = this.getDiscordClient();
-      const knowledge = ctx.guildId
-         ? await this.selfKnowledge.block(client, ctx.guildId, moderator)
-         : "";
       const access =
          ctx.guildId &&
          moderator &&
@@ -160,6 +159,11 @@ export class GeneralChatCapability implements Capability {
               )
             : null;
       const partner = access && (await access.workspace()) ? access : null;
+      // Operational detail (roles, permissions, command syntax) only inside the
+      // restricted workspace — a moderator asking in #general gets the short form.
+      const knowledge = ctx.guildId
+         ? await this.selfKnowledge.block(client, ctx.guildId, !!partner)
+         : "";
       if (profile.serverDirectoryTools && ctx.guildId) {
          const getClient = this.getDiscordClient;
          sources.push(
@@ -296,14 +300,14 @@ export class GeneralChatCapability implements Capability {
                  liveHowTo,
                  ctx.userDisplayName ?? null,
                  moderator,
-                 banRequest && ctx.messageId ? banRequest.targetId : null,
+                 banRequest?.targetId ?? null,
                  knowledge,
               ),
          tools: composeToolSources(sources),
          verifyDelivery: partner ? () => partner.verifyDelivery() : undefined,
          // Chat/history/review remain low. Only a current, independently
          // authorized moderator ban turns this into a writing loop.
-         effort: banRequest && ctx.messageId ? "high" : "low",
+         effort: banRequest ? "high" : "low",
       };
    }
 

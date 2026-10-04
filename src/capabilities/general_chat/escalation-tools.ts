@@ -1,4 +1,4 @@
-import { PermissionFlagsBits as P, type Client } from "discord.js";
+import { ChannelType, PermissionFlagsBits as P, type Client } from "discord.js";
 import { z } from "zod";
 import type {
    ToolSource,
@@ -32,13 +32,29 @@ const argsSchema = z
    })
    .strict();
 
+/**
+ * The summary is model-written from member text, so it must not be able to
+ * forge the code-set lines (Reportó/Gravedad), carry links or mention tokens,
+ * or restyle the note. One plain line: no newlines, URLs, mentions or markdown.
+ */
+export function sanitizeEscalationSummary(summary: string): string {
+   return summary
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+      .replace(/<(?:@[!&]?|#|\/[^:>]*:)\d+>/g, "[mención]")
+      .replace(/\b(?:https?:\/\/|www\.)\S+/gi, "[enlace omitido]")
+      .replace(/[\\*_`~|>#\[\]()«»]/g, "")
+      .replace(/@(everyone|here)/gi, "$1")
+      .replace(/\s+/g, " ")
+      .trim();
+}
+
 export function renderEscalation(
    ctx: CapabilityTurnContext,
    targetId: string,
    summary: string,
    severity: string,
 ): string {
-   return `**Reporte para revisión humana**\nQué: ${summary}\nDónde: <#${ctx.channelId}> · https://discord.com/channels/${ctx.guildId}/${ctx.channelId}/${ctx.messageId}\nReportó: <@${ctx.userId}>${targetId ? ` · Objetivo citado: <@${targetId}>` : ""}\nGravedad (interpretación del bot, no un hecho verificado): ${severity}.\nSe orientó al flujo de tickets; no se aplicó ninguna sanción.`;
+   return `**Reporte para revisión humana**\nQué (resumen del bot, texto citado): «${sanitizeEscalationSummary(summary)}»\nDónde: <#${ctx.channelId}> · https://discord.com/channels/${ctx.guildId}/${ctx.channelId}/${ctx.messageId}\nReportó: <@${ctx.userId}>${targetId ? ` · Objetivo citado: <@${targetId}>` : ""}\nGravedad (interpretación del bot, no un hecho verificado): ${severity}.\nSe orientó al flujo de tickets; no se aplicó ninguna sanción.`;
 }
 
 /** At effect time, the real trigger must still match and source must be community-visible. */
@@ -60,6 +76,9 @@ export async function canEscalateFrom(
          guild.roles.cache.get("1436225305898389604") ?? guild.roles.everyone;
       return (
          !!channel &&
+         // A private thread's audience is its members, not the parent's: its
+         // content must never be summarized into the mods channel.
+         channel.type !== ChannelType.PrivateThread &&
          !member.user.bot &&
          !!channel
             .permissionsFor(community)

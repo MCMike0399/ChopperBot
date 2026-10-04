@@ -17,6 +17,9 @@ export interface UserRecord {
    last_seen_at: number;
 }
 
+// The `__framework__` namespace has ONE version sequence shared with
+// MODERATION_MIGRATIONS (src/moderation/store.ts, v2) — app.ts runs both
+// lists under the same id. The next framework migration must be v3+.
 export const USERS_MIGRATIONS: Migration[] = [
    {
       version: 1,

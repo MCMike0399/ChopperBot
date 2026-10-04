@@ -178,20 +178,37 @@ export async function verifyAudienceContainment(
          ),
       ];
       const members: MemberSnapshot[] = [];
+      const departed = new Set<string>();
       for (const id of ids) {
          // Raw IDs matter: GuildMember.roles.cache can silently omit an
          // unresolved role. Never turn that missing role into a safety proof.
-         const member = (await guild.client.rest.get(
-            Routes.guildMember(guild.id, id),
-         )) as APIGuildMember;
+         // A member overwrite left behind by someone who left the guild grants
+         // nobody anything (Unknown Member, 10007): skip it instead of failing
+         // closed forever. Any other error still fails closed (outer catch).
+         const member = (await guild.client.rest
+            .get(Routes.guildMember(guild.id, id))
+            .catch((err: unknown) => {
+               if ((err as { code?: unknown })?.code === 10007) return null;
+               throw err;
+            })) as APIGuildMember | null;
+         if (member === null) {
+            departed.add(id);
+            continue;
+         }
          if (!Array.isArray(member.roles)) return false;
          members.push({ id, roleIds: member.roles });
       }
+      const live = (c: AudienceSnapshot): AudienceSnapshot => ({
+         ...c,
+         overwrites: c.overwrites.filter(
+            (o) => !(o.type === 1 && departed.has(o.id)),
+         ),
+      });
       return audienceContained(
          guild.id,
          roles,
-         src,
-         dst,
+         src && live(src),
+         live(dst),
          members,
          guild.ownerId,
       );

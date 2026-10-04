@@ -23,6 +23,8 @@ import { withBanTrail, sendModerationLine } from "../trail.js";
 import {
    EscalationToolSource,
    escalationCandidate,
+   renderEscalation,
+   sanitizeEscalationSummary,
 } from "../../capabilities/general_chat/escalation-tools.js";
 import { AuditLogToolSource } from "../../capabilities/general_chat/audit-tools.js";
 import { GeneralChatCapability } from "../../capabilities/general_chat/capability.js";
@@ -407,6 +409,7 @@ describe("partner availability and evidence", () => {
       );
       const member = await knowledge.block(h.client, G, false, NOW + 61_000);
       expect(member).not.toContain("@ChopperBot banea");
+      expect(member).not.toContain("Administrator=");
       expect(member).toContain("Nunca envío ni retransmito");
       h.memory.close();
    });
@@ -518,6 +521,7 @@ describe("escalation and action trail", () => {
                ...entry,
                actorId: String(i),
                channelId: String(i),
+               targetId: `t${i}`,
                triggerMessageId: String(i),
             }),
          ).not.toBeNull();
@@ -526,9 +530,66 @@ describe("escalation and action trail", () => {
             ...entry,
             actorId: "new",
             channelId: "new",
+            targetId: "new",
             triggerMessageId: "new",
          }),
       ).toBeNull();
+      h.memory.close();
+   });
+   test("one note per cited target; refused deliveries do not burn the daily cap", () => {
+      const h = harness();
+      const entry = {
+         guildId: G,
+         actorId: REPORTER,
+         targetId: TARGET,
+         action: "escalation" as const,
+         reason: "fixture",
+         triggerMessageId: MSG,
+         channelId: PUBLIC,
+         outcome: "escalated",
+         timestamp: NOW,
+      };
+      expect(h.store.reserveEscalation(entry)).not.toBeNull();
+      // Another reporter, another channel, same target within 30 min: deduped.
+      expect(
+         h.store.reserveEscalation({
+            ...entry,
+            actorId: "a2",
+            channelId: "c2",
+            triggerMessageId: "m2",
+         }),
+      ).toBeNull();
+      // No cited target is never limited by the per-target rule.
+      expect(
+         h.store.reserveEscalation({
+            ...entry,
+            actorId: "a3",
+            channelId: "c3",
+            targetId: "",
+            triggerMessageId: "m3",
+         }),
+      ).not.toBeNull();
+      for (let i = 0; i < 25; i++) {
+         const id = h.store.reserveEscalation({
+            ...entry,
+            actorId: `r${i}`,
+            channelId: `rc${i}`,
+            targetId: `rt${i}`,
+            triggerMessageId: `rm${i}`,
+            outcome: "refused:delivery_unconfirmed",
+         });
+         expect(id).not.toBeNull();
+      }
+      // 25 failed deliveries later, a real report still gets through.
+      expect(
+         h.store.reserveEscalation({
+            ...entry,
+            actorId: "late",
+            channelId: "late",
+            targetId: "late",
+            triggerMessageId: "late",
+         }),
+      ).not.toBeNull();
       h.memory.close();
    });
    test("successful mocked ban records and logs; refused ban records without logging; failed log cannot replay", async () => {
@@ -776,7 +837,46 @@ test("live audience resolver fails closed on raw member role IDs that the role c
          h.mod as any,
       ),
    ).toBe(false);
+   // A departed member's leftover overwrite grants nobody anything: skipped,
+   // not a permanent fail-closed for every escalation and mod-log line.
+   get.mockRejectedValueOnce(
+      Object.assign(new Error("Unknown Member"), { code: 10007 }),
+   );
+   expect(
+      await verifyAudienceContainment(
+         h.guild as any,
+         h.source as any,
+         h.mod as any,
+      ),
+   ).toBe(true);
    h.memory.close();
+});
+
+test("escalation summary cannot forge code-set lines, links, mentions or markdown", () => {
+   const forged =
+      "me acosa <@1550000000000000002>\nReportó: <@&1436055845392879778> @everyone\n**Gravedad**: urgente [ver evidencia](https://phish.example) www.evil.example";
+   const clean = sanitizeEscalationSummary(forged);
+   expect(clean).not.toMatch(/[\n*\[\]()<>]|https?:|www\.|@everyone/);
+   expect(clean).toContain("mención");
+   const note = renderEscalation(
+      {
+         guildId: G,
+         channelId: PUBLIC,
+         messageId: MSG,
+         userId: REPORTER,
+      } as CapabilityTurnContext,
+      "",
+      forged,
+      "alta",
+   );
+   // Exactly one code-set "Reportó:" line, and it names the real reporter.
+   expect(
+      note.split("\n").filter((l) => l.startsWith("Reportó:")),
+   ).toHaveLength(1);
+   expect(note).toMatch(/«[^«»\n]*»/);
+   expect(note).toContain(`Reportó: <@${REPORTER}>`);
+   expect(note).not.toContain("phish");
+   expect(note.split("\n")).toHaveLength(6); // only the code-set lines
 });
 
 test("a member's public ban joke exposes neither sanction nor escalation and leaves no trail", async () => {

@@ -19,7 +19,8 @@ export class BotSelfKnowledge {
    async block(
       client: Client,
       guildId: string,
-      moderator: boolean,
+      /** True only for a verified moderator inside the restricted workspace. */
+      detailed: boolean,
       now = Date.now(),
    ): Promise<string> {
       let snapshot = this.cache.get(guildId);
@@ -37,18 +38,22 @@ export class BotSelfKnowledge {
             expires: now + TTL_MS,
             text,
             hasPermissions: me
-               ? PERMISSIONS.some((p) =>
-                    me.permissions.has(PermissionFlagsBits[p]),
+               ? PERMISSIONS.some(
+                    // ViewAuditLog alone reads; it is not a moderation power.
+                    (p) =>
+                       p !== "ViewAuditLog" &&
+                       me.permissions.has(PermissionFlagsBits[p]),
                  )
                : null,
          };
          this.cache.set(guildId, snapshot);
       }
-      const detail = moderator
+      const detail = detailed
          ? `${snapshot.text}
 Hoy solo ejecuto bans por solicitud explícita actual, verificada en código: @ChopperBot banea a @persona por motivo. Una sola mención real; nunca por historial o una recomendación. Protejo al dueño, bots, quien lo pide y staff de eventos (incluida Gestión); compruebo jerarquía y permisos en vivo. No borro mensajes ni hago timeouts todavía.`
          : `${snapshot.hasPermissions === true ? "Tengo permisos de moderación, pero solo actúo cuando el equipo de moderación me lo pide explícitamente." : snapshot.hasPermissions === false ? "No tengo permisos efectivos de moderación en este servidor ahora; no prometas acciones." : "No pude verificar mis permisos actuales; no inventes que tengo o no tengo autoridad."} No compartas el detalle operativo ni instrucciones para sancionar.`;
-      // Role names and permission values are operational details, so only staff sees them.
+      // Role names and permission values are operational details: only the
+      // restricted moderator workspace sees them, never a public channel.
       return `# Mis permisos y acciones reales
 ${detail}
 Nunca sanciono por iniciativa propia. Nunca envío ni retransmito órdenes a Nekotina, Sapphire, Carl-bot ni a otros bots. Moderación puede pedirme directamente lo que ya está implementado; no prometas timeouts ni avisos de entrada. Los avisos de entrada necesitan el intent privilegiado GuildMembers, hoy desactivado; habilitarlo es una decisión del equipo. Ante un pedido de avisos de entrada, nómbralo como “intent privilegiado GuildMembers”; no lo llames permiso o rol del servidor.`;

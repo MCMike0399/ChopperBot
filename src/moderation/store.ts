@@ -8,7 +8,11 @@ export const LOG_CHANNEL_IDS = new Set([
    "1436110972602417253",
 ]);
 
-/** Framework namespace v2: shared workspace/settings, not event-intake state. */
+/**
+ * Framework namespace v2: shared workspace/settings, not event-intake state.
+ * Shares the `__framework__` version sequence with USERS_MIGRATIONS (v1);
+ * the next framework migration must be v3+.
+ */
 export const MODERATION_MIGRATIONS: Migration[] = [
    {
       version: 2,
@@ -116,7 +120,11 @@ export class ModerationStore {
          .run(outcome, id);
    }
 
-   /** One reporter/30min, one source channel/5min, 20 notes per guild/UTC day. */
+   /**
+    * One reporter/30min, one source channel/5min, one note per cited target/
+    * 30min, and 20 DELIVERED notes per guild/UTC day — refused/failed deliveries
+    * don't burn the daily cap, so a burst of failures can't silence real reports.
+    */
    reserveEscalation(entry: TrailEntry): number | null {
       return this.db.transaction(() => {
          const count = (where: string, ...args: (string | number)[]) =>
@@ -139,7 +147,16 @@ export class ModerationStore {
                entry.channelId,
                entry.timestamp - 5 * 60_000,
             ) ||
-            count("timestamp >= ?", dayStart) >= 20
+            (!!entry.targetId &&
+               count(
+                  "target_id = ? AND timestamp > ?",
+                  entry.targetId,
+                  entry.timestamp - 30 * 60_000,
+               )) ||
+            count(
+               "outcome NOT LIKE 'refused:%' AND timestamp >= ?",
+               dayStart,
+            ) >= 20
          )
             return null;
          return this.record(entry);

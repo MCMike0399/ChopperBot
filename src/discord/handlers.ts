@@ -1,4 +1,3 @@
-import { LOG_CHANNEL_IDS } from "../moderation/store.js";
 import {
    Client,
    Events,
@@ -10,6 +9,7 @@ import {
 import { log } from "../log.js";
 import { ask } from "../llm/client.js";
 import { reportSpanishStyle } from "../lang/report.js";
+import { LOG_CHANNEL_IDS } from "../moderation/store.js";
 import { chunkBotReply } from "./chunk.js";
 import { buildHistory, normalizeTurns, type Turn } from "./history.js";
 import { ReactionTurnPresenter } from "./presenter.js";

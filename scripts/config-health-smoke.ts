@@ -33,6 +33,7 @@ import {
    USERS_MIGRATIONS,
    UserDirectory,
 } from "../src/users/store.js";
+import { MODERATION_MIGRATIONS } from "../src/moderation/store.js";
 import { InstagramMonitorStore } from "../src/capabilities/instagram_monitor/store.js";
 import { ask } from "../src/llm/client.js";
 import { textBackend, textBrainDisplayName } from "../src/config.js";
@@ -64,7 +65,10 @@ const warn = (label: string, detail = "") =>
    );
 
 const memory = new SqliteMemoryStore({ path: ":memory:" });
-await memory.migrate(FRAMEWORK_CAPABILITY_ID, USERS_MIGRATIONS);
+await memory.migrate(FRAMEWORK_CAPABILITY_ID, [
+   ...USERS_MIGRATIONS,
+   ...MODERATION_MIGRATIONS,
+]);
 const userDirectory = new UserDirectory(memory.db());
 userDirectory.upsert(OPERATOR, "op#0001", NOW.getTime());
 

@@ -16,6 +16,7 @@ import {
    USERS_MIGRATIONS,
    UserDirectory,
 } from "../src/users/store.js";
+import { MODERATION_MIGRATIONS } from "../src/moderation/store.js";
 import { CapabilityRegistry } from "../src/capabilities/registry.js";
 import {
    buildRouter,
@@ -49,7 +50,10 @@ async function main(): Promise<void> {
       "chopperbot.db",
    );
    const memory = new SqliteMemoryStore({ path: dbPath });
-   await memory.migrate(FRAMEWORK_CAPABILITY_ID, USERS_MIGRATIONS);
+   await memory.migrate(FRAMEWORK_CAPABILITY_ID, [
+      ...USERS_MIGRATIONS,
+      ...MODERATION_MIGRATIONS,
+   ]);
    const userDirectory = new UserDirectory(memory.db());
 
    const client = new Client({
