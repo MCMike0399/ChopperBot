@@ -5,7 +5,7 @@
 //   2. show the exact text appended to a proposal,
 //   3. drive the REAL model with the ticket-conversation prompt on a "no le sé
 //      al flyer, ¿me ayudan?" turn and check it emits the mention verbatim.
-// Posts NOTHING to Discord and creates NO calendar event. Spends a little Kimi
+// Posts NOTHING to Discord and creates NO calendar event. Spends a little DeepSeek
 // budget on step 3 (skip it with --no-model).
 //
 //   npx tsx scripts/verify-event-intake-mentions.ts [guildId]
@@ -15,12 +15,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { Client, GatewayIntentBits, PermissionFlagsBits } from "discord.js";
 import { config } from "../src/config.js";
-import { EventIntakeStore } from "../src/capabilities/event_intake/store.js";
-import {
-   appendModPing,
-   DEFAULT_MOD_ROLES,
-   resolveModMentions,
-} from "../src/discord/mod-roles.js";
+import { eventRoleTokens } from "../src/capabilities/mod-authority.js";
+import { appendModPing, resolveModMentions } from "../src/discord/mod-roles.js";
 import { renderTicketConversationPrompt } from "../src/capabilities/event_intake/preamble.js";
 import { ask } from "../src/llm/client.js";
 
@@ -36,10 +32,10 @@ async function main(): Promise<void> {
          readonly: true,
       },
    );
-   const tokens = new EventIntakeStore(db).getModRoles();
-   console.log(
-      `Approver tokens: ${tokens.length > 0 ? tokens.join(", ") : `(none configured → defaults: ${DEFAULT_MOD_ROLES.join(", ")})`}`,
-   );
+   // The effective events tier (moderation ∪ event roles, defaults applied) —
+   // exactly what the watcher approves and pings with.
+   const tokens = eventRoleTokens(db);
+   console.log(`Approver tokens (events tier): ${tokens.join(", ")}`);
 
    const client = new Client({ intents: [GatewayIntentBits.Guilds] });
    await client.login(config.DISCORD_TOKEN);
@@ -75,9 +71,9 @@ async function main(): Promise<void> {
             `  ${ok ? "🔔" : "🔕"} ${r.name} (${r.id})${ok ? "" : "  ← mention would NOT notify"}`,
          );
       }
-      const missing = (
-         tokens.length > 0 ? tokens : [...DEFAULT_MOD_ROLES]
-      ).filter((t) => /^\d{17,20}$/.test(t) && !roles.has(t));
+      const missing = tokens.filter(
+         (t) => /^\d{17,20}$/.test(t) && !roles.has(t),
+      );
       if (missing.length > 0)
          console.log(
             `  ⚠️  configured but absent from the guild: ${missing.join(", ")}`,

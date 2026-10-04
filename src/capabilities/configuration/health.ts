@@ -1,4 +1,3 @@
-import { authoritySnapshot, eventRoleTokens } from "../mod-authority.js";
 /**
  * Cross-capability health snapshot — the "how is ChopperBot actually doing?"
  * answer in ONE tool call.
@@ -33,7 +32,7 @@ import type { MutableCapabilityRouter } from "../routing.js";
 import { InstagramMonitorStore } from "../instagram_monitor/store.js";
 import { FileScannerStore } from "../file_scanner/store.js";
 import { EventIntakeStore } from "../event_intake/store.js";
-import { DEFAULT_MOD_ROLES } from "../../discord/mod-roles.js";
+import { authoritySnapshot, eventRoleTokens } from "../mod-authority.js";
 import { CalendarStore } from "../calendar/store.js";
 import { desiredMonthKeys } from "../calendar/publisher.js";
 import { resolveAnnounceSettings } from "../calendar/announce-settings.js";
@@ -402,9 +401,10 @@ export function collectHealth(deps: HealthDeps): HealthReport {
             "event_intake no tiene categorías de tickets configuradas — está inactiva.",
          );
       }
-      // An empty configured list is NOT "nobody can approve" — `isModByRole` falls
-      // back to DEFAULT_MOD_ROLES. Report the EFFECTIVE roles so the health view
-      // can't be misread as a broken approval path.
+      // An empty configured list is NOT "nobody can approve" — the events tier
+      // falls back to DEFAULT_EVENT_ROLES and always includes moderation. Report
+      // the EFFECTIVE roles so the health view can't be misread as a broken
+      // approval path. (Both tiers are also under the top-level `authority`.)
       const configuredRoles = store.getModRoles();
       return {
          enabled: true,

@@ -5,7 +5,7 @@ import type {
    ToolSource,
    ToolSpec,
 } from "../../tools/source.js";
-import { isModTurn, modRoleTokens } from "../mod-authority.js";
+import { eventRoleTokens, isModTurn } from "../mod-authority.js";
 import { isModCaller } from "../../discord/mod-roles.js";
 import { stripBotMention } from "../../discord/handlers.js";
 import { log } from "../../log.js";
@@ -138,7 +138,9 @@ export function createDiscordBanExecutor(
                      PermissionFlagsBits.Administrator,
                   ),
                },
-               modRoleTokens(db),
+               // Protect the wider events tier: Gestión is staff, not a target
+               // the bot should ever be the instrument against.
+               eventRoleTokens(db),
             ) ||
             (caller.id !== guild.ownerId &&
                caller.roles.highest.comparePositionTo(target.roles.highest) <=

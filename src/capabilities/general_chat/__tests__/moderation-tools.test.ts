@@ -15,6 +15,7 @@ import {
 const TARGET = "200000000000000001";
 const CALLER = "200000000000000002";
 const BOT = "200000000000000003";
+const GESTION = "1483694810253492235";
 const REQUEST = { targetId: TARGET, reason: "acoso" };
 
 describe("current explicit ban request", () => {
@@ -149,9 +150,11 @@ describe("ban effect authorization", () => {
 
    test.each([
       "revoked-role",
+      "gestion-caller",
       "edited-request",
       "deleted-request",
       "protected-mod",
+      "protected-gestion",
       "owner",
       "self",
       "hierarchy",
@@ -160,12 +163,18 @@ describe("ban effect authorization", () => {
    ])("refuses %s before a ban", async (scenario) => {
       const h = harness();
       if (scenario === "revoked-role") h.caller.roles.cache.clear();
+      if (scenario === "gestion-caller") {
+         h.caller.roles.cache.clear();
+         h.caller.roles.cache.set(GESTION, { id: GESTION, name: "Gestión" });
+      }
       if (scenario === "edited-request")
          h.trigger.content = `revisa a <@${TARGET}>`;
       if (scenario === "deleted-request")
          h.channel.messages.fetch.mockRejectedValueOnce(new Error("deleted"));
       if (scenario === "protected-mod")
          h.target.permissions.add(PermissionFlagsBits.Administrator);
+      if (scenario === "protected-gestion")
+         h.target.roles.cache.set(GESTION, { id: GESTION, name: "Gestión" });
       if (scenario === "owner") h.guild.ownerId = TARGET;
       if (scenario === "self") h.target.id = CALLER;
       if (scenario === "hierarchy")
@@ -174,7 +183,7 @@ describe("ban effect authorization", () => {
          h.bot.permissions = new PermissionsBitField();
       if (scenario === "unbannable") h.target.bannable = false;
       await expect(h.executor.execute(REQUEST)).rejects.toThrow(
-         scenario === "revoked-role"
+         scenario === "revoked-role" || scenario === "gestion-caller"
             ? "ya no tiene autorización"
             : scenario === "edited-request"
               ? "La solicitud cambió"

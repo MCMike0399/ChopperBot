@@ -20,6 +20,8 @@ Corregimos quién puede dirigir las tareas de moderación de ChopperBot. La comi
 
 La moderación y la gestión de eventos tienen ahora listas separadas, que el equipo puede ajustar sin reiniciar el bot.
 
+Además, ChopperBot nunca será la herramienta para expulsar a integrantes de Gestión: quedan protegidxs igual que el equipo de moderación.
+
 ---
 
 ## 2.3.0 — 2026-10-04
