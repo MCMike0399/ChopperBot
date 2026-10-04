@@ -1,3 +1,4 @@
+import { authoritySnapshot, eventRoleTokens } from "../mod-authority.js";
 /**
  * Cross-capability health snapshot — the "how is ChopperBot actually doing?"
  * answer in ONE tool call.
@@ -103,6 +104,7 @@ function overallStatus(signals: {
 }
 
 export interface HealthReport {
+   authority: ReturnType<typeof authoritySnapshot>;
    status: "ok" | "degraded" | "down";
    /** Human-readable reasons behind a non-ok status, most important first. */
    problems: string[];
@@ -407,10 +409,7 @@ export function collectHealth(deps: HealthDeps): HealthReport {
       return {
          enabled: true,
          watched_categories: categories,
-         mod_roles_effective:
-            configuredRoles.length > 0
-               ? configuredRoles
-               : [...DEFAULT_MOD_ROLES],
+         mod_roles_effective: eventRoleTokens(deps.db),
          mod_roles_source:
             configuredRoles.length > 0 ? "configured" : "default (roles.ts)",
          tickets_by_status: byStatus,
@@ -421,6 +420,7 @@ export function collectHealth(deps: HealthDeps): HealthReport {
    return {
       status: overallStatus({ llmDegraded: llmSnapshot.degraded, problems }),
       problems,
+      authority: authoritySnapshot(deps.db),
       runtime,
       llm,
       capabilities,

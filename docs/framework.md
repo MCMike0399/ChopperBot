@@ -65,3 +65,13 @@ Single SQLite file, **one row per capability+version in `_migrations`** (see `sr
 ## Routing
 
 `src/capabilities/routing.ts` builds a `MutableCapabilityRouter` from an initial channel→capability map. The `configuration` capability holds the only reference that can call `setBinding`/`removeBinding` — read-only consumers type their dep as the parent `CapabilityRouter`. Bindings are persisted to SQLite, so live re-bindings from chat survive restarts; **no bot restart needed when re-binding a channel.**
+
+## Authority tiers — v2.3.1 (2026-10-04)
+
+`mod-roles.ts` owns the pure matcher and the two default lists. `isModTurn` now means **moderation**: Administradora `1483734077944365149`, Administrador `1436259908222713917`, Técnico `1517610228969902130`, Moderación `1436055845392879778`, or Discord Administrator. Bot callers never qualify. `isEventTurn` means effective moderation plus the configured/default **events** list (defaults additionally include Gestión `1483694810253492235`). Missing authority fails closed.
+
+The console, IG mutations, reviews and bans use moderation. Calendar writes/broadcasts, intake approval, flyer staff operations, event pings and minutas commands use events; Agitprop retains its separate flyer authorization. These explicit tiers supersede the single-list description in step 3b. Effective event pings inherit custom moderation roles too.
+
+Migration event_intake v3 preserves `mod_roles_json` as the event setting and adds `moderation_roles_json`, initialized empty (safe moderation defaults, never copied from the old mixed list). `set_mod_roles` remains the compatible event-setting alias; `set_event_roles` and `set_moderation_roles` are explicit. Empty lists mean defaults. Health exposes `authority.{moderation,events}` with effective IDs and configured/default source.
+
+Proof: 112 files / 1,334 tests, typecheck/build green; service active and `Discord client ready` after deployment. Read-only live verification confirmed two Gestión-only callers: events true, moderation false; the bot: false for both. No sanctions or test posts. `npx tsx scripts/verify-mod-authority.ts [memberId…]` reports both tiers without member listing or content output.

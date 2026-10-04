@@ -1,3 +1,4 @@
+import { authoritySnapshot, eventRoleTokens } from "../mod-authority.js";
 import { PermissionFlagsBits, type Client } from "discord.js";
 import type Database from "better-sqlite3";
 import { config } from "../../config.js";
@@ -9,7 +10,7 @@ import type {
 } from "../../tools/source.js";
 import { EventIntakeStore } from "../event_intake/store.js";
 import {
-   DEFAULT_MOD_ROLES,
+   DEFAULT_EVENT_ROLES,
    resolveModMentions,
 } from "../../discord/mod-roles.js";
 import { DEFAULT_AGITPROP_ROLES } from "../event_intake/constants.js";
@@ -52,6 +53,8 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                '• "status" — watched ticket categories, the approver roles (and whether the bot can really @-mention them in a ticket), and recent ticket count.\n' +
                '• "list_categories" — the category/channel ids currently watched.\n' +
                '• "set_categories" {channels} — REPLACE the watched set. `channels` may be: comma/space-separated CATEGORY (or channel) ids or a JSON array; "este servidor" to watch every channel the bot sees in THIS server; "todos"/"all"; explicit `guild:<serverId>` tokens; or empty to stop. Takes effect within ~10s (no restart).\n' +
+               '• "set_moderation_roles" {roles} — REPLACE moderation authority (console/review/sanctions); empty resets defaults.\n' +
+               '• "set_event_roles" {roles} — alias of set_mod_roles.\n' +
                '• "set_mod_roles" {roles} — REPLACE who can approve. `roles` is a comma-separated list or JSON array of role NAMES (e.g. "Moderador, Administrador, Administradora") or role ids. Empty resets to the defaults.\n' +
                '• "set_agitprop_channel" {channel} — REPLACE the Agitprop flyer inbox channel id (snowflake), or empty to clear.\n' +
                '• "set_agitprop_roles" {roles} — REPLACE who may fulfill/manage flyer jobs (names or ids). Empty → "Agitprop".\n' +
@@ -66,6 +69,8 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                         "list_categories",
                         "set_categories",
                         "set_mod_roles",
+                        "set_event_roles",
+                        "set_moderation_roles",
                         "set_agitprop_channel",
                         "set_agitprop_roles",
                         "recent_tickets",
@@ -99,7 +104,7 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
          return pingabilityOf(
             this.deps.client,
             this.deps.guildId,
-            this.store.getModRoles(),
+            eventRoleTokens(this.deps.db),
          );
       } catch {
          return null;
@@ -133,7 +138,7 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
          switch (action) {
             case "status": {
                const categories = this.store.getWatchedCategories();
-               const roles = this.store.getModRoles();
+               const roles = eventRoleTokens(this.deps.db);
                const recent = this.store.recentTickets(5).map((t) => ({
                   channelId: t.channel_id,
                   status: t.status,
@@ -149,7 +154,7 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                   categories.length === 0
                      ? "• Categorías vigiladas: (ninguna — configúralas con `set_categories`)"
                      : `• Categorías vigiladas: ${categories.map((c) => `\`${c}\``).join(", ")}`,
-                  `• Roles que pueden aprobar: ${(roles.length > 0 ? roles : [...DEFAULT_MOD_ROLES]).join(", ")}`,
+                  `• Roles que pueden aprobar: ${(roles.length > 0 ? roles : [...DEFAULT_EVENT_ROLES]).join(", ")}`,
                   ping
                      ? `• Aviso a mods en el ticket: ${
                           ping.pingable.length > 0
@@ -180,6 +185,7 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                   payload: {
                      message: lines.join("\n"),
                      categories,
+                     authority: authoritySnapshot(this.deps.db),
                      roles,
                      mod_ping: ping,
                      agitprop_channel_id: agitpropChannel,
@@ -252,7 +258,19 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                      : `Ahora vigilo ${ids.length} categoría(s)/canal(es) de tickets. Toma efecto en ~10s.`;
                return { status: "success", payload: { watched: ids, note } };
             }
+            case "set_moderation_roles": {
+               if (typeof obj.roles !== "string")
+                  throw new Error("roles es obligatorio");
+               this.store.setModerationRoles(parseRoleList(obj.roles));
+               return {
+                  status: "success",
+                  payload: { authority: authoritySnapshot(this.deps.db) },
+               };
+            }
+            case "set_event_roles":
             case "set_mod_roles": {
+               if (typeof obj.roles !== "string")
+                  throw new Error("roles es obligatorio");
                const roles = parseRoleList(
                   typeof obj.roles === "string" ? obj.roles : "",
                );
@@ -261,8 +279,7 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                   { tool: toolName, roles, by: this.deps.callerUserId },
                   "event_intake.set_mod_roles",
                );
-               const effective =
-                  roles.length > 0 ? roles : [...DEFAULT_MOD_ROLES];
+               const effective = eventRoleTokens(this.deps.db);
                const ping = this.pingability();
                const warn =
                   ping && ping.pingable.length === 0
@@ -271,6 +288,7 @@ export class ConfigEventIntakeAdminSource implements ToolSource {
                return {
                   status: "success",
                   payload: {
+                     authority: authoritySnapshot(this.deps.db),
                      roles,
                      mod_ping: ping,
                      note: `Roles que pueden aprobar: ${effective.join(", ")}${roles.length === 0 ? " (predeterminados)" : ""}.${warn}`,

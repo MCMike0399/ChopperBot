@@ -30,3 +30,7 @@ Upgraded 2026-08-06 (v1.10.0) from a thin intro+redirect prompt into the server'
 - **Hard boundaries:** no invented server facts, no role/@everyone mentions, no autonomous sanctions. Reports/appeals still go through tickets. The sole write exception is the independently gated, current explicit moderator ban above.
 - **The RevZ primer is grounded in a real survey** — `scripts/survey-revz-server.ts` (read-only, added 2026-08-06) dumps the guild's roles, channel tree with topics, current bindings, and recent message samples to `/tmp/revz-survey.md`. Re-run it if the server reorganizes and the primer needs a refresh.
 - **Verify:** `npx vitest run src/capabilities/general_chat src/discord/__tests__/conversation.test.ts` (profile selection, read tools, ambient context on replies, pagination/serialized budgets, permission revocation/private threads, review authority, explicit ban gate and effect guards). Live: the context proof above or `npx tsx scripts/verify-assistant.ts` (posts nothing).
+
+## Moderation authority correction — v2.3.1
+
+Review and explicit-ban availability, live requester rechecks and protected-staff checks now use the **moderation** tier, not the event approver list. Gestión (`1483694810253492235`) alone receives neither tool, while keeping event capabilities. Defaults are the four staff IDs in `mod-roles.ts`; bot callers fail even with Administrator. No action syntax or ban effect changed. Full suite: 1,334 tests; live read-only proof confirmed both Gestión-only members are denied moderation. No real sanctions were used.

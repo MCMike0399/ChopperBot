@@ -30,8 +30,38 @@ export const DEFAULT_MOD_ROLES = [
    "1436259908222713917",
    "1517610228969902130",
    "1436055845392879778",
+] as const;
+
+export const DEFAULT_EVENT_ROLES = [
+   ...DEFAULT_MOD_ROLES,
    "1483694810253492235",
 ] as const;
+export type AuthorityTier = "moderation" | "events";
+export function effectiveRoleTokens(
+   tokens: readonly string[],
+   tier: AuthorityTier,
+): readonly string[] {
+   return tokens.length > 0
+      ? tokens
+      : tier === "events"
+        ? DEFAULT_EVENT_ROLES
+        : DEFAULT_MOD_ROLES;
+}
+export function isAuthorityCaller(
+   caller: TurnAuthority,
+   tokens: readonly string[],
+   tier: AuthorityTier,
+): boolean {
+   return isModCaller(caller, effectiveRoleTokens(tokens, tier));
+}
+export function isEventByRole(
+   roles: readonly NamedRole[],
+   tokens: readonly string[],
+): boolean {
+   return (
+      matchModRoles(roles, effectiveRoleTokens(tokens, "events")).length > 0
+   );
+}
 
 const SNOWFLAKE_RE = /^\d{17,20}$/;
 
@@ -109,6 +139,7 @@ export function isModByRole(
 export interface TurnAuthority {
    memberRoles?: readonly NamedRole[];
    isAdministrator?: boolean;
+   isBot?: boolean;
 }
 
 /**
@@ -126,6 +157,7 @@ export function isModCaller(
    caller: TurnAuthority,
    tokens: readonly string[],
 ): boolean {
+   if (caller.isBot) return false;
    if (caller.isAdministrator === true) return true;
    if (!caller.memberRoles) return false;
    return isModByRole(caller.memberRoles, tokens);
@@ -183,7 +215,10 @@ export function resolveModMentions(
    tokens: readonly string[],
    opts: { canMentionAny: boolean },
 ): ModMentions {
-   const matched = matchModRoles(guildRoles, tokens);
+   const matched = matchModRoles(
+      guildRoles,
+      effectiveRoleTokens(tokens, "events"),
+   );
    if (matched.length === 0) return EMPTY_MOD_MENTIONS;
 
    const notifiable = matched.filter(

@@ -310,6 +310,34 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       expect(member.tools.tools.map((t) => t.name)).not.toContain(
          "server_moderation_review",
       );
+      const gestion = await h.generalCap.buildTurn({
+         ...ctx,
+         memberRoles: [
+            { id: "1483694810253492235", name: "COMISIÓN | GESTIÓN" },
+         ],
+      });
+      expect(gestion.tools.tools.map((t) => t.name)).not.toContain(
+         "server_ban_member",
+      );
+      expect(gestion.tools.tools.map((t) => t.name)).not.toContain(
+         "server_moderation_review",
+      );
+      const console = await h.configCap.buildTurn({
+         ...ctx,
+         memberRoles: [
+            { id: "1483694810253492235", name: "COMISIÓN | GESTIÓN" },
+         ],
+      });
+      expect(console.tools.tools).toHaveLength(0);
+      const calendar = await h.calCap.buildTurn({
+         ...ctx,
+         memberRoles: [
+            { id: "1483694810253492235", name: "COMISIÓN | GESTIÓN" },
+         ],
+      });
+      expect(calendar.tools.tools.map((t) => t.name)).toContain(
+         "calendar_create_event",
+      );
       const moderator = await h.generalCap.buildTurn({
          ...ctx,
          isAdministrator: true,

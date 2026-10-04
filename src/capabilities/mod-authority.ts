@@ -1,31 +1,59 @@
 import type Database from "better-sqlite3";
-import { isModCaller, type TurnAuthority } from "../discord/mod-roles.js";
+import {
+   effectiveRoleTokens,
+   isAuthorityCaller,
+   type AuthorityTier,
+   type TurnAuthority,
+} from "../discord/mod-roles.js";
 import { EventIntakeStore } from "./event_intake/store.js";
 
-/**
- * "May this caller run privileged actions here?" for channel-bound
- * capabilities, answered from the SAME approver-role setting event_intake uses
- * to decide who may approve a ticket (`config_eventintake set_mod_roles`).
- *
- * Reading that one setting rather than keeping a second list is the invariant
- * the calendar announcer already relies on: who may approve, who gets pinged
- * and who may administer can't drift apart. An un-migrated or unreadable
- * event_intake degrades to `[]`, which `effectiveModTokens` resolves to
- * DEFAULT_MOD_ROLES — never to "everybody".
- */
-export function modRoleTokens(db: Database.Database | null): string[] {
+export function authorityRoleTokens(
+   db: Database.Database | null,
+   tier: AuthorityTier,
+): string[] {
    if (!db) return [];
    try {
-      return new EventIntakeStore(db).getModRoles();
+      const store = new EventIntakeStore(db);
+      return tier === "events"
+         ? store.getModRoles()
+         : store.getModerationRoles();
    } catch {
       return [];
    }
 }
-
-/** Fail-closed mod check for a capability turn. See {@link isModCaller}. */
-export function isModTurn(
+export const modRoleTokens = (db: Database.Database | null): string[] =>
+   authorityRoleTokens(db, "moderation");
+export const isModTurn = (
    db: Database.Database | null,
    caller: TurnAuthority,
-): boolean {
-   return isModCaller(caller, modRoleTokens(db));
+): boolean => isAuthorityCaller(caller, modRoleTokens(db), "moderation");
+// Events always include moderation, even when either tier uses custom roles.
+export function eventRoleTokens(db: Database.Database | null): string[] {
+   return [
+      ...new Set([
+         ...effectiveRoleTokens(authorityRoleTokens(db, "events"), "events"),
+         ...effectiveRoleTokens(modRoleTokens(db), "moderation"),
+      ]),
+   ];
+}
+export const isEventTurn = (
+   db: Database.Database | null,
+   caller: TurnAuthority,
+): boolean => isAuthorityCaller(caller, eventRoleTokens(db), "events");
+export function authoritySnapshot(db: Database.Database | null) {
+   return Object.fromEntries(
+      (["moderation", "events"] as const).map((tier) => {
+         const configured = authorityRoleTokens(db, tier);
+         return [
+            tier,
+            {
+               effective:
+                  tier === "events"
+                     ? eventRoleTokens(db)
+                     : [...effectiveRoleTokens(configured, tier)],
+               source: configured.length ? "configured" : "defaults",
+            },
+         ];
+      }),
+   );
 }

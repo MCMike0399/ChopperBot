@@ -53,3 +53,7 @@ Added 2026-08-16 (v1.22.0). The Teams-style meeting minutes: a mod runs **`/chop
 | Minute is late by an hour+                                            | Unexpected now that live transcription keeps pace. Remaining work at leave is the last tail + the LLM pass (map-reduce if the draft is >48k).  | Check `minutas.finalize_started` leftover counts and `agent_turn` logs.                                                  |
 | Bot at 84 °C, clock at 2.15 GHz during transcription                  | Expected. Fan is already maxed; the SoC protects itself.                                                                                       | Nothing. Idle recovers to ~61 °C. Do not overclock.                                                                      |
 | Short answers missing from the acta                                   | Bursts under `MIN_BURST_BYTES` (0.5 s) are skipped at transcribe time.                                                                         | Expected trade-off; lower the floor only if willing to pay a 30 s whisper window per extra burst.                        |
+
+## Recording authority compatibility — v2.3.1
+
+Recording start/stop remains on the calendar's **events** tier, including Gestión, per the standing recording-authority contract. It reads the effective event list (including custom moderation roles) and rejects bot interactions. Console administration remains moderation-only. This preserves recording access while separating sanctions/reviews/console authority. Full deployment proof: framework.md.

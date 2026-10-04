@@ -44,6 +44,7 @@ export async function verifyLiveModerator(
       const guild = await getClient().guilds.fetch(guildId);
       const member = await guild.members.fetch({ user: userId, force: true });
       return isModTurn(db, {
+         isBot: member.user?.bot,
          memberRoles: member.roles.cache.map((r) => ({
             id: r.id,
             name: r.name,
@@ -84,6 +85,7 @@ export function createDiscordBanExecutor(
          });
          if (
             !isModTurn(db, {
+               isBot: caller.user?.bot,
                memberRoles: caller.roles.cache.map((r) => ({
                   id: r.id,
                   name: r.name,
@@ -127,6 +129,7 @@ export function createDiscordBanExecutor(
             target.user.bot ||
             isModCaller(
                {
+                  isBot: target.user.bot,
                   memberRoles: target.roles.cache.map((r) => ({
                      id: r.id,
                      name: r.name,

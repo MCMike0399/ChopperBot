@@ -13,7 +13,7 @@ import {
    type NamedRole,
    type TurnAuthority,
 } from "../../discord/mod-roles.js";
-import { modRoleTokens } from "../mod-authority.js";
+import { eventRoleTokens } from "../mod-authority.js";
 import { JOIN_COMMAND, LEAVE_COMMAND } from "./constants.js";
 import { UserVisibleError, type MinutasSessions } from "./session.js";
 import type { MinutasStore } from "./store.js";
@@ -72,6 +72,7 @@ export function resolveInteractionAuthority(
    interaction: ChatInputCommandInteraction,
 ): TurnAuthority {
    if (!interaction.inGuild() || !interaction.member) return {};
+   if (interaction.user.bot) return { isBot: true };
    const guild = interaction.guild;
    const member = interaction.member;
    // Cached GuildMember: roles carry names. Raw API member: role ids only —
@@ -133,7 +134,7 @@ export function buildMinutasInteractionHandler(
          if (
             !isModCaller(
                resolveInteractionAuthority(interaction),
-               modRoleTokens(deps.db),
+               eventRoleTokens(deps.db),
             )
          ) {
             await interaction.reply({

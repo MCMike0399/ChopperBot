@@ -79,6 +79,14 @@ export const EVENT_INTAKE_MIGRATIONS: Migration[] = [
       ALTER TABLE event_intake_tickets ADD COLUMN flyer_notes TEXT;
     `,
    },
+   {
+      version: 3,
+      up: `
+      ALTER TABLE event_intake_settings ADD COLUMN moderation_roles_json TEXT NOT NULL DEFAULT '[]';
+      -- Preserve mod_roles_json as the legacy event approver list; do not grant
+      -- moderation to the old mixed list.
+   `,
+   },
 ];
 
 /**
@@ -126,6 +134,22 @@ export class EventIntakeStore {
          )
          .get() as { mod_roles_json: string } | undefined;
       return parseIdArray(row?.mod_roles_json);
+   }
+
+   getModerationRoles(): string[] {
+      const row = this.db
+         .prepare(
+            "SELECT moderation_roles_json FROM event_intake_settings WHERE id = 1",
+         )
+         .get() as { moderation_roles_json: string } | undefined;
+      return parseIdArray(row?.moderation_roles_json);
+   }
+   setModerationRoles(roles: string[]): void {
+      this.db
+         .prepare(
+            "UPDATE event_intake_settings SET moderation_roles_json = ?, updated_at = ? WHERE id = 1",
+         )
+         .run(JSON.stringify(dedupeIds(roles)), Date.now());
    }
 
    setModRoles(roles: string[]): void {

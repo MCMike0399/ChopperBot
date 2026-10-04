@@ -387,6 +387,7 @@ async function resolveAuthority(message: Message): Promise<TurnAuthority> {
    }
    if (!member) return {};
    return {
+      isBot: message.author.bot,
       memberRoles: member.roles.cache.map((r) => ({ id: r.id, name: r.name })),
       isAdministrator: member.permissions.has(
          PermissionFlagsBits.Administrator,

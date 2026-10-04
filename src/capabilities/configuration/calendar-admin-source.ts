@@ -1,3 +1,4 @@
+import { eventRoleTokens } from "../mod-authority.js";
 import type Database from "better-sqlite3";
 import type { Client } from "discord.js";
 import { config } from "../../config.js";
@@ -612,7 +613,7 @@ export class ConfigCalendarAdminSource implements ToolSource {
          store,
          getAnnounceChannelId: () => resolveAnnounceSettings(store).channelId,
          getAnnounceMentions: () => resolveAnnounceSettings(store).mentions,
-         getModRoles: () => new EventIntakeStore(this.deps.db).getModRoles(),
+         getModRoles: () => eventRoleTokens(this.deps.db),
          // Nudges from the console go to the config channel (via the announcer's
          // own fallback) rather than pinging mods out of an admin dry run.
          getManagementChannelId: () => null,

@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.3.1 — 2026-10-04
+
+Corregimos quién puede dirigir las tareas de moderación de ChopperBot. La comisión de Gestión conserva el calendario, las solicitudes de eventos, los flyers y las grabaciones, pero ya no puede acceder a la consola ni pedir revisiones o expulsiones del servidor.
+
+La moderación y la gestión de eventos tienen ahora listas separadas, que el equipo puede ajustar sin reiniciar el bot.
+
+---
+
 ## 2.3.0 — 2026-10-04
 
 💬🛡️ **Más contexto en la plática y apoyo para moderación**

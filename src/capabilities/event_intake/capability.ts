@@ -1,3 +1,4 @@
+import { eventRoleTokens } from "../mod-authority.js";
 import {
    Events,
    type Client,
@@ -96,7 +97,7 @@ export class EventIntakeCapability implements Capability {
          client,
          botUserId,
          ticketBotId: config.EVENT_INTAKE_TICKET_BOT_ID,
-         getModRoles: () => this.store?.getModRoles() ?? [],
+         getModRoles: () => eventRoleTokens(this.db),
          getAgitpropChannelId: () => this.store?.getAgitpropChannelId() ?? null,
          getAgitpropRoles: () => this.store?.getAgitpropRoles() ?? [],
          publisher,

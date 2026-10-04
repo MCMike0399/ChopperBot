@@ -6,7 +6,7 @@ import {
 } from "discord.js";
 import {
    effectiveModTokens,
-   isModByRole,
+   isEventByRole,
    matchModRoles,
    resolveModMentions,
    type ModMentions,
@@ -44,7 +44,7 @@ export async function isFlyerOperator(
    modTokens: readonly string[],
    agitpropTokens: readonly string[],
 ): Promise<boolean> {
-   if (!message.inGuild()) return false;
+   if (message.author.bot || !message.inGuild()) return false;
    let member: GuildMember | null = message.member;
    if (!member) {
       member = await message.guild.members
@@ -53,7 +53,7 @@ export async function isFlyerOperator(
    }
    if (!member) return false;
    const roles = member.roles.cache.map((r) => ({ id: r.id, name: r.name }));
-   if (isModByRole(roles, modTokens)) return true;
+   if (isEventByRole(roles, modTokens)) return true;
    if (member.permissions.has(PermissionFlagsBits.Administrator)) return true;
    return isAgitpropByRole(roles, agitpropTokens);
 }

@@ -24,7 +24,7 @@ import { monthPublishAction } from './publisher.js';
 import { availableMonthKeys, hasTemplateFor } from './render.js';
 import { monthKey, monthKeyOfUtc } from './grid.js';
 import { sendAdminAlert } from '../../discord/admin-alert.js';
-import { isModTurn, modRoleTokens } from '../mod-authority.js';
+import { isEventTurn, eventRoleTokens } from '../mod-authority.js';
 import { CalendarAnnouncer } from './announcer.js';
 import { createEventSyncer, fetchScheduledEvent, type DiscordEventSyncer } from './discord-events.js';
 import { createBroadcaster, type CalendarBroadcaster } from './broadcast-channels.js';
@@ -142,7 +142,7 @@ export class CalendarCapability implements Capability {
     // always said "cualquier moderadorx de este canal", but nothing checked, so
     // the guarantee was really "whoever can post here". Non-mods keep the read
     // tools (asking what's coming up is fair game); write is fail-closed.
-    const isMod = isModTurn(this.db, ctx);
+    const isMod = isEventTurn(this.db, ctx);
 
     const upcoming = store.listUpcoming(ctx.now.getTime(), SNAPSHOT_LIMIT);
     const outputChannelId = this.resolveOutputChannel();
@@ -448,7 +448,7 @@ export class CalendarCapability implements Capability {
    * event_intake never migrated, fall back to the built-in defaults.
    */
   private approverRoles(): string[] {
-    return modRoleTokens(this.db);
+    return eventRoleTokens(this.db);
   }
 }
 

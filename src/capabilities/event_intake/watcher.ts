@@ -36,7 +36,7 @@ import {
 import {
    appendModPing,
    EMPTY_MOD_MENTIONS,
-   isModByRole,
+   isEventByRole,
    mentionedRoleIds,
    resolveModMentions,
    sanitizeRoleMentions,
@@ -681,9 +681,7 @@ export class EventIntakeWatcher {
     * recent history for the ticket-bot event form. A ticket that has neither is
     * some other ticket type and we don't touch it.
     */
-   private async resolveEventContext(
-      message: GatewayMessage,
-   ): Promise<{
+   private async resolveEventContext(message: GatewayMessage): Promise<{
       parsed: ParsedForm | null;
       requesterId: string | null;
    } | null> {
@@ -1046,7 +1044,7 @@ export class EventIntakeWatcher {
     * the member can't be resolved.
     */
    private async isModerator(message: GatewayMessage): Promise<boolean> {
-      if (!message.inGuild()) return false;
+      if (message.author.bot || !message.inGuild()) return false;
       let member: GuildMember | null = message.member;
       if (!member) {
          member = await message.guild.members
@@ -1055,7 +1053,7 @@ export class EventIntakeWatcher {
       }
       if (!member) return false;
       const roles = member.roles.cache.map((r) => ({ id: r.id, name: r.name }));
-      if (isModByRole(roles, this.deps.getModRoles())) return true;
+      if (isEventByRole(roles, this.deps.getModRoles())) return true;
       return member.permissions.has(PermissionFlagsBits.Administrator);
    }
 
