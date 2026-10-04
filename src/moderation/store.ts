@@ -49,7 +49,8 @@ export interface TrailEntry {
    guildId: string;
    actorId: string;
    targetId: string;
-   action: "ban" | "escalation";
+   action:
+      "ban" | "escalation" | "timeout" | "timeout_removed" | "message_deleted";
    reason: string;
    triggerMessageId: string;
    channelId: string;

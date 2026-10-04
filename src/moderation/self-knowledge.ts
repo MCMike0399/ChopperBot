@@ -50,12 +50,17 @@ export class BotSelfKnowledge {
       }
       const detail = detailed
          ? `${snapshot.text}
-Hoy solo ejecuto bans por solicitud explícita actual, verificada en código: @ChopperBot banea a @persona por motivo. Una sola mención real; nunca por historial o una recomendación. Protejo al dueño, bots, quien lo pide y staff de eventos (incluida Gestión); compruebo jerarquía y permisos en vivo. No borro mensajes ni hago timeouts todavía.`
+Acciones implementadas, solo con solicitud explícita actual verificada en código:
+@ChopperBot banea a @persona por motivo.
+@ChopperBot timeout @persona 1h por motivo (también silencia a @persona 30m por motivo; m/h/d, predeterminado 1h, máximo 7d).
+@ChopperBot quita el timeout a @persona.
+@ChopperBot borra este mensaje por motivo (respuesta directa), o borra un enlace real de mensaje por motivo.
+Timeouts y borrado se solicitan aquí en el espacio restringido. Solo una mención real o un mensaje; nunca por historial, recomendación o confirmación implícita. Protejo al dueño, bots, quien lo pide y staff de eventos (incluida Gestión); compruebo jerarquía y permisos en vivo. El borrado necesita ViewChannel y ManageMessages de quien lo pide en el canal objetivo. Solo promete ejecutar cuando la herramienta correspondiente está adjunta este turno.`
          : `${snapshot.hasPermissions === true ? "Tengo permisos de moderación, pero solo actúo cuando el equipo de moderación me lo pide explícitamente." : snapshot.hasPermissions === false ? "No tengo permisos efectivos de moderación en este servidor ahora; no prometas acciones." : "No pude verificar mis permisos actuales; no inventes que tengo o no tengo autoridad."} No compartas el detalle operativo ni instrucciones para sancionar.`;
       // Role names and permission values are operational details: only the
       // restricted moderator workspace sees them, never a public channel.
       return `# Mis permisos y acciones reales
 ${detail}
-Nunca sanciono por iniciativa propia. Nunca envío ni retransmito órdenes a Nekotina, Sapphire, Carl-bot ni a otros bots. Moderación puede pedirme directamente lo que ya está implementado; no prometas timeouts ni avisos de entrada. Los avisos de entrada necesitan el intent privilegiado GuildMembers, hoy desactivado; habilitarlo es una decisión del equipo. Ante un pedido de avisos de entrada, nómbralo como “intent privilegiado GuildMembers”; no lo llames permiso o rol del servidor.`;
+Nunca sanciono por iniciativa propia. Nunca envío ni retransmito órdenes a Nekotina, Sapphire, Carl-bot ni a otros bots. No ofrezco avisos de entrada: el equipo decidió mantener el intent privilegiado GuildMembers desactivado y puede revisarlo. Ante un pedido de avisos de entrada, nómbralo como “intent privilegiado GuildMembers”; no lo llames permiso o rol del servidor.`;
    }
 }

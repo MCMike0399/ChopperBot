@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.5.0 — 2026-10-04
+
+- Moderación puede pedir un silencio temporal, retirarlo o borrar un mensaje concreto desde su espacio de trabajo. Cada acción exige una orden explícita, comprueba quién la pide y deja registro; el bot no sanciona por su cuenta.
+- Los silencios admiten minutos, horas o días: una hora si no se indica duración y siete días como máximo. El equipo de eventos sigue protegido.
+- Solo los reportes urgentes avisan al rol de Moderación. Los de gravedad alta llegan sin ping.
+- Iniciar o cerrar una grabación de minutas queda reservado a moderación.
+- ChopperBot funciona con permisos concretos por canal, sin Administrador. Los avisos de entrada siguen desactivados.
+
 ## 2.4.0 — 2026-10-04
 
 ChopperBot ya reconoce sus permisos reales y sus límites: no da órdenes a otros bots ni promete acciones que todavía no puede hacer.

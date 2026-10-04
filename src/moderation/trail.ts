@@ -6,9 +6,55 @@ import type {
 import { log } from "../log.js";
 import { verifyAudienceContainment } from "../discord/audience.js";
 import { ModerationStore, LOG_CHANNEL_IDS, type TrailEntry } from "./store.js";
+import { sanitizeEscalationSummary } from "../capabilities/general_chat/escalation-tools.js";
+import type { ActionExecutor } from "../capabilities/general_chat/action-tools.js";
 
 export function renderModLog(entry: TrailEntry): string {
-   return `**Acción de moderación: ban ejecutado**\nSolicitó: <@${entry.actorId}> · Objetivo: <@${entry.targetId}>\nSolicitud: https://discord.com/channels/${entry.guildId}/${entry.channelId}/${entry.triggerMessageId}\nResultado: ejecutado. Motivo: ${entry.reason.slice(0, 300)}`;
+   const label = {
+      ban: "ban ejecutado",
+      timeout: "timeout ejecutado",
+      timeout_removed: "timeout retirado",
+      message_deleted: "mensaje borrado",
+      escalation: "reporte enviado",
+   }[entry.action];
+   return `**Acción de moderación: ${label}**\nSolicitó: <@${entry.actorId}> · Objetivo ID: ${entry.targetId}\nSolicitud: https://discord.com/channels/${entry.guildId}/${entry.channelId}/${entry.triggerMessageId}\nResultado: ejecutado. Motivo citado: «${sanitizeEscalationSummary(entry.reason).slice(0, 300)}»`;
+}
+
+/** Record success before private evidence delivery; failed logs never replay effects. */
+export function withActionTrail(
+   executor: ActionExecutor,
+   store: ModerationStore,
+   entry: TrailEntry,
+   sendLog: (line: string) => Promise<unknown>,
+): ActionExecutor {
+   return {
+      async execute(request) {
+         const id = store.record({
+            ...entry,
+            outcome: "refused:effect_unconfirmed",
+         });
+         if (id === null)
+            throw new Error("Esta solicitud ya fue intentada; no se repite.");
+         let evidence: string | void;
+         try {
+            evidence = await executor.execute(request);
+         } catch (err) {
+            store.finish(id, `refused:${refusalCode(err)}`);
+            throw err;
+         }
+         store.finish(id, "executed");
+         try {
+            await sendLog(
+               `${renderModLog(entry)}${evidence ? `\n${evidence}` : ""}`,
+            );
+         } catch (err) {
+            log.error(
+               { err, trailId: id },
+               "moderation.mod_log_delivery_failed",
+            );
+         }
+      },
+   };
 }
 
 /** Delivery is separate from the effect; a failed log never replays a sanction. */
@@ -19,7 +65,7 @@ export async function sendModerationLine(
    content: string,
    ping = false,
    nonce?: string,
-): Promise<void> {
+): Promise<boolean> {
    const settings = store.settings(guildId);
    if (
       !settings.moderation_channel_id ||
@@ -48,6 +94,7 @@ export async function sendModerationLine(
       allowedMentions: { parse: [], users: [], roles, repliedUser: false },
       ...(nonce ? { nonce, enforceNonce: true } : {}),
    });
+   return roles.length > 0;
 }
 
 function refusalCode(err: unknown): string {
@@ -65,7 +112,7 @@ export function withBanTrail(
    executor: BanExecutor,
    store: ModerationStore,
    entry: TrailEntry,
-   sendLog: (line: string) => Promise<void>,
+   sendLog: (line: string) => Promise<unknown>,
 ): BanExecutor {
    return {
       async execute(request: BanRequest) {

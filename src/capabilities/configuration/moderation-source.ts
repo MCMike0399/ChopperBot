@@ -9,6 +9,7 @@ import type {
 import { ModerationStore, LOG_CHANNEL_IDS } from "../../moderation/store.js";
 import { isModTurn } from "../mod-authority.js";
 import { verifyAudienceContainment } from "../../discord/audience.js";
+import { log } from "../../log.js";
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
 const argsSchema = z
@@ -151,7 +152,11 @@ export class ConfigModerationSource implements ToolSource {
             );
          }
          return { status: "success", payload: store.settings(this.guildId) };
-      } catch {
+      } catch (err) {
+         log.warn(
+            { err, guildId: this.guildId, action: args.data.action },
+            "moderation.settings_failed",
+         );
          return fail(
             "No pude verificar o guardar la configuración de moderación.",
          );

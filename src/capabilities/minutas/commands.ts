@@ -13,7 +13,7 @@ import {
    type NamedRole,
    type TurnAuthority,
 } from "../../discord/mod-roles.js";
-import { eventRoleTokens } from "../mod-authority.js";
+import { modRoleTokens } from "../mod-authority.js";
 import { JOIN_COMMAND, LEAVE_COMMAND } from "./constants.js";
 import { UserVisibleError, type MinutasSessions } from "./session.js";
 import type { MinutasStore } from "./store.js";
@@ -63,10 +63,8 @@ export async function registerMinutasSlashCommands(
 }
 
 /**
- * Slash-command authorization = the calendar's approver roles, per the
- * standing constraint: the same list that decides who may approve an event
- * (`config_eventintake set_mod_roles`, else the default mod/admin role ids)
- * decides who may start/stop a recording. Fails closed via isModCaller.
+ * Recording captures private voices: start/stop requires the moderation tier,
+ * independently from event approval. Bots excluded; fails closed via isModCaller.
  */
 export function resolveInteractionAuthority(
    interaction: ChatInputCommandInteraction,
@@ -134,12 +132,12 @@ export function buildMinutasInteractionHandler(
          if (
             !isModCaller(
                resolveInteractionAuthority(interaction),
-               eventRoleTokens(deps.db),
+               modRoleTokens(deps.db),
             )
          ) {
             await interaction.reply({
                content:
-                  "Eso solo lo puede usar la moderación (los mismos roles que aprueban eventos del calendario).",
+                  "La grabación solo la puede iniciar o cerrar el equipo de moderación.",
                ephemeral: true,
             });
             log.info(

@@ -44,6 +44,107 @@ const REPORTER = "1550000000000000001",
    PUBLIC = "1437237844966899742";
 const NOW = Date.parse("2026-10-04T19:00:00Z");
 const VIEW_READ = P.ViewChannel | P.ReadMessageHistory;
+
+test.each(["alta", "urgente"] as const)(
+   "D1 %s uses the configured single role only when urgent",
+   async (severity) => {
+      const h = harness();
+      h.store.setSettings(G, MOD, [STAFF]);
+      h.guild.members.fetch.mockImplementation(async () => h.reporter as any);
+      const result = await new EscalationToolSource(
+         () => h.client,
+         h.store,
+         h.context,
+      ).handle("server_escalate_report", {
+         summary: "Reporte ficticio de amenazas",
+         severity,
+         target_id: TARGET,
+      });
+      expect(result.status).toBe("success");
+      expect(h.mod.send.mock.calls[0][0].allowedMentions).toEqual({
+         parse: [],
+         users: [],
+         roles: severity === "urgente" ? [STAFF] : [],
+         repliedUser: false,
+      });
+      expect(
+         h.mod.send.mock.calls[0][0].content.startsWith(`<@&${STAFF}>`),
+      ).toBe(severity === "urgente");
+      expect(
+         h.store.summary(G).by_outcome[
+            severity === "urgente" ? "escalated:ping_sent" : "escalated"
+         ],
+      ).toBe(1);
+      h.memory.close();
+   },
+);
+
+test("Phase 3 tools only attach to the current verified workspace moderator request", async () => {
+   const h = harness(),
+      cap = new GeneralChatCapability(),
+      registry = new CapabilityRegistry();
+   await cap.init({
+      memory: { db: () => h.memory.db(), migrate: async () => {} },
+      projectRoot: process.cwd(),
+      getDiscordClient: () => h.client,
+      getRegistry: () => registry,
+      getRouter: () => buildRouter(new Map()),
+   });
+   const requestText = `timeout <@${TARGET}> 1h por motivo ficticio`;
+   const turn = await cap.buildTurn({
+      ...h.context,
+      channelId: MOD,
+      requestText,
+   });
+   expect(turn.tools.tools.map((t) => t.name)).toContain(
+      "server_timeout_member",
+   );
+   expect(turn.effort).toBe("high");
+   expect(turn.system).toContain(`server_timeout_member para el ID ${TARGET}`);
+   const publicTurn = await cap.buildTurn({
+      ...h.context,
+      requestText: `timeoutea a <@${TARGET}> jaja`,
+   });
+   expect(publicTurn.tools.tools.map((t) => t.name)).not.toContain(
+      "server_timeout_member",
+   );
+   expect(publicTurn.effort).toBe("low");
+   h.member.roles.cache.clear();
+   h.member.roles.cache.set(GESTION, h.guild.roles.cache.get(GESTION)!);
+   const gestionTurn = await cap.buildTurn({
+      ...h.context,
+      channelId: MOD,
+      requestText,
+      memberRoles: [{ id: GESTION, name: "Rol ficticio" }],
+      isAdministrator: false,
+   });
+   expect(gestionTurn.tools.tools.map((t) => t.name)).not.toContain(
+      "server_timeout_member",
+   );
+   expect(gestionTurn.system).not.toContain("Mis roles reales:");
+   h.memory.close();
+});
+
+test("public forum audience can contain evidence, while a private thread never uses its parent", async () => {
+   const h = harness();
+   h.community.type = 15;
+   expect(
+      await verifyAudienceContainment(
+         h.guild as any,
+         h.community as any,
+         h.mod as any,
+      ),
+   ).toBe(true);
+   h.community.type = 12;
+   expect(
+      await verifyAudienceContainment(
+         h.guild as any,
+         h.community as any,
+         h.mod as any,
+      ),
+   ).toBe(false);
+   h.memory.close();
+});
 const snap = (
    id: string,
    overwrites: AudienceSnapshot["overwrites"] = [],
@@ -352,7 +453,7 @@ describe("partner availability and evidence", () => {
       expect(publicTurn.tools.tools.map((t) => t.name)).not.toContain(
          "server_audit_log",
       );
-      expect(publicTurn.system).toContain("no prometas timeouts");
+      expect(publicTurn.system).toContain("No ofrezco avisos de entrada");
       const gestion = await cap.buildTurn({
          ...h.context,
          channelId: MOD,
@@ -401,7 +502,7 @@ describe("partner availability and evidence", () => {
          knowledge = new BotSelfKnowledge();
       const first = await knowledge.block(h.client, G, true, NOW);
       expect(first).toContain("Administrator=sí");
-      expect(first).toContain("No borro mensajes ni hago timeouts");
+      expect(first).toContain("máximo 7d");
       h.bot.permissions = new PermissionsBitField();
       expect(await knowledge.block(h.client, G, true, NOW + 1000)).toBe(first);
       expect(await knowledge.block(h.client, G, true, NOW + 61_000)).toContain(

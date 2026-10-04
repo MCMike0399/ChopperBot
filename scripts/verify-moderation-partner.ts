@@ -8,7 +8,7 @@ import "dotenv/config";
 import assert from "node:assert/strict";
 import { resolve } from "node:path";
 import Database from "better-sqlite3";
-import { Client, GatewayIntentBits, PermissionFlagsBits } from "discord.js";
+import { Client, ClientUser, Routes, PermissionFlagsBits } from "discord.js";
 import { config } from "../src/config.js";
 import { GeneralChatCapability } from "../src/capabilities/general_chat/capability.js";
 import { CapabilityRegistry } from "../src/capabilities/registry.js";
@@ -29,17 +29,19 @@ assert(
       /^\d{17,20}$/.test(targetId),
    "Uso: verify-moderation-partner.ts <1|2|3> <moderatorId> <targetId> [--ask]",
 );
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [] });
 const db = new Database(resolve(config.CHOPPERBOT_DATA_DIR, "chopperbot.db"), {
    readonly: true,
 });
 try {
-   const ready = new Promise<void>((r) =>
-      client.once("clientReady", () => r()),
-   );
-   await client.login(config.DISCORD_TOKEN);
-   await ready;
+   client.rest.setToken(config.DISCORD_TOKEN);
+   client.user = Reflect.construct(ClientUser, [
+      client,
+      await client.rest.get(Routes.user()),
+   ]) as ClientUser;
    const guild = await client.guilds.fetch(MODERATION_GUILD_ID);
+   await guild.roles.fetch();
+   await guild.channels.fetch();
    const member = await guild.members.fetch({ user: memberId, force: true });
    const bot = await guild.members.fetchMe({ force: true });
    assert(!member.user.bot);

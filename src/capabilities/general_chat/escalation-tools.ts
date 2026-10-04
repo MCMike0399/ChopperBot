@@ -9,6 +9,7 @@ import type { CapabilityTurnContext } from "../capability.js";
 import { stripBotMention } from "../../discord/handlers.js";
 import { ModerationStore } from "../../moderation/store.js";
 import { sendModerationLine } from "../../moderation/trail.js";
+import { log } from "../../log.js";
 
 /** Deliberately high threshold: only current first-person incident reports or
  * serious sanction requests. The model decides credibility, code excludes
@@ -197,19 +198,32 @@ export class EscalationToolSource implements ToolSource {
             },
          };
       try {
-         await sendModerationLine(
+         const pingSent = await sendModerationLine(
             this.getClient(),
             this.store,
             c.guildId,
             renderEscalation(c, target, args.data.summary, args.data.severity),
-            true,
+            args.data.severity === "urgente",
             `e${c.messageId}`,
          );
-         this.store.finish(rowId, "escalated");
+         this.store.finish(
+            rowId,
+            pingSent ? "escalated:ping_sent" : "escalated",
+         );
+         log.info(
+            {
+               guildId: c.guildId,
+               triggerMessageId: c.messageId,
+               severity: args.data.severity,
+               pingSent,
+            },
+            "moderation.report_escalated",
+         );
          return {
             status: "success",
             payload: {
                sent: true,
+               ping_sent: pingSent,
                note: "Se envió un aviso para revisión humana, sin sanción.",
             },
          };

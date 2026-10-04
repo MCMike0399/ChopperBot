@@ -44,6 +44,14 @@ import {
    escalationCandidate,
    canEscalateFrom,
 } from "./escalation-tools.js";
+import {
+   ActionToolSource,
+   parseActionRequest,
+   createDiscordActionExecutor,
+   actionToolName,
+} from "./action-tools.js";
+import { withActionTrail } from "../../moderation/trail.js";
+import { verifyAudienceContainment } from "../../discord/audience.js";
 
 /** Read-only calendar tools the assistant gets in guilds with a profile, so
  * "¿qué eventos hay esta semana?" is answerable from any channel. Writes stay
@@ -159,6 +167,20 @@ export class GeneralChatCapability implements Capability {
               )
             : null;
       const partner = access && (await access.workspace()) ? access : null;
+      const parsedAction = ctx.guildId
+         ? parseActionRequest(
+              ctx.requestText,
+              ctx.guildId,
+              ctx.channelId,
+              ctx.replyMessageId,
+           )
+         : null;
+      // New effects are restricted to the verified staff workspace. Public
+      // ban compatibility is unchanged; public timeout jokes expose no tool.
+      const actionRequest =
+         partner && parsedAction && ctx.messageId && this.db
+            ? parsedAction
+            : null;
       // Operational detail (roles, permissions, command syntax) only inside the
       // restricted workspace — a moderator asking in #general gets the short form.
       const knowledge = ctx.guildId
@@ -193,6 +215,98 @@ export class GeneralChatCapability implements Capability {
             sources.push(
                new AuditLogToolSource(() => client, ctx.guildId, partner),
             );
+         if (actionRequest && ctx.messageId && this.db) {
+            const store = new ModerationStore(this.db);
+            sources.push(
+               new ActionToolSource(
+                  actionRequest,
+                  withActionTrail(
+                     createDiscordActionExecutor(
+                        () => client,
+                        this.db,
+                        {
+                           ...ctx,
+                           guildId: ctx.guildId,
+                           messageId: ctx.messageId,
+                        },
+                        actionRequest,
+                     ),
+                     store,
+                     {
+                        guildId: ctx.guildId,
+                        actorId: ctx.userId,
+                        targetId: actionRequest.targetId,
+                        action: actionRequest.action,
+                        reason: `${actionRequest.reason}${actionRequest.action === "timeout" ? ` (${actionRequest.durationMs} ms)` : ""}`,
+                        triggerMessageId: ctx.messageId,
+                        channelId: ctx.channelId,
+                        outcome: "executed",
+                        timestamp: Date.now(),
+                     },
+                     async (line) => {
+                        if (!(await partner!.verifyDelivery()))
+                           throw new Error("workspace_access_revoked");
+                        if (actionRequest.action === "message_deleted") {
+                           const guild = await client.guilds.fetch(
+                              ctx.guildId!,
+                           );
+                           const source = await guild.channels.fetch(
+                              actionRequest.channelId,
+                              { force: true },
+                           );
+                           const evidenceSource = source?.isThread()
+                              ? source.type === 12
+                                 ? null
+                                 : source.parent
+                              : source;
+                           const destination = await guild.channels.fetch(
+                              store.settings(ctx.guildId!)
+                                 .moderation_channel_id!,
+                              { force: true },
+                           );
+                           if (
+                              !evidenceSource ||
+                              !destination ||
+                              !(await verifyAudienceContainment(
+                                 guild,
+                                 evidenceSource,
+                                 destination,
+                              ))
+                           )
+                              throw new Error("workspace_audience_unverified");
+                        }
+                        await sendModerationLine(
+                           client,
+                           store,
+                           ctx.guildId!,
+                           line,
+                           false,
+                           `m${ctx.messageId}`,
+                        );
+                     },
+                  ),
+               ),
+            );
+         }
+         if (parsedAction && !actionRequest && this.db && ctx.messageId) {
+            try {
+               new ModerationStore(this.db).record({
+                  guildId: ctx.guildId,
+                  actorId: ctx.userId,
+                  targetId: parsedAction.targetId,
+                  action: parsedAction.action,
+                  reason: parsedAction.reason,
+                  triggerMessageId: ctx.messageId,
+                  channelId: ctx.channelId,
+                  outcome: moderator
+                     ? "refused:workspace_required"
+                     : "refused:caller_not_moderation",
+                  timestamp: Date.now(),
+               });
+            } catch {
+               /* A broken trail cannot authorize an effect. */
+            }
+         }
          if (banRequest && ctx.messageId && this.db) {
             const store = new ModerationStore(this.db);
             const executor = createDiscordBanExecutor(
@@ -291,6 +405,9 @@ export class GeneralChatCapability implements Capability {
                  knowledge,
                  ctx.userDisplayName ?? null,
                  banRequest?.targetId ?? null,
+                 actionRequest
+                    ? `${actionToolName(actionRequest)} para el ID ${actionRequest.targetId}`
+                    : null,
               )
             : renderAssistantPrompt(
                  profile,
@@ -307,7 +424,7 @@ export class GeneralChatCapability implements Capability {
          verifyDelivery: partner ? () => partner.verifyDelivery() : undefined,
          // Chat/history/review remain low. Only a current, independently
          // authorized moderator ban turns this into a writing loop.
-         effort: banRequest ? "high" : "low",
+         effort: banRequest || actionRequest ? "high" : "low",
       };
    }
 

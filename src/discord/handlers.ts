@@ -210,6 +210,7 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                         message.guild,
                      ).trim(),
                      messageId: message.id,
+                     replyMessageId: message.reference?.messageId,
                      now: new Date(),
                      attachments: imageRefs,
                      ...(await resolveAuthority(message)),

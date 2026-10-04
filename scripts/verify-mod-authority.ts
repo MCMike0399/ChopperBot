@@ -14,7 +14,7 @@
 import "dotenv/config";
 import { resolve } from "node:path";
 import Database from "better-sqlite3";
-import { Client, GatewayIntentBits, PermissionFlagsBits } from "discord.js";
+import { Client, ClientUser, Routes, PermissionFlagsBits } from "discord.js";
 import { config } from "../src/config.js";
 import {
    authoritySnapshot,
@@ -27,13 +27,17 @@ const db = new Database(
       resolve(config.CHOPPERBOT_DATA_DIR, "chopperbot.db"),
    { readonly: true, fileMustExist: true },
 );
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [] });
 try {
-   const ready = new Promise<void>((r) =>
-      client.once("clientReady", () => r()),
-   );
-   await client.login(config.DISCORD_TOKEN);
-   await ready;
+   client.rest.setToken(config.DISCORD_TOKEN);
+   client.user = Reflect.construct(ClientUser, [
+      client,
+      await client.rest.get(Routes.user()),
+   ]) as ClientUser;
+   const guilds = (await client.rest.get(Routes.userGuilds())) as {
+      id: string;
+   }[];
+   for (const guild of guilds) await client.guilds.fetch(guild.id);
    console.log(JSON.stringify({ authority: authoritySnapshot(db) }));
    for (const guild of client.guilds.cache.values()) {
       const roles = await guild.roles.fetch();

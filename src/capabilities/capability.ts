@@ -112,6 +112,8 @@ export interface CapabilityTurnContext extends TurnAuthority {
    /** Current trigger only — never history/context. Used to bind explicit actions. */
    requestText?: string;
    messageId?: string;
+   /** Direct reply target on the current trigger, never inferred from ambient text. */
+   replyMessageId?: string;
    /** Injected (not Date.now()) so capabilities are testable with frozen time. */
    now: Date;
    /**

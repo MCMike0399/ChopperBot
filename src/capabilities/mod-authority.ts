@@ -11,9 +11,9 @@ import { EventIntakeStore } from "./event_intake/store.js";
  * The two authority tiers (v2.3.1), both read from event_intake's settings row:
  *
  * - **moderation** (`moderation_roles_json`): the admin console, IG mutations,
- *   general_chat review + bans. Defaults to the four staff roles.
+ *   general_chat review + sanctions, minutas recording. Defaults to four staff roles.
  * - **events** (`mod_roles_json`, the legacy approver list): calendar writes,
- *   ticket approval, flyer staff ops, event pings, minutas recording. Defaults
+ *   ticket approval, flyer staff ops, event pings. Defaults
  *   additionally include Gestión, and ALWAYS include effective moderation.
  *
  * Gestión is event staff, not moderation — the reason the tiers exist. An
@@ -59,7 +59,7 @@ export function eventRoleTokens(db: Database.Database | null): string[] {
    ];
 }
 
-/** Fail-closed EVENTS check for a turn (calendar/intake/flyers/minutas). */
+/** Fail-closed EVENTS check for a turn (calendar/intake/flyers). */
 export const isEventTurn = (
    db: Database.Database | null,
    caller: TurnAuthority,

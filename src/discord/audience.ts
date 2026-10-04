@@ -144,7 +144,7 @@ export async function verifyAudienceContainment(
          return false;
       if (
          ![0, 5].includes(destination.type) ||
-         (source && ![0, 5].includes(source.type))
+         (source && ![0, 5, 15, 16].includes(source.type))
       )
          return false;
       if (

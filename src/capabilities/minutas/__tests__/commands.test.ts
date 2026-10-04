@@ -128,7 +128,29 @@ function fakeDeps(store: MinutasStore, mem: SqliteMemoryStore) {
 
 const VOICE = { id: "vc1", name: "Ágora", type: ChannelType.GuildVoice };
 
-describe("minutas slash-command gate (calendar approver roles only)", () => {
+describe("minutas slash-command gate (moderation only)", () => {
+   test.each([JOIN_COMMAND, LEAVE_COMMAND])(
+      "Gestión-only cannot run %s",
+      async (command) => {
+         const { mem, store } = await newDb();
+         store.setOutputChannelId(OUTPUT);
+         const { handler, sessions, requestLeaveProcessing } = fakeDeps(
+            store,
+            mem,
+         );
+         const { interaction, replies } = fakeInteraction({
+            command,
+            memberRoles: [{ id: "1483694810253492235", name: "Rol ficticio" }],
+            voiceChannel: VOICE,
+         });
+         await handler(interaction);
+         expect(replies[0].content).toContain("equipo de moderación");
+         expect(replies[0].ephemeral).toBe(true);
+         expect(sessions.start).not.toHaveBeenCalled();
+         expect(requestLeaveProcessing).not.toHaveBeenCalled();
+         mem.close();
+      },
+   );
    test("a member with no mod role is denied, ephemerally, before anything runs", async () => {
       const { mem, store } = await newDb();
       store.setOutputChannelId(OUTPUT);
@@ -150,7 +172,7 @@ describe("minutas slash-command gate (calendar approver roles only)", () => {
       ["join", JOIN_COMMAND],
       ["leave", LEAVE_COMMAND],
    ] as const)(
-      "calendar approver role passes the gate on /%s",
+      "moderation role passes the gate on /%s",
       async (_label, command) => {
          const { mem, store } = await newDb();
          store.setOutputChannelId(OUTPUT);
