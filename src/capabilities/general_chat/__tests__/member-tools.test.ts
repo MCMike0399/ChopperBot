@@ -71,7 +71,10 @@ function harness() {
    };
    const guild = {
       id: G,
-      roles: { everyone: { id: G }, fetch: vi.fn(async () => new Collection()) },
+      roles: {
+         everyone: { id: G },
+         fetch: vi.fn(async () => new Collection()),
+      },
       members: {
          fetch: vi.fn(async ({ user }: any) =>
             user === CALLER ? caller : target,

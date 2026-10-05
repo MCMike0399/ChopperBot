@@ -21,7 +21,10 @@ import { config as dotenv } from "dotenv";
 dotenv({ override: false });
 
 const key = process.env.DEEPSEEK_API_KEY ?? process.env.DEEP_SEEK_API_KEY!;
-const client = new OpenAI({ apiKey: key, baseURL: "https://api.deepseek.com/v1" });
+const client = new OpenAI({
+   apiKey: key,
+   baseURL: "https://api.deepseek.com/v1",
+});
 const MODEL = "deepseek-flash";
 
 function crc32(buf: Uint8Array): number {
@@ -64,9 +67,16 @@ function makeBandedPng(size: number): Uint8Array {
          raw[p + 2] = band === 0 ? 30 : band === 1 ? 250 : 200;
       }
    }
-   const sig = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+   const sig = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+   ]);
    const idat = new Uint8Array(deflateSync(raw));
-   const parts = [sig, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))];
+   const parts = [
+      sig,
+      chunk("IHDR", ihdr),
+      chunk("IDAT", idat),
+      chunk("IEND", new Uint8Array(0)),
+   ];
    const total = parts.reduce((n, p) => n + p.length, 0);
    const png = new Uint8Array(total);
    let off = 0;
@@ -93,8 +103,11 @@ async function call(body: Record<string, unknown>) {
    }
 }
 const errLine = (e: any) =>
-   `${e?.status ?? ""} ${String(e?.message ?? e).replace(/\s+/g, " ").slice(0, 160)}`;
-const think = (r: any) => r?.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+   `${e?.status ?? ""} ${String(e?.message ?? e)
+      .replace(/\s+/g, " ")
+      .slice(0, 160)}`;
+const think = (r: any) =>
+   r?.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
 
 /** Six fixed puzzles of comparable difficulty — each needs real multi-step
  *  arithmetic, so if the tier controls depth it shows up as a consistent
@@ -140,7 +153,8 @@ async function effortStats() {
          outTok.push(r.res.usage?.completion_tokens ?? 0);
          ms.push(Date.now() - t0);
       }
-      const mean = (a: number[]) => (a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : -1);
+      const mean = (a: number[]) =>
+         a.length ? Math.round(a.reduce((x, y) => x + y, 0) / a.length) : -1;
       const median = (a: number[]) => {
          if (!a.length) return -1;
          const s = [...a].sort((x, y) => x - y);
@@ -174,7 +188,9 @@ async function effortStats() {
 }
 
 async function visionWithTools() {
-   console.log("\nA) image + tools + thinking (probe 2 had a malformed data URL)");
+   console.log(
+      "\nA) image + tools + thinking (probe 2 had a malformed data URL)",
+   );
    const r = await call({
       model: MODEL,
       max_tokens: 3000,
@@ -205,7 +221,10 @@ async function visionWithTools() {
                   type: "text",
                   text: "Mira el flyer adjunto y agenda el evento que anuncia. Si no dice título, usa 'Evento del flyer'.",
                },
-               { type: "image_url", image_url: { url: `data:image/png;base64,${BANDED}` } },
+               {
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${BANDED}` },
+               },
             ],
          },
       ],
@@ -235,7 +254,10 @@ async function visionWithTools() {
                description: "Crea un evento en el calendario.",
                parameters: {
                   type: "object",
-                  properties: { title: { type: "string" }, start_at: { type: "string" } },
+                  properties: {
+                     title: { type: "string" },
+                     start_at: { type: "string" },
+                  },
                   required: ["title", "start_at"],
                },
             },
@@ -245,12 +267,22 @@ async function visionWithTools() {
          {
             role: "user",
             content: [
-               { type: "text", text: "Mira el flyer adjunto y agenda el evento que anuncia." },
-               { type: "image_url", image_url: { url: `data:image/png;base64,${BANDED}` } },
+               {
+                  type: "text",
+                  text: "Mira el flyer adjunto y agenda el evento que anuncia.",
+               },
+               {
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${BANDED}` },
+               },
             ],
          },
          m,
-         { role: "tool", tool_call_id: tc.id, content: '{"ok":true,"id":"evt_9"}' },
+         {
+            role: "tool",
+            tool_call_id: tc.id,
+            content: '{"ok":true,"id":"evt_9"}',
+         },
       ],
    });
    console.log(

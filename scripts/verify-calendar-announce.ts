@@ -177,7 +177,9 @@ async function main(): Promise<void> {
    }
 
    if (report.bannerReminded?.length) {
-      console.log("\n--- Evento de mañana sin imagen de portada (recordatorio amable) ---");
+      console.log(
+         "\n--- Evento de mañana sin imagen de portada (recordatorio amable) ---",
+      );
       for (const n of report.bannerReminded)
          console.log(`  #${n.eventId} ${n.title} — ${n.startAtLocal}`);
       console.log(

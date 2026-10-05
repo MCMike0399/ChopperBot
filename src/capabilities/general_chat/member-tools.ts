@@ -32,7 +32,10 @@ const OPERATIONAL =
    P.KickMembers |
    P.ModerateMembers |
    P.ManageMessages |
-   P.ViewAuditLog | P.ManageEvents | P.ManageThreads | P.ManageWebhooks;
+   P.ViewAuditLog |
+   P.ManageEvents |
+   P.ManageThreads |
+   P.ManageWebhooks;
 
 /** Resolve from the readable transcript first, never through a full member list.
  * Current access and public-role filtering apply even to an exact ID lookup.

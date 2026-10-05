@@ -93,7 +93,11 @@ export function resolveBrowserExecutable(
    try {
       const revisions = readdirSync(cacheRoot)
          .filter((d) => /^chromium-\d+$/.test(d))
-         .sort((a, b) => Number(b.slice("chromium-".length)) - Number(a.slice("chromium-".length)));
+         .sort(
+            (a, b) =>
+               Number(b.slice("chromium-".length)) -
+               Number(a.slice("chromium-".length)),
+         );
       for (const rev of revisions) {
          for (const rel of [
             "chrome-linux/chrome",
@@ -121,9 +125,7 @@ export function resolveBrowserExecutable(
 
 /** Cookies the page needs. Only the five the session actually requires — IG
  * rotates/absorbs `rur`, `datr`, `wd`, … by itself once the browser is running. */
-export function authCookies(
-   auth: InstagramAuth | null,
-): Array<{
+export function authCookies(auth: InstagramAuth | null): Array<{
    name: string;
    value: string;
    domain: string;
@@ -163,12 +165,16 @@ interface TimelineNode {
    carousel_media?: TimelineNode[] | null;
 }
 
-const firstImageUrl = (node: TimelineNode | null | undefined): string | undefined => {
+const firstImageUrl = (
+   node: TimelineNode | null | undefined,
+): string | undefined => {
    const url = node?.image_versions2?.candidates?.[0]?.url;
    return typeof url === "string" && url.length > 0 ? url : undefined;
 };
 
-const firstVideoUrl = (node: TimelineNode | null | undefined): string | undefined => {
+const firstVideoUrl = (
+   node: TimelineNode | null | undefined,
+): string | undefined => {
    const url = node?.video_versions?.[0]?.url;
    return typeof url === "string" && url.length > 0 ? url : undefined;
 };
@@ -213,8 +219,11 @@ export function mapTimelineToRecentPosts(connection: {
       if (typeof pk !== "string" || pk.length === 0) continue;
       if (typeof takenAt !== "number" || !Number.isFinite(takenAt)) continue;
 
-      const rawType = typeof node.media_type === "number" ? node.media_type : undefined;
-      const carousel = Array.isArray(node.carousel_media) ? node.carousel_media : undefined;
+      const rawType =
+         typeof node.media_type === "number" ? node.media_type : undefined;
+      const carousel = Array.isArray(node.carousel_media)
+         ? node.carousel_media
+         : undefined;
       const videoUrl = firstVideoUrl(node);
 
       const mediaType: RecentPost["mediaType"] =
@@ -231,7 +240,10 @@ export function mapTimelineToRecentPosts(connection: {
          caption: typeof captionText === "string" ? captionText : "",
          takenAtMs: takenAt * 1000,
          mediaType,
-         displayUrl: firstImageUrl(node) ?? carousel?.map(firstImageUrl).find(Boolean) ?? "",
+         displayUrl:
+            firstImageUrl(node) ??
+            carousel?.map(firstImageUrl).find(Boolean) ??
+            "",
       };
       if (mediaType === "video" && videoUrl) post.videoUrl = videoUrl;
       if (mediaType === "carousel" && carousel) {
@@ -284,8 +296,10 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
       this.userAgent = userAgent;
       this.executablePath = resolveBrowserExecutable();
       this.idleShutdownMs = options.idleShutdownMs ?? DEFAULT_IDLE_SHUTDOWN_MS;
-      this.navigationTimeoutMs = options.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS;
-      this.timelineTimeoutMs = options.timelineTimeoutMs ?? DEFAULT_TIMELINE_TIMEOUT_MS;
+      this.navigationTimeoutMs =
+         options.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS;
+      this.timelineTimeoutMs =
+         options.timelineTimeoutMs ?? DEFAULT_TIMELINE_TIMEOUT_MS;
    }
 
    observeRequests(cb: () => void): void {
@@ -353,7 +367,9 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
          timezoneId: "America/Mexico_City",
       });
       await context.addInitScript(() => {
-         Object.defineProperty(navigator, "webdriver", { get: () => undefined });
+         Object.defineProperty(navigator, "webdriver", {
+            get: () => undefined,
+         });
       });
       await context.addCookies(authCookies(this.auth));
       log.info(
@@ -368,9 +384,12 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
       const context = await this.ensureContext();
       const page = await context.newPage();
       try {
-         const timeline = new Promise<ReturnType<typeof extractTimelineConnection>>((resolve) => {
+         const timeline = new Promise<
+            ReturnType<typeof extractTimelineConnection>
+         >((resolve) => {
             const handler = async (res: PlaywrightResponse): Promise<void> => {
-               if (!/instagram\.com\/(graphql|api\/v1\/feed)/.test(res.url())) return;
+               if (!/instagram\.com\/(graphql|api\/v1\/feed)/.test(res.url()))
+                  return;
                try {
                   const found = extractTimelineConnection(await res.json());
                   if (found?.edges?.length) {
@@ -393,7 +412,9 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
 
          const connection = await Promise.race([
             timeline,
-            new Promise<null>((resolve) => setTimeout(() => resolve(null), this.timelineTimeoutMs)),
+            new Promise<null>((resolve) =>
+               setTimeout(() => resolve(null), this.timelineTimeoutMs),
+            ),
          ]);
 
          if (!connection) {
@@ -406,7 +427,10 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
                   href: location.href,
                }))
                .catch(() => ({ classes: "", href: page.url() }));
-            if (/not-logged-in/.test(state.classes) || /\/accounts\/login/.test(state.href)) {
+            if (
+               /not-logged-in/.test(state.classes) ||
+               /\/accounts\/login/.test(state.href)
+            ) {
                throw new InstagramAuthError(
                   `Instagram served the logged-out shell for @${username} — session expired`,
                   "require_login",

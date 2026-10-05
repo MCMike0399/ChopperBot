@@ -88,12 +88,14 @@ try {
 
    console.log(`\n2) cover image (post ${newest.shortcode}) …`);
    const bytes = await fetchCover(newest.displayUrl);
-   if (!bytes || bytes.length === 0) throw new Error("fetchCover returned nothing");
+   if (!bytes || bytes.length === 0)
+      throw new Error("fetchCover returned nothing");
    console.log(`   ok: ${bytes.length} bytes`);
 
    console.log("\n3) image format sniff …");
    const format = sniffImageFormat(bytes);
-   if (!format) throw new Error("sniffImageFormat could not identify the cover");
+   if (!format)
+      throw new Error("sniffImageFormat could not identify the cover");
    console.log(`   ok: ${format}`);
    failures = 0;
 
@@ -107,10 +109,14 @@ try {
          cover: { bytes, mimeType, format },
          nowMs: Date.now(),
       });
-      console.log(`   ok: relevant=${verdict.relevant} type=${verdict.type ?? "-"}`);
+      console.log(
+         `   ok: relevant=${verdict.relevant} type=${verdict.type ?? "-"}`,
+      );
       console.log(`   summary: ${(verdict.summary ?? "").slice(0, 140)}`);
       if (typeof verdict.relevant !== "boolean") {
-         throw new Error("classifier did not return a boolean relevance verdict");
+         throw new Error(
+            "classifier did not return a boolean relevance verdict",
+         );
       }
    }
 
@@ -121,7 +127,10 @@ try {
       .find((a) => a.startsWith("--publish-to="))
       ?.split("=")[1];
    if (publishTo) {
-      if (!verdict) throw new Error("--publish-to needs the vision step (drop --no-vision)");
+      if (!verdict)
+         throw new Error(
+            "--publish-to needs the vision step (drop --no-vision)",
+         );
       console.log(`\n5) publish card to channel ${publishTo} …`);
       const client = new Client({
          intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMessages],
@@ -131,7 +140,14 @@ try {
          client.once("error", rej);
          void client.login(config.DISCORD_TOKEN).catch(rej);
       });
-      const result = await publishPost(client, publishTo, username, newest, verdict, bytes);
+      const result = await publishPost(
+         client,
+         publishTo,
+         username,
+         newest,
+         verdict,
+         bytes,
+      );
       await client.destroy();
       console.log(`   ok: ${JSON.stringify(result)}`);
       if (!result.ok) throw new Error(`publishPost failed: ${result.reason}`);
@@ -140,7 +156,9 @@ try {
    console.log("\n✅ ALL CHECKS PASSED");
 } catch (err) {
    failures = 1;
-   console.error(`\n❌ FAILED: ${err instanceof Error ? err.message : String(err)}`);
+   console.error(
+      `\n❌ FAILED: ${err instanceof Error ? err.message : String(err)}`,
+   );
 } finally {
    await fetcher.dispose();
 }

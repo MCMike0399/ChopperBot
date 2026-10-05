@@ -137,8 +137,14 @@ describe("mapBatchSegments", () => {
          ],
          slots,
       );
-      expect(entries[0]!.segments.map((s) => s.text)).toEqual(["Y abstención."]);
-      expect(entries[0]!.segments[0]).toEqual({ startMs: 2000, endMs: 2000, text: "Y abstención." });
+      expect(entries[0]!.segments.map((s) => s.text)).toEqual([
+         "Y abstención.",
+      ]);
+      expect(entries[0]!.segments[0]).toEqual({
+         startMs: 2000,
+         endMs: 2000,
+         text: "Y abstención.",
+      });
       expect(entries[1]!.segments.map((s) => s.text)).toEqual(["actividades."]);
    });
 
@@ -343,7 +349,13 @@ describe.skipIf(!hasFfmpeg)("LiveTranscriber", () => {
 describe("buildWhisperPrompt", () => {
    it("carries vocabulary, title and cleaned participant names", async () => {
       const { buildWhisperPrompt } = await import("../live.js");
-      const p = buildWhisperPrompt("asamblea general", ["tlacuache ✩‧₊˚", "Ajolotx", "Ajolotx", "🌙", "123456"]);
+      const p = buildWhisperPrompt("asamblea general", [
+         "tlacuache ✩‧₊˚",
+         "Ajolotx",
+         "Ajolotx",
+         "🌙",
+         "123456",
+      ]);
       expect(p).toContain("Revolución Z (RevZ)");
       expect(p).toContain("Sesión: asamblea general.");
       expect(p).toContain("Participan: tlacuache, Ajolotx.");
@@ -368,7 +380,10 @@ describe.skipIf(!hasFfmpeg)("LiveTranscriber.drain", () => {
          isAvailable: () => true,
          transcribe: async (_wav, outBase) => {
             await gate;
-            writeFileSync(`${outBase}.json`, JSON.stringify({ transcription: [] }));
+            writeFileSync(
+               `${outBase}.json`,
+               JSON.stringify({ transcription: [] }),
+            );
             return [{ startMs: 0, endMs: 500, text: "hola" }];
          },
       };
@@ -379,7 +394,10 @@ describe.skipIf(!hasFfmpeg)("LiveTranscriber.drain", () => {
          for (let seq = 1; seq <= LIVE_FLUSH_MAX_BURSTS; seq++) {
             const file = `audio/${String(seq).padStart(3, "0")}-Ana.pcm`;
             writeFileSync(join(dir, file), Buffer.alloc(PCM_BYTES_PER_SECOND));
-            live.enqueue(dir, burst({ seq, file, bytes: PCM_BYTES_PER_SECOND }));
+            live.enqueue(
+               dir,
+               burst({ seq, file, bytes: PCM_BYTES_PER_SECOND }),
+            );
          }
          let drained = false;
          const d = live.drain(dir).then(() => (drained = true));
@@ -396,7 +414,10 @@ describe.skipIf(!hasFfmpeg)("LiveTranscriber.drain", () => {
 
    it("with nothing running, resolves immediately", async () => {
       const { LiveTranscriber } = await import("../live.js");
-      const live = new LiveTranscriber({ isAvailable: () => true, transcribe: async () => [] });
+      const live = new LiveTranscriber({
+         isAvailable: () => true,
+         transcribe: async () => [],
+      });
       await expect(live.drain("/nonexistent")).resolves.toBeUndefined();
    });
 });

@@ -1,8 +1,5 @@
 import { describe, test, expect } from "vitest";
-import {
-   renderHowToBlock,
-   type HowToChannelFact,
-} from "../howto.js";
+import { renderHowToBlock, type HowToChannelFact } from "../howto.js";
 
 const FACTS: HowToChannelFact[] = [
    {
@@ -15,8 +12,7 @@ const FACTS: HowToChannelFact[] = [
       id: "1436255397265670195",
       name: "📮│ticket",
       role: "ticket",
-      topic:
-         "En este canal podrás ponerte en contacto con lxs moderadorxs para hacer una denuncia o para problemas técnicos.",
+      topic: "En este canal podrás ponerte en contacto con lxs moderadorxs para hacer una denuncia o para problemas técnicos.",
    },
 ];
 

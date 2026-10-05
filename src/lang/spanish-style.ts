@@ -228,7 +228,8 @@ const WHY: Record<SpanishStyleRuleId, string> = {
    enclitic_accent: "enclitic accent misspelling",
    spanglish: "English suffix glued onto a Spanish word (emoción-ed)",
    state_line: "a government's official formula repeated as fact",
-   bot_deflection: "corporate bot self-deflection (soy un bot / no tengo opiniones)",
+   bot_deflection:
+      "corporate bot self-deflection (soy un bot / no tengo opiniones)",
    apelativo_compa: '"compa" used as a form of address',
 };
 

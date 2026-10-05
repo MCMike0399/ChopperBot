@@ -176,18 +176,16 @@ for (const key of ["2026-06", "2026-07", "2026-08"]) {
 }
 
 const ics = buildCalendar(
-   store2
-      .listAll()
-      .map((e) => ({
-         id: e.id,
-         title: e.title,
-         description: e.description,
-         location: e.location,
-         start_at: e.start_at,
-         end_at: e.end_at,
-         recurrence_freq: e.recurrence_freq,
-         recurrence_until: e.recurrence_until,
-      })),
+   store2.listAll().map((e) => ({
+      id: e.id,
+      title: e.title,
+      description: e.description,
+      location: e.location,
+      start_at: e.start_at,
+      end_at: e.end_at,
+      recurrence_freq: e.recurrence_freq,
+      recurrence_until: e.recurrence_until,
+   })),
    { nowMs: NOW },
 );
 writeFileSync(resolve(OUT, "final.ics"), ics);

@@ -221,9 +221,8 @@ describe("boot validation (DeepSeek-only backend)", () => {
       process.env.DEEPSEEK_API_KEY = "sk-deepseek-test";
       delete process.env.DEEP_SEEK_API_KEY;
 
-      const { textBackend, textBrainDisplayName } = await import(
-         "../config.js"
-      );
+      const { textBackend, textBrainDisplayName } =
+         await import("../config.js");
       expect(textBackend.provider).toBe("deepseek");
       expect(textBackend.apiKey).toBe("sk-deepseek-test");
       expect(textBackend.baseUrl).toBe("https://api.deepseek.com/v1");

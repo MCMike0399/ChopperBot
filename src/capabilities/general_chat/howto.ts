@@ -65,7 +65,8 @@ const ROLE_FALLBACK: Record<HowToRole, string> = {
    ticket:
       "Denuncias, apelaciones y soporte técnico. No sirve para reservar ni para entrar a un evento.",
    calendario: "Cartelera del mes en imagen + archivo ICS. Consulta libre.",
-   anuncios: "Avisos oficiales y el evento de hoy, con el enlace para apuntarse.",
+   anuncios:
+      "Avisos oficiales y el evento de hoy, con el enlace para apuntarse.",
    proximos_circulos:
       "Foro para que cualquiera abra y difunda círculos de estudio.",
 };
@@ -79,7 +80,7 @@ const TOPIC_MAX = 400;
 export function renderHowToBlock(facts: readonly HowToChannelFact[]): string {
    const lines = [
       "# Cómo se usa el servidor (leído EN VIVO del Discord, no lo contradigas)",
-      "- **Asistir a un evento es abierto y gratis.** No hay reserva, no hay pase, no se abre ticket. Entras a la sala o le das \"Me interesa\" al evento de Discord (`discord_event_url` / pestaña Eventos). Si preguntan \"dónde reservo\" / \"cómo saco pase\": diles que no hace falta.",
+      '- **Asistir a un evento es abierto y gratis.** No hay reserva, no hay pase, no se abre ticket. Entras a la sala o le das "Me interesa" al evento de Discord (`discord_event_url` / pestaña Eventos). Si preguntan "dónde reservo" / "cómo saco pase": diles que no hace falta.',
       "- **Proponer** un círculo nuevo ≠ **asistir** a uno que ya está. Lo primero es el formulario de círculos; lo segundo es llegar.",
    ];
    for (const fact of facts) {

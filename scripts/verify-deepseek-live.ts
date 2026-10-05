@@ -38,7 +38,6 @@ import { composeToolSources, type ToolSource } from "../src/tools/source.js";
 import { ImageAttachable } from "../src/attachments/attachable.js";
 import { classifyPost } from "../src/capabilities/instagram_monitor/classifier.js";
 
-
 // ── a real PNG, because a 1×1 is rejected by the API as a decode error ───────
 function crc32(buf: Uint8Array): number {
    let c = 0xffffffff;
@@ -79,7 +78,9 @@ function solidPng(size: number, r: number, g: number, b: number): Uint8Array {
          raw[p + 2] = b;
       }
    }
-   const sig = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+   const sig = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+   ]);
    const parts = [
       sig,
       chunk("IHDR", ihdr),
@@ -125,7 +126,9 @@ function discPng(size: number, r: number, g: number, b: number): Uint8Array {
          raw[p + 2] = inside ? b : 255;
       }
    }
-   const sig = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+   const sig = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+   ]);
    const parts = [
       sig,
       chunk("IHDR", ihdr),
@@ -159,7 +162,9 @@ function check(label: string, ok: boolean, detail: string): void {
    }
 }
 
-console.log(`live DeepSeek check — model=${process.env.DEEPSEEK_MODEL_ID ?? "deepseek-flash"}\n`);
+console.log(
+   `live DeepSeek check — model=${process.env.DEEPSEEK_MODEL_ID ?? "deepseek-flash"}\n`,
+);
 
 // ── 1. plain text at the cheap tier ─────────────────────────────────────────
 console.log("1) text turn, effort low");
@@ -273,7 +278,12 @@ console.log("\n3) IMAGE turn with tools, effort high");
             content:
                "Mira la imagen adjunta y crea un evento titulado 'Prueba de visión'. En color_seen pon el color del CÍRCULO (la figura), no el del fondo.",
             attachments: [
-               new ImageAttachable("circulo-rojo.png", "image/png", RED_DISC, "png"),
+               new ImageAttachable(
+                  "circulo-rojo.png",
+                  "image/png",
+                  RED_DISC,
+                  "png",
+               ),
             ],
          },
       ],
@@ -329,9 +339,7 @@ for (const effort of ["low", "high", "max"] as const) {
    const t0 = Date.now();
    const out = await ask({
       system: "Responde en español, en una línea.",
-      messages: [
-         { role: "user", content: "Nombra un color y nada más." },
-      ],
+      messages: [{ role: "user", content: "Nombra un color y nada más." }],
       tools: NO_TOOLS,
       effort,
    });

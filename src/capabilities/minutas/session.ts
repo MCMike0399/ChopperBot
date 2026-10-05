@@ -169,9 +169,7 @@ export class MinutasSessions {
       },
    ) {}
 
-   getActive(
-      guildId: string,
-   ): {
+   getActive(guildId: string): {
       id: string;
       channelId: string;
       channelName: string;
@@ -559,7 +557,11 @@ export class MinutasSessions {
     * participant also rewrites session.json, because the live whisper prompt
     * reads names from it (see `buildWhisperPrompt`).
     */
-   private noteName(session: ActiveSession, userId: string, name: string): string {
+   private noteName(
+      session: ActiveSession,
+      userId: string,
+      name: string,
+   ): string {
       if (!session.named.has(userId)) {
          session.named.add(userId);
          const placeholder = session.participants.get(userId);
@@ -618,7 +620,10 @@ export class MinutasSessions {
       const session = this.active.get(guildId);
       if (!session || session.closed) return false;
       // The line keeps the settled name, so one person reads as one person.
-      line = { ...line, author: this.noteName(session, line.userId, line.author) };
+      line = {
+         ...line,
+         author: this.noteName(session, line.userId, line.author),
+      };
       try {
          appendFileSync(
             join(session.dir, ARTIFACTS.chat),
@@ -762,7 +767,9 @@ export interface ChatPoll {
 function pollOf(poll: NonNullable<Message["poll"]>): ChatPoll {
    return {
       question: poll.question?.text ?? "",
-      answers: [...poll.answers.values()].map((a) => a.text ?? "").filter(Boolean),
+      answers: [...poll.answers.values()]
+         .map((a) => a.text ?? "")
+         .filter(Boolean),
    };
 }
 
@@ -779,20 +786,36 @@ function pollOf(poll: NonNullable<Message["poll"]>): ChatPoll {
 export function chatContentOf(message: Message): string {
    const names = new Map<string, string>();
    for (const u of message.mentions?.users?.values() ?? []) {
-      names.set(u.id, message.mentions.members?.get(u.id)?.displayName || u.globalName || u.username);
+      names.set(
+         u.id,
+         message.mentions.members?.get(u.id)?.displayName ||
+            u.globalName ||
+            u.username,
+      );
    }
    let text = (message.content ?? "")
-      .replace(/<@!?(\d{15,21})>/g, (whole, id: string) => (names.has(id) ? `@${names.get(id)}` : whole))
+      .replace(/<@!?(\d{15,21})>/g, (whole, id: string) =>
+         names.has(id) ? `@${names.get(id)}` : whole,
+      )
       .replace(/<a?:([\w~]+):\d+>/g, ":$1:")
       .replace(/\s*\n+\s*/g, " / ")
       .trim();
    const extras: string[] = [];
    const files = [...(message.attachments?.values() ?? [])];
-   const images = files.filter((a) => (a.contentType ?? "").startsWith("image/"));
-   const others = files.filter((a) => !(a.contentType ?? "").startsWith("image/"));
-   if (images.length > 0) extras.push(images.length === 1 ? "[imagen]" : `[${images.length} imágenes]`);
-   if (others.length > 0) extras.push(`[archivo: ${others.map((a) => a.name).join(", ")}]`);
-   for (const st of message.stickers?.values() ?? []) extras.push(`[sticker: ${st.name}]`);
+   const images = files.filter((a) =>
+      (a.contentType ?? "").startsWith("image/"),
+   );
+   const others = files.filter(
+      (a) => !(a.contentType ?? "").startsWith("image/"),
+   );
+   if (images.length > 0)
+      extras.push(
+         images.length === 1 ? "[imagen]" : `[${images.length} imágenes]`,
+      );
+   if (others.length > 0)
+      extras.push(`[archivo: ${others.map((a) => a.name).join(", ")}]`);
+   for (const st of message.stickers?.values() ?? [])
+      extras.push(`[sticker: ${st.name}]`);
    if (message.poll) {
       extras.push(`[encuesta: «${message.poll.question?.text ?? ""}»]`);
    }

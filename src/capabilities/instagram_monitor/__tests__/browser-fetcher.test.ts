@@ -24,7 +24,11 @@ const timelinePayload = {
                   media_type: 1,
                   caption: { text: "Denunciamos la persecución política" },
                   image_versions2: {
-                     candidates: [{ url: "https://instagram.fmex22-1.fna.fbcdn.net/a.jpg" }],
+                     candidates: [
+                        {
+                           url: "https://instagram.fmex22-1.fna.fbcdn.net/a.jpg",
+                        },
+                     ],
                   },
                },
             },
@@ -37,21 +41,37 @@ const timelinePayload = {
                   media_type: 8,
                   caption: { text: "Condiciones de la pista" },
                   image_versions2: {
-                     candidates: [{ url: "https://instagram.fmex23-1.fna.fbcdn.net/cover.jpg" }],
+                     candidates: [
+                        {
+                           url: "https://instagram.fmex23-1.fna.fbcdn.net/cover.jpg",
+                        },
+                     ],
                   },
                   carousel_media: [
                      {
                         media_type: 1,
                         image_versions2: {
-                           candidates: [{ url: "https://instagram.fmex23-1.fna.fbcdn.net/1.jpg" }],
+                           candidates: [
+                              {
+                                 url: "https://instagram.fmex23-1.fna.fbcdn.net/1.jpg",
+                              },
+                           ],
                         },
                      },
                      {
                         media_type: 2,
                         image_versions2: {
-                           candidates: [{ url: "https://instagram.fmex24-1.fna.fbcdn.net/2.jpg" }],
+                           candidates: [
+                              {
+                                 url: "https://instagram.fmex24-1.fna.fbcdn.net/2.jpg",
+                              },
+                           ],
                         },
-                        video_versions: [{ url: "https://instagram.fmex24-1.fna.fbcdn.net/2.mp4" }],
+                        video_versions: [
+                           {
+                              url: "https://instagram.fmex24-1.fna.fbcdn.net/2.mp4",
+                           },
+                        ],
                      },
                   ],
                },
@@ -64,9 +84,15 @@ const timelinePayload = {
                   media_type: 2,
                   caption: { text: "Video denuncia" },
                   image_versions2: {
-                     candidates: [{ url: "https://instagram.fmex28-1.fna.fbcdn.net/v.jpg" }],
+                     candidates: [
+                        {
+                           url: "https://instagram.fmex28-1.fna.fbcdn.net/v.jpg",
+                        },
+                     ],
                   },
-                  video_versions: [{ url: "https://instagram.fmex28-1.fna.fbcdn.net/v.mp4" }],
+                  video_versions: [
+                     { url: "https://instagram.fmex28-1.fna.fbcdn.net/v.mp4" },
+                  ],
                },
             },
          ],
@@ -83,7 +109,9 @@ describe("extractTimelineConnection", () => {
    });
 
    it("returns null for unrelated GraphQL payloads", () => {
-      expect(extractTimelineConnection({ data: { xdt_viewer: {} } })).toBeNull();
+      expect(
+         extractTimelineConnection({ data: { xdt_viewer: {} } }),
+      ).toBeNull();
       expect(extractTimelineConnection({ data: null })).toBeNull();
       expect(extractTimelineConnection(null)).toBeNull();
       expect(extractTimelineConnection("nope")).toBeNull();
@@ -91,7 +119,9 @@ describe("extractTimelineConnection", () => {
 });
 
 describe("mapTimelineToRecentPosts", () => {
-   const posts = mapTimelineToRecentPosts(extractTimelineConnection(timelinePayload)!);
+   const posts = mapTimelineToRecentPosts(
+      extractTimelineConnection(timelinePayload)!,
+   );
 
    it("maps an image post", () => {
       const p = posts[0]!;
@@ -121,7 +151,9 @@ describe("mapTimelineToRecentPosts", () => {
          null,
          "https://instagram.fmex24-1.fna.fbcdn.net/2.mp4",
       ]);
-      expect(p.displayUrl).toBe("https://instagram.fmex23-1.fna.fbcdn.net/cover.jpg");
+      expect(p.displayUrl).toBe(
+         "https://instagram.fmex23-1.fna.fbcdn.net/cover.jpg",
+      );
    });
 
    it("maps a video post", () => {
@@ -135,7 +167,14 @@ describe("mapTimelineToRecentPosts", () => {
          edges: [
             { node: { code: "x", taken_at: 1 } },
             { node: { pk: "123", code: "y" } },
-            { node: { pk: "456", code: "z", taken_at: 1700000000, media_type: 1 } },
+            {
+               node: {
+                  pk: "456",
+                  code: "z",
+                  taken_at: 1700000000,
+                  media_type: 1,
+               },
+            },
             {},
          ],
       });
@@ -170,7 +209,9 @@ describe("authCookies", () => {
    });
 
    it("omits optional cookies and returns [] when anonymous", () => {
-      expect(authCookies({ sessionid: "s", csrftoken: "c", dsUserId: "1" })).toHaveLength(3);
+      expect(
+         authCookies({ sessionid: "s", csrftoken: "c", dsUserId: "1" }),
+      ).toHaveLength(3);
       expect(authCookies(null)).toEqual([]);
    });
 });
@@ -180,7 +221,9 @@ describe("resolveBrowserExecutable", () => {
       const prev = process.env.IG_BROWSER_EXECUTABLE_PATH;
       process.env.IG_BROWSER_EXECUTABLE_PATH = "/opt/mychrome";
       try {
-         expect(resolveBrowserExecutable((p) => p === "/opt/mychrome")).toBe("/opt/mychrome");
+         expect(resolveBrowserExecutable((p) => p === "/opt/mychrome")).toBe(
+            "/opt/mychrome",
+         );
       } finally {
          if (prev === undefined) delete process.env.IG_BROWSER_EXECUTABLE_PATH;
          else process.env.IG_BROWSER_EXECUTABLE_PATH = prev;
@@ -191,9 +234,9 @@ describe("resolveBrowserExecutable", () => {
       const prev = process.env.IG_BROWSER_EXECUTABLE_PATH;
       process.env.IG_BROWSER_EXECUTABLE_PATH = "/opt/missing";
       try {
-         expect(resolveBrowserExecutable((p) => p === "/usr/bin/chromium")).toBe(
-            "/usr/bin/chromium",
-         );
+         expect(
+            resolveBrowserExecutable((p) => p === "/usr/bin/chromium"),
+         ).toBe("/usr/bin/chromium");
       } finally {
          if (prev === undefined) delete process.env.IG_BROWSER_EXECUTABLE_PATH;
          else process.env.IG_BROWSER_EXECUTABLE_PATH = prev;

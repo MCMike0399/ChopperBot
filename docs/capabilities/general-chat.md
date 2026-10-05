@@ -49,7 +49,7 @@ Typecheck, **113 files / 1,359 tests**, build and service restart passed; `Disco
 
 | Scenario                                         | Observed response/tool use                                                                | Input / output tokens | Reasoning |
 | ------------------------------------------------ | ----------------------------------------------------------------------------------------- | --------------------- | --------- |
-| Public request to command another bot to timeout | Refused relaying; timeout not yet implemented at v2.4.0; offered review/drafting; 0 tools                 | 7,696 / 96            | 0         |
+| Public request to command another bot to timeout | Refused relaying; timeout not yet implemented at v2.4.0; offered review/drafting; 0 tools | 7,696 / 96            | 0         |
 | Moderator asks for timeout/alert on entry        | Stayed in workspace; explained disabled entry support and offered evidence/draft; 0 tools | 3,778 / 154           | 0         |
 | Incident query in moderator workspace            | Audit + history, facts/interpretation/limits, 4 verified message links                    | 8,469 / 907           | 0         |
 

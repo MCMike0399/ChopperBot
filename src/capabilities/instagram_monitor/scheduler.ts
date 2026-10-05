@@ -930,7 +930,8 @@ export class InstagramMonitorScheduler {
 
    /** True when the fleet is stale AND we already polled too recently. */
    private shouldResumeDrip(now: number): boolean {
-      if (this.resumeDripStaleMs <= 0 || this.resumeDripGapMs <= 0) return false;
+      if (this.resumeDripStaleMs <= 0 || this.resumeDripGapMs <= 0)
+         return false;
       if (this.lastPollAttemptAtMs === 0) return false;
       if (now - this.lastPollAttemptAtMs >= this.resumeDripGapMs) return false;
       return this.fleetIsStale(now);
@@ -946,7 +947,9 @@ export class InstagramMonitorScheduler {
       coverBytes: Uint8Array | null;
       slideBytes: Uint8Array[];
    }> {
-      const toImage = (bytes: Uint8Array | null): ClassifierImage | undefined => {
+      const toImage = (
+         bytes: Uint8Array | null,
+      ): ClassifierImage | undefined => {
          const format = bytes ? sniffImageFormat(bytes) : null;
          return bytes && format
             ? { bytes, mimeType: `image/${format}`, format }
@@ -955,7 +958,9 @@ export class InstagramMonitorScheduler {
       const coverBytes = await this.fetchCover(post.displayUrl);
       const slideBytes: Uint8Array[] = [];
       const slideUrls =
-         post.mediaType === "carousel" ? (post.carouselUrls ?? []).slice(1) : [];
+         post.mediaType === "carousel"
+            ? (post.carouselUrls ?? []).slice(1)
+            : [];
       for (const url of slideUrls.slice(0, MAX_CLASSIFIER_SLIDES)) {
          if (this.disposed) break;
          const bytes = url ? await this.fetchCover(url) : null;
@@ -1221,7 +1226,8 @@ export class InstagramMonitorScheduler {
             newPostsNewestFirst.length > 0 &&
             olderThanAnchor <= MAX_PINNED_POSTS
          ) {
-            const oldestNew = newPostsNewestFirst[newPostsNewestFirst.length - 1];
+            const oldestNew =
+               newPostsNewestFirst[newPostsNewestFirst.length - 1];
             log.warn(
                {
                   account: acc.username,
@@ -1237,9 +1243,10 @@ export class InstagramMonitorScheduler {
                      acc.last_polled_at === null
                         ? null
                         : Number(
-                             ((Date.now() - acc.last_polled_at) / 3_600_000).toFixed(
-                                1,
-                             ),
+                             (
+                                (Date.now() - acc.last_polled_at) /
+                                3_600_000
+                             ).toFixed(1),
                           ),
                   posts_per_day: acc.posts_per_day,
                },

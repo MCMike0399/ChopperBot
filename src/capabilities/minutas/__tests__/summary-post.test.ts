@@ -42,8 +42,13 @@ describe("renderMinutesSummaryPost", () => {
    });
 
    test("placeholder bullets are not counted", () => {
-      const b = body.replace("- Luna: publicar la convocatoria antes del viernes.", "- Ninguno registrado.");
-      expect(renderMinutesSummaryPost(b, meta, "m.md")).toContain("0 compromisos");
+      const b = body.replace(
+         "- Luna: publicar la convocatoria antes del viernes.",
+         "- Ninguno registrado.",
+      );
+      expect(renderMinutesSummaryPost(b, meta, "m.md")).toContain(
+         "0 compromisos",
+      );
    });
 
    test("always fits one Discord message, cut on a sentence", () => {
@@ -54,7 +59,11 @@ describe("renderMinutesSummaryPost", () => {
    });
 
    test("no Resumen heading → first paragraph, never empty", () => {
-      const post = renderMinutesSummaryPost("Se habló de todo un poco.\n\n## Acuerdos\n- a", meta, "m.md");
+      const post = renderMinutesSummaryPost(
+         "Se habló de todo un poco.\n\n## Acuerdos\n- a",
+         meta,
+         "m.md",
+      );
       expect(post).toContain("Se habló de todo un poco.");
    });
 });

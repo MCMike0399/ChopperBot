@@ -20,7 +20,10 @@ import { config as dotenv } from "dotenv";
 dotenv({ override: false });
 
 const key = process.env.DEEPSEEK_API_KEY ?? process.env.DEEP_SEEK_API_KEY!;
-const client = new OpenAI({ apiKey: key, baseURL: "https://api.deepseek.com/v1" });
+const client = new OpenAI({
+   apiKey: key,
+   baseURL: "https://api.deepseek.com/v1",
+});
 const MODEL = "deepseek-flash";
 
 function crc32(buf: Uint8Array): number {
@@ -43,7 +46,12 @@ function chunk(type: string, data: Uint8Array): Uint8Array {
    dv.setUint32(4 + body.length, crc32(body));
    return out;
 }
-function makeSolidPng(size: number, r: number, g: number, b: number): Uint8Array {
+function makeSolidPng(
+   size: number,
+   r: number,
+   g: number,
+   b: number,
+): Uint8Array {
    const ihdr = new Uint8Array(13);
    const dv = new DataView(ihdr.buffer);
    dv.setUint32(0, size);
@@ -61,9 +69,16 @@ function makeSolidPng(size: number, r: number, g: number, b: number): Uint8Array
          raw[p + 2] = b;
       }
    }
-   const sig = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+   const sig = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+   ]);
    const idat = new Uint8Array(deflateSync(raw));
-   const parts = [sig, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))];
+   const parts = [
+      sig,
+      chunk("IHDR", ihdr),
+      chunk("IDAT", idat),
+      chunk("IEND", new Uint8Array(0)),
+   ];
    const total = parts.reduce((n, p) => n + p.length, 0);
    const png = new Uint8Array(total);
    let off = 0;
@@ -97,8 +112,11 @@ async function call(body: Record<string, unknown>) {
    }
 }
 const errLine = (e: any) =>
-   `${e?.status ?? ""} ${String(e?.message ?? e).replace(/\s+/g, " ").slice(0, 165)}`;
-const think = (r: any) => r?.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
+   `${e?.status ?? ""} ${String(e?.message ?? e)
+      .replace(/\s+/g, " ")
+      .slice(0, 165)}`;
+const think = (r: any) =>
+   r?.usage?.completion_tokens_details?.reasoning_tokens ?? 0;
 
 /** Build a flyer-like PNG: solid background with a black band across the middle
  *  so the model has something non-trivial to look at. */
@@ -121,9 +139,16 @@ function makeBandedPng(size: number): Uint8Array {
          raw[p + 2] = band ? 240 : 200;
       }
    }
-   const sig = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+   const sig = Uint8Array.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+   ]);
    const idat = new Uint8Array(deflateSync(raw));
-   const parts = [sig, chunk("IHDR", ihdr), chunk("IDAT", idat), chunk("IEND", new Uint8Array(0))];
+   const parts = [
+      sig,
+      chunk("IHDR", ihdr),
+      chunk("IDAT", idat),
+      chunk("IEND", new Uint8Array(0)),
+   ];
    const total = parts.reduce((n, p) => n + p.length, 0);
    const png = new Uint8Array(total);
    let off = 0;
@@ -156,7 +181,10 @@ async function vision() {
                      type: "text",
                      text: "Describe en una frase corta qué color(es) y formas ves en la imagen.",
                   },
-                  { type: "image_url", image_url: { url: `data:image/png;base64,${b64}` } },
+                  {
+                     type: "image_url",
+                     image_url: { url: `data:image/png;base64,${b64}` },
+                  },
                ],
             },
          ],
@@ -179,9 +207,18 @@ async function vision() {
          {
             role: "user",
             content: [
-               { type: "text", text: "¿Cuántas imágenes hay y de qué color es cada una?" },
-               { type: "image_url", image_url: { url: `data:image/png;base64,${RED}` } },
-               { type: "image_url", image_url: { url: `data:image/png;base64,${GREEN}` } },
+               {
+                  type: "text",
+                  text: "¿Cuántas imágenes hay y de qué color es cada una?",
+               },
+               {
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${RED}` },
+               },
+               {
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${GREEN}` },
+               },
             ],
          },
       ],
@@ -225,7 +262,10 @@ async function vision() {
                   type: "text",
                   text: "Agenda un evento titulado 'Prueba de visión' el 2026-10-01 a las 19:00 en la Casa del Pueblo.",
                },
-               { type: "image_url", image_url: { url: `data:image/png;base64:${BANDED}` } },
+               {
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64:${BANDED}` },
+               },
             ],
          },
       ],
@@ -248,7 +288,10 @@ async function vision() {
             role: "assistant",
             content: [
                { type: "text", text: "mira" },
-               { type: "image_url", image_url: { url: `data:image/png;base64,${SMALL}` } },
+               {
+                  type: "image_url",
+                  image_url: { url: `data:image/png;base64,${SMALL}` },
+               },
             ],
          },
          { role: "user", content: "hola" },
@@ -269,9 +312,18 @@ async function effort() {
       "el cálculo en 3 líneas como máximo.";
    const variants: Array<[string, Record<string, unknown>]> = [
       ["thinking disabled", { thinking: { type: "disabled" } }],
-      ["effort low", { thinking: { type: "enabled", reasoning_effort: "low" } }],
-      ["effort high", { thinking: { type: "enabled", reasoning_effort: "high" } }],
-      ["effort max", { thinking: { type: "enabled", reasoning_effort: "max" } }],
+      [
+         "effort low",
+         { thinking: { type: "enabled", reasoning_effort: "low" } },
+      ],
+      [
+         "effort high",
+         { thinking: { type: "enabled", reasoning_effort: "high" } },
+      ],
+      [
+         "effort max",
+         { thinking: { type: "enabled", reasoning_effort: "max" } },
+      ],
    ];
    for (const [label, extra] of variants) {
       const thinkTok: number[] = [];

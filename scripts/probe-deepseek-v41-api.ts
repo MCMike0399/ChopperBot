@@ -33,7 +33,8 @@ async function call(
    body: Record<string, unknown>,
    baseUrl = BASE,
 ): Promise<{ ok: boolean; res?: any; err?: any }> {
-   const c = baseUrl === BASE ? client : new OpenAI({ apiKey: key, baseURL: baseUrl });
+   const c =
+      baseUrl === BASE ? client : new OpenAI({ apiKey: key, baseURL: baseUrl });
    calls++;
    try {
       const res: any = await c.chat.completions.create(body as any);
@@ -45,7 +46,9 @@ async function call(
 
 function errLine(err: any): string {
    const status = err?.status ?? "";
-   const msg = String(err?.message ?? err).replace(/\s+/g, " ").slice(0, 170);
+   const msg = String(err?.message ?? err)
+      .replace(/\s+/g, " ")
+      .slice(0, 170);
    return `${status} ${msg}`;
 }
 
@@ -83,12 +86,16 @@ async function s1_modelAndBaseUrl() {
       ["bare https://api.deepseek.com", "https://api.deepseek.com"],
       ["/v1  https://api.deepseek.com/v1", "https://api.deepseek.com/v1"],
    ] as const) {
-      const r = await call("s1", {
-         model: MODEL,
-         messages: [{ role: "user", content: "di ok" }],
-         max_tokens: 16,
-         thinking: { type: "disabled" },
-      }, base);
+      const r = await call(
+         "s1",
+         {
+            model: MODEL,
+            messages: [{ role: "user", content: "di ok" }],
+            max_tokens: 16,
+            thinking: { type: "disabled" },
+         },
+         base,
+      );
       console.log(
          `   ${label.padEnd(34)} ${r.ok ? `OK model=${r.res.model}` : `ERR ${errLine(r.err)}`}`,
       );
@@ -110,8 +117,9 @@ async function s1_modelAndBaseUrl() {
             model: "deepseek-nope",
             messages: [{ role: "user", content: "hi" }],
             max_tokens: 8,
-         })
-            .then((r) => (r.ok ? "OK (!! silently accepted)" : `ERR ${errLine(r.err)}`))),
+         }).then((r) =>
+            r.ok ? "OK (!! silently accepted)" : `ERR ${errLine(r.err)}`,
+         )),
    );
 }
 
@@ -123,12 +131,24 @@ async function s2_effort() {
    const variants: Array<[string, Record<string, unknown>]> = [
       ["no knob (docs: thinking on/high)", {}],
       ["thinking disabled", { thinking: { type: "disabled" } }],
-      ["thinking.reasoning_effort=low", { thinking: { type: "enabled", reasoning_effort: "low" } }],
-      ["thinking.reasoning_effort=high", { thinking: { type: "enabled", reasoning_effort: "high" } }],
-      ["thinking.reasoning_effort=max", { thinking: { type: "enabled", reasoning_effort: "max" } }],
+      [
+         "thinking.reasoning_effort=low",
+         { thinking: { type: "enabled", reasoning_effort: "low" } },
+      ],
+      [
+         "thinking.reasoning_effort=high",
+         { thinking: { type: "enabled", reasoning_effort: "high" } },
+      ],
+      [
+         "thinking.reasoning_effort=max",
+         { thinking: { type: "enabled", reasoning_effort: "max" } },
+      ],
       ["top-level reasoning_effort=low", { reasoning_effort: "low" }],
       ["top-level reasoning_effort=max", { reasoning_effort: "max" }],
-      ["bogus knob (control)", { thinking: { type: "enabled", reasoning_effort: "banana" } }],
+      [
+         "bogus knob (control)",
+         { thinking: { type: "enabled", reasoning_effort: "banana" } },
+      ],
    ];
    for (const [label, extra] of variants) {
       const r = await call("s2", {
@@ -136,7 +156,11 @@ async function s2_effort() {
          max_tokens: 4000,
          messages: [
             { role: "system", content: "Responde en español, breve." },
-            { role: "user", content: "¿Cuántos primos hay entre 1 y 100? Da la lista y el total." },
+            {
+               role: "user",
+               content:
+                  "¿Cuántos primos hay entre 1 y 100? Da la lista y el total.",
+            },
          ],
          ...extra,
       });
@@ -178,7 +202,10 @@ async function s4_vision() {
                   role: "user",
                   content: [
                      { type: "text", text: "¿Qué color ves? Una palabra." },
-                     { type: "image_url", image_url: { url: dataUrl, detail: "low" } },
+                     {
+                        type: "image_url",
+                        image_url: { url: dataUrl, detail: "low" },
+                     },
                   ],
                },
             ],
@@ -208,7 +235,10 @@ async function s4_vision() {
                {
                   role: "user",
                   content: [
-                     { type: "text", text: "Lee la imagen y agenda lo que diga. La imagen es roja." },
+                     {
+                        type: "text",
+                        text: "Lee la imagen y agenda lo que diga. La imagen es roja.",
+                     },
                      { type: "image_url", image_url: { url: dataUrl } },
                   ],
                },
@@ -263,7 +293,11 @@ async function s5_toolRoundTrip() {
       messages: [
          { role: "user", content: TASK },
          msg,
-         { role: "tool", tool_call_id: tc.id, content: '{"ok":true,"id":"evt_1"}' },
+         {
+            role: "tool",
+            tool_call_id: tc.id,
+            content: '{"ok":true,"id":"evt_1"}',
+         },
       ],
    });
    console.log(
@@ -286,7 +320,11 @@ async function s5_toolRoundTrip() {
             content: msg.content ?? null,
             tool_calls: msg.tool_calls,
          },
-         { role: "tool", tool_call_id: tc.id, content: '{"ok":true,"id":"evt_1"}' },
+         {
+            role: "tool",
+            tool_call_id: tc.id,
+            content: '{"ok":true,"id":"evt_1"}',
+         },
       ],
    });
    console.log(
@@ -307,8 +345,15 @@ async function s5_toolRoundTrip() {
       messages: [
          { role: "user", content: TASK },
          msg,
-         { role: "tool", tool_call_id: tc.id, content: '{"ok":true,"id":"evt_1"}' },
-         { role: "user", content: "Responde AHORA en prosa, sin herramientas." },
+         {
+            role: "tool",
+            tool_call_id: tc.id,
+            content: '{"ok":true,"id":"evt_1"}',
+         },
+         {
+            role: "user",
+            content: "Responde AHORA en prosa, sin herramientas.",
+         },
       ],
    });
    console.log(
@@ -337,7 +382,9 @@ async function s5_toolRoundTrip() {
 }
 
 async function s6_maxTokens() {
-   console.log("\n§6 max_tokens headroom (bot currently sends KIMI_MAX_OUTPUT_TOKENS=16384)");
+   console.log(
+      "\n§6 max_tokens headroom (bot currently sends KIMI_MAX_OUTPUT_TOKENS=16384)",
+   );
    for (const effort of ["low", "high", "max"] as const) {
       const r = await call("s6", {
          model: MODEL,
@@ -347,7 +394,9 @@ async function s6_maxTokens() {
       });
       console.log(
          `   max_tokens=64000 effort=${effort.padEnd(4)} ${
-            r.ok ? `OK out=${outTok(r.res)} finish=${r.res.choices?.[0]?.finish_reason}` : `ERR ${errLine(r.err)}`
+            r.ok
+               ? `OK out=${outTok(r.res)} finish=${r.res.choices?.[0]?.finish_reason}`
+               : `ERR ${errLine(r.err)}`
          }`,
       );
    }

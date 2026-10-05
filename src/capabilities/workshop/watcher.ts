@@ -185,12 +185,10 @@ export class WorkshopWatcher {
          );
       }
 
-      const posted = await channel
-         .send(body)
-         .catch((err) => {
-            log.error({ err }, "workshop.welcome.post_failed");
-            return null;
-         });
+      const posted = await channel.send(body).catch((err) => {
+         log.error({ err }, "workshop.welcome.post_failed");
+         return null;
+      });
       if (!posted) return;
       await posted.react(emoji).catch(() => {});
       this.deps.store.setWelcomeMessageId(posted.id);

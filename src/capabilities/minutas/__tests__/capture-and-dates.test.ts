@@ -8,7 +8,10 @@ import type { Message } from "discord.js";
 import { chatContentOf } from "../session.js";
 import { buildMinutesSystemPrompt, renderDateTable } from "../minutes.js";
 
-const coll = <T>(items: T[]) => ({ values: () => items.values(), size: items.length });
+const coll = <T>(items: T[]) => ({
+   values: () => items.values(),
+   size: items.length,
+});
 
 function msg(over: Record<string, unknown>): Message {
    return {
@@ -24,9 +27,16 @@ function msg(over: Record<string, unknown>): Message {
 describe("chatContentOf", () => {
    test("mentions become names, custom emoji become :name:, newlines fold", () => {
       const m = msg({
-         content: "va <@123456789012345678> <:changuito:998877665544332211>\nsegunda línea",
+         content:
+            "va <@123456789012345678> <:changuito:998877665544332211>\nsegunda línea",
          mentions: {
-            users: coll([{ id: "123456789012345678", username: "luna_x", globalName: "Luna" }]),
+            users: coll([
+               {
+                  id: "123456789012345678",
+                  username: "luna_x",
+                  globalName: "Luna",
+               },
+            ]),
             members: { get: () => ({ displayName: "Lunita" }) },
          },
       });
@@ -34,13 +44,34 @@ describe("chatContentOf", () => {
    });
 
    test("attachment-only / sticker-only / poll messages are no longer empty", () => {
-      expect(chatContentOf(msg({ attachments: coll([{ name: "a.png", contentType: "image/png" }]) }))).toBe("[imagen]");
-      expect(chatContentOf(msg({ attachments: coll([{ name: "acta.pdf", contentType: "application/pdf" }]) }))).toBe(
-         "[archivo: acta.pdf]",
-      );
-      expect(chatContentOf(msg({ stickers: coll([{ name: "bebepensando" }]) }))).toBe("[sticker: bebepensando]");
       expect(
-         chatContentOf(msg({ poll: { question: { text: "¿Cambiamos el horario?" }, answers: coll([]) } })),
+         chatContentOf(
+            msg({
+               attachments: coll([{ name: "a.png", contentType: "image/png" }]),
+            }),
+         ),
+      ).toBe("[imagen]");
+      expect(
+         chatContentOf(
+            msg({
+               attachments: coll([
+                  { name: "acta.pdf", contentType: "application/pdf" },
+               ]),
+            }),
+         ),
+      ).toBe("[archivo: acta.pdf]");
+      expect(
+         chatContentOf(msg({ stickers: coll([{ name: "bebepensando" }]) })),
+      ).toBe("[sticker: bebepensando]");
+      expect(
+         chatContentOf(
+            msg({
+               poll: {
+                  question: { text: "¿Cambiamos el horario?" },
+                  answers: coll([]),
+               },
+            }),
+         ),
       ).toBe("[encuesta: «¿Cambiamos el horario?»]");
    });
 });
@@ -56,7 +87,10 @@ describe("renderDateTable", () => {
 
 describe("minutes prompt carries the audit rules", () => {
    const p = buildMinutesSystemPrompt();
-   test.each([/lista de participantes manda/, /conocimiento externo/, /tabla de fechas/, /Privacidad/])("%s", (re) =>
-      expect(p).toMatch(re),
-   );
+   test.each([
+      /lista de participantes manda/,
+      /conocimiento externo/,
+      /tabla de fechas/,
+      /Privacidad/,
+   ])("%s", (re) => expect(p).toMatch(re));
 });

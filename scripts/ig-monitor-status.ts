@@ -44,7 +44,12 @@ const acct = db
               SUM(paused) paused
          FROM instagram_monitor_accounts`,
    )
-   .get() as { total: number; unseeded: number | null; due_now: number | null; paused: number | null };
+   .get() as {
+   total: number;
+   unseeded: number | null;
+   due_now: number | null;
+   paused: number | null;
+};
 
 const soonest = db
    .prepare(
@@ -53,7 +58,9 @@ const soonest = db
         WHERE last_polled_at IS NOT NULL AND paused = 0
         ORDER BY (last_polled_at + poll_interval_ms) ASC LIMIT 1`,
    )
-   .get() as { username: string; last_polled_at: number; poll_interval_ms: number } | undefined;
+   .get() as
+   | { username: string; last_polled_at: number; poll_interval_ms: number }
+   | undefined;
 
 // Best effort: the journal is the only place pushes are visible.
 let pushCounts = "unavailable (journalctl not readable here)";
@@ -61,7 +68,16 @@ let recentEvents = "";
 try {
    const j = execFileSync(
       "journalctl",
-      ["--user", "-u", "chopperbot", "-o", "cat", "--since", "-30 min", "--no-pager"],
+      [
+         "--user",
+         "-u",
+         "chopperbot",
+         "-o",
+         "cat",
+         "--since",
+         "-30 min",
+         "--no-pager",
+      ],
       { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
    );
    const counts = new Map<string, number>();
@@ -85,13 +101,21 @@ try {
 }
 
 console.log("Instagram monitor — triage\n");
-console.log(`  kill-switch     : ${rt?.global_stop === 1 ? `ENGAGED — ${rt.stop_reason}` : "off"}`);
-console.log(`  requests_24h    : ${rt?.requests_24h ?? "—"}   (rolling 24h, restored across restarts since v10)`);
-console.log(`  heartbeat       : ${fmt(rt?.heartbeat_at)}  (${ago(rt?.heartbeat_at)}) ← scheduler liveness`);
+console.log(
+   `  kill-switch     : ${rt?.global_stop === 1 ? `ENGAGED — ${rt.stop_reason}` : "off"}`,
+);
+console.log(
+   `  requests_24h    : ${rt?.requests_24h ?? "—"}   (rolling 24h, restored across restarts since v10)`,
+);
+console.log(
+   `  heartbeat       : ${fmt(rt?.heartbeat_at)}  (${ago(rt?.heartbeat_at)}) ← scheduler liveness`,
+);
 console.log(
    `  poll_stretch    : ${rt?.poll_stretch?.toFixed(2) ?? "—"}  (aggregate budget pressure; 1 = not binding)`,
 );
-console.log(`  poll_alloc_scale: ${rt?.poll_alloc_scale?.toFixed(4) ?? "— (unconstrained)"}`);
+console.log(
+   `  poll_alloc_scale: ${rt?.poll_alloc_scale?.toFixed(4) ?? "— (unconstrained)"}`,
+);
 console.log(
    `  accounts        : ${acct.total} total | ${acct.unseeded ?? 0} unseeded | ${acct.due_now ?? 0} due now | ${acct.paused ?? 0} paused`,
 );
@@ -107,7 +131,8 @@ if (recentEvents) console.log(`  last journal ev : ${recentEvents}`);
 const unseeded = acct.unseeded ?? 0;
 let verdict: string;
 if (rt?.global_stop === 1) {
-   verdict = "STOPPED — kill-switch. Nothing is polled. Resume: config_instagram action:resume_monitor confirm:true";
+   verdict =
+      "STOPPED — kill-switch. Nothing is polled. Resume: config_instagram action:resume_monitor confirm:true";
 } else if (unseeded > 0) {
    verdict =
       `SEEDING — ${unseeded} account(s) have a NULL anchor. Their next poll is a silent ` +

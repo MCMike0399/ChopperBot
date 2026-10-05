@@ -16,9 +16,7 @@ export interface ConfigMinutasAdminDeps {
    minutas: {
       endActiveSession: (guildId: string) => Promise<string>;
       transcriberAvailable: () => boolean;
-      activeSession: (
-         guildId: string,
-      ) => {
+      activeSession: (guildId: string) => {
          id: string;
          channelId: string;
          channelName: string;

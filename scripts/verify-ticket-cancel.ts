@@ -163,12 +163,10 @@ async function main(): Promise<void> {
    console.log(
       "ocurrencias canceladas:",
       JSON.stringify(
-         store
-            .listOverridesForMaster(weekly.id)
-            .map((o) => ({
-               at: o.occurrence_start_at,
-               cancelled: o.cancelled,
-            })),
+         store.listOverridesForMaster(weekly.id).map((o) => ({
+            at: o.occurrence_start_at,
+            cancelled: o.cancelled,
+         })),
       ),
    );
    mem.close();

@@ -140,9 +140,9 @@ describe("ServerDirectoryToolSource", () => {
          channel: "bienvenidx",
       });
       expect(res.status).toBe("success");
-      expect(
-         (res.payload as { instructions?: string }).instructions,
-      ).toContain("Comenzar formulario");
+      expect((res.payload as { instructions?: string }).instructions).toContain(
+         "Comenzar formulario",
+      );
    });
 
    test("server_list_discord_events returns RSVP urls and the open-event note", async () => {

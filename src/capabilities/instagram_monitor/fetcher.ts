@@ -697,7 +697,10 @@ export class DirectInstagramFetcher implements InstagramFetcher {
    ): Promise<RecentPost[]> {
       const posts = await this.fetchAuthedFeedByUsername(username, auth, cause);
       this.hints.rememberUsernameFeed(username);
-      log.info({ username }, "instagram_monitor.fetch.feed_by_username_engaged");
+      log.info(
+         { username },
+         "instagram_monitor.fetch.feed_by_username_engaged",
+      );
       return posts;
    }
 
