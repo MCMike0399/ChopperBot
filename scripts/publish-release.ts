@@ -20,11 +20,9 @@
 // novedades channel. Login uses DISCORD_TOKEN (same bot account).
 import "dotenv/config";
 import { execSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
 import { ChannelType, Client, GatewayIntentBits } from "discord.js";
 import { config } from "../src/config.js";
+import { readChangelog, type ReleaseSection } from "./lib/changelog.js";
 
 const DEFAULT_RELEASE_CHANNEL_ID = "1519178790058725508";
 
@@ -42,48 +40,6 @@ const MONTHS_ES = [
    "noviembre",
    "diciembre",
 ];
-
-interface ReleaseSection {
-   version: string;
-   date: string; // YYYY-MM-DD as written in the changelog
-   body: string; // markdown between this header and the next version header
-}
-
-function changelogPath(): string {
-   const here = dirname(fileURLToPath(import.meta.url));
-   return join(here, "..", "CHANGELOG.md");
-}
-
-/** Parse every `## <version> — <date>` section out of CHANGELOG.md, newest first. */
-function parseChangelog(md: string): ReleaseSection[] {
-   const lines = md.split("\n");
-   const headerRe = /^##\s+(\d+\.\d+\.\d+)\s+—\s+(\d{4}-\d{2}-\d{2})\s*$/;
-   const sections: ReleaseSection[] = [];
-   let current: ReleaseSection | null = null;
-   let buf: string[] = [];
-   const flush = () => {
-      if (current) {
-         current.body = buf.join("\n").trim();
-         sections.push(current);
-      }
-   };
-   for (const line of lines) {
-      const m = headerRe.exec(line);
-      if (m) {
-         flush();
-         current = { version: m[1], date: m[2], body: "" };
-         buf = [];
-         continue;
-      }
-      if (current) {
-         // A horizontal rule separates versions in the changelog — don't carry it.
-         if (line.trim() === "---") continue;
-         buf.push(line);
-      }
-   }
-   flush();
-   return sections;
-}
 
 function formatSpanishDate(iso: string): string {
    const [y, mo, d] = iso.split("-").map((n) => parseInt(n, 10));
@@ -155,8 +111,7 @@ async function main(): Promise<void> {
    const push = args.includes("--push");
    const versionArg = args.find((a) => !a.startsWith("--"));
 
-   const md = readFileSync(changelogPath(), "utf8");
-   const sections = parseChangelog(md);
+   const sections = readChangelog();
    if (sections.length === 0) {
       throw new Error("No version sections found in CHANGELOG.md");
    }

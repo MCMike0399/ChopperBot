@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { PDFDocument, StandardFonts } from 'pdf-lib';
 import {
@@ -16,6 +16,13 @@ import { TEMPLATE_GEOMETRY } from '../template-geometry.generated.js';
 import { planCell } from '../cell-layout.js';
 
 const tpl = (file: string) => new Uint8Array(readFileSync(resolve('calendar', file)));
+
+/**
+ * The Canva templates are private, untracked assets (see .gitignore): they exist
+ * on the deployment and dev machines, not in a fresh clone or CI. Tests that read
+ * them skip there; the geometry and layout tests still run.
+ */
+const HAS_TEMPLATES = Object.values(TEMPLATE_GEOMETRY).every((g) => existsSync(resolve('calendar', g.file)));
 
 /** Every Canva template's MediaBox is [0, 7.92, 1440, 817.92]. */
 const MEDIA_BOX_ORIGIN_Y = 7.92;
@@ -78,7 +85,7 @@ describe('sanitizeForPdf', () => {
   });
 });
 
-describe('cellBox', () => {
+describe.skipIf(!HAS_TEMPLATES)('cellBox', () => {
   test('every template page starts at a non-zero MediaBox origin', async () => {
     for (const key of availableMonthKeys()) {
       const doc = await PDFDocument.load(tpl(TEMPLATE_GEOMETRY[key].file));
@@ -101,7 +108,7 @@ describe('cellBox', () => {
   });
 });
 
-describe('renderMonthPdf', () => {
+describe.skipIf(!HAS_TEMPLATES)('renderMonthPdf', () => {
   test('throws for a month without a template', async () => {
     await expect(
       renderMonthPdf({ monthKey: '2026-05', events: [], templateBytes: tpl('Junio 2026.pdf') }),

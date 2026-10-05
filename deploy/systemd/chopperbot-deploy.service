@@ -1,0 +1,27 @@
+# ChopperBot pull deploy — systemd user unit (template), started by chopperbot-deploy.timer.
+#
+# Runs deploy/pull-deploy.sh: fast-forward to the newest vX.Y.Z release tag
+# (created by GitHub Actions, .github/workflows/ci.yml), build on the Pi,
+# restart chopperbot.service, health-check, roll back on failure. GitHub never
+# connects to the Pi; this only fetches the public repo.
+#
+# Install (same __REPO__ placeholder as chopperbot.service):
+#   for u in chopperbot-deploy.service chopperbot-deploy.timer; do
+#      sed -e "s#__REPO__#$REPO#g" deploy/systemd/$u > ~/.config/systemd/user/$u
+#   done
+#   systemctl --user daemon-reload && systemctl --user enable --now chopperbot-deploy.timer
+#
+# Pause auto-deploy: systemctl --user stop chopperbot-deploy.timer (or check out
+# anything other than main; the script then refuses and alerts once).
+
+[Unit]
+Description=ChopperBot pull deploy (newest release tag)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=__REPO__
+ExecStart=__REPO__/deploy/pull-deploy.sh
+# A dependency install + tsc build on the Pi, then the 60 s health check (twice on rollback).
+TimeoutStartSec=20min

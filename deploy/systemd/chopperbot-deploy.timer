@@ -1,0 +1,12 @@
+# Checks for a new ChopperBot release tag every 5 minutes. See chopperbot-deploy.service.
+
+[Unit]
+Description=Check for a new ChopperBot release every 5 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitInactiveSec=5min
+RandomizedDelaySec=30
+
+[Install]
+WantedBy=timers.target

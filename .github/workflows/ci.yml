@@ -1,0 +1,83 @@
+# CI + release.
+#
+# `check` runs on every pull request and on every push to main, on GitHub-hosted
+# arm64 runners (the same architecture as the Pi). It never sees a secret.
+#
+# `release` runs only after `check` passes on a push to main. When package.json
+# carries a version that has no `vX.Y.Z` tag yet, it creates the tag and a GitHub
+# Release whose body is that version's CHANGELOG.md section. The Pi picks the tag
+# up on its own (deploy/pull-deploy.sh, run by chopperbot-deploy.timer); nothing
+# here reaches into the Pi, and the Discord announcement stays a manual
+# `pnpm run release`.
+name: CI
+
+on:
+   pull_request:
+   push:
+      branches: [main]
+   workflow_dispatch:
+
+permissions:
+   contents: read
+
+concurrency:
+   group: ci-${{ github.ref }}
+   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+   check:
+      runs-on: ubuntu-24.04-arm
+      timeout-minutes: 20
+      steps:
+         - uses: actions/checkout@v4
+         - uses: pnpm/action-setup@v4
+           with:
+              version: 11.3.0
+         - uses: actions/setup-node@v4
+           with:
+              node-version: 22
+              cache: pnpm
+         - run: pnpm install --frozen-lockfile
+         - run: pnpm run format:check
+         - run: pnpm run typecheck
+         - run: pnpm test
+         - run: pnpm run build
+
+   release:
+      needs: check
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      runs-on: ubuntu-24.04-arm
+      timeout-minutes: 10
+      permissions:
+         contents: write
+      concurrency:
+         group: release
+         cancel-in-progress: false
+      steps:
+         - uses: actions/checkout@v4
+           with:
+              fetch-tags: true
+              fetch-depth: 0
+         - uses: actions/setup-node@v4
+           with:
+              node-version: 22
+         - name: Tag and publish the GitHub release if the version is new
+           env:
+              GH_TOKEN: ${{ github.token }}
+           run: |
+              version=$(node -p 'require("./package.json").version')
+              tag="v${version}"
+              if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+                 echo "${tag} already exists; nothing to release."
+                 exit 0
+              fi
+              latest=$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | head -1)
+              if [ -n "${latest}" ] && [ "$(printf '%s\n%s\n' "${latest}" "${tag}" | sort -V | tail -1)" != "${tag}" ]; then
+                 echo "::error::package.json version ${version} is not newer than the latest tag ${latest}."
+                 exit 1
+              fi
+              npx --yes tsx scripts/release-notes.ts "${version}" > release-notes.md
+              gh release create "${tag}" \
+                 --target "${GITHUB_SHA}" \
+                 --title "ChopperBot ${tag}" \
+                 --notes-file release-notes.md

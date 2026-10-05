@@ -14,6 +14,9 @@
  * live `scripts/preview-calendar-board.ts --render` instead.
  */
 import { describe, test, expect, vi } from 'vitest';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { TEMPLATE_GEOMETRY } from '../template-geometry.generated.js';
 
 vi.mock('../raster.js', () => ({
   pdfToPng: async () => new Uint8Array([0x89, 0x50, 0x4e, 0x47]), // "\x89PNG"
@@ -74,7 +77,10 @@ const tick = (cap: CalendarCapability, client: unknown) =>
 const monthCards = (store: CalendarStore) =>
   store.listPublished().filter((r) => r.pub_key.startsWith('pdf:')).map((r) => r.pub_key.slice(4));
 
-describe('month-rollover auto-publish', () => {
+/** The Canva templates are private, untracked assets: absent in a fresh clone and CI. */
+const HAS_TEMPLATES = Object.values(TEMPLATE_GEOMETRY).every((g) => existsSync(resolve('calendar', g.file)));
+
+describe.skipIf(!HAS_TEMPLATES)('month-rollover auto-publish', () => {
   test('publishes the current month when no card exists yet, and tracks it', async () => {
     const { memory, cap, store } = await boot();
     const { client, sent } = fakeClient();
