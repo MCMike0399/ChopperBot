@@ -6,6 +6,8 @@
  * must resolve as "no existe o no puedes verlo" for them. Posts nothing.
  *
  *   npx tsx scripts/verify-server-directory.ts [query] [userId ...]
+ *
+ * With no userIds, falls back to VERIFY_MEMBER_ID from the environment.
  */
 import { Client, GatewayIntentBits } from "discord.js";
 import { config } from "../src/config.js";
@@ -20,7 +22,11 @@ const query = queryArg ?? "bienvenidx";
 const users =
    userArgs.length > 0
       ? userArgs
-      : ["100000000000000001", "100000000000000003"];
+      : [process.env.VERIFY_MEMBER_ID].filter((id): id is string => !!id);
+if (users.length === 0) {
+   console.error("Pass userIds or set VERIFY_MEMBER_ID.");
+   process.exit(1);
+}
 
 // Guilds alone suffices: fetching a SINGLE member by id is plain REST and does
 // not need the privileged GuildMembers intent (same as the live bot).

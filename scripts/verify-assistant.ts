@@ -33,6 +33,11 @@ import type {
 import { ask } from "../src/llm/client.js";
 
 const GENERAL_CHANNEL_ID = "1437237844966899742";
+const VERIFY_MEMBER_ID = process.env.VERIFY_MEMBER_ID;
+if (!VERIFY_MEMBER_ID) {
+   console.error("Set VERIFY_MEMBER_ID to a real member snowflake.");
+   process.exit(1);
+}
 
 const PROBES = [
    "cuéntame del servidor, dónde puedo ver los eventos de la semana y dónde puedo votar para las peliculas que veremos",
@@ -93,9 +98,9 @@ async function main(): Promise<void> {
       const turn = await generalCap.buildTurn({
          channelId: GENERAL_CHANNEL_ID,
          guildId: REVZ_GUILD_ID,
-         // Real member snowflake: directory/how-to tools fetch this user to
-         // filter visibility. A fake id like "verify-script" 400s Discord.
-         userId: "100000000000000001",
+         // Real member snowflake (VERIFY_MEMBER_ID): directory/how-to tools
+         // fetch this user to filter visibility. A fake id 400s Discord.
+         userId: VERIFY_MEMBER_ID,
          userTag: "verify#0000",
          now: new Date(),
       });
