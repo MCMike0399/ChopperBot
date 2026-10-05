@@ -66,6 +66,8 @@ npx tsx scripts/publish-release.ts 1.0.1 --dry-run   # preview the post, send no
 pnpm run release 1.0.1 --commit --push               # publish, THEN git add -A + commit + push
 ```
 
+**GitHub tags + Releases are automatic** (`.github/workflows/ci.yml`): every PR and push to `main` runs format/typecheck/test/build on GitHub-hosted arm64 runners (required check `check` on `main`). When a push to `main` passes and `package.json` carries a version with no `vX.Y.Z` tag, the `release` job creates the tag and a GitHub Release whose body is that version's CHANGELOG section (`scripts/release-notes.ts`; a bump without a CHANGELOG section fails the job). The Discord post stays manual.
+
 `scripts/publish-release.ts` is a **dev-side script** (NOT a runtime capability): logs into Discord with `DISCORD_TOKEN`, parses the version out of `CHANGELOG.md`, posts it. `RELEASE_NOTES_CHANNEL_ID` is read straight from the env and is **not** in the Zod schema. Always `--dry-run` first — posting is a live, hard-to-reverse community message. `--commit`/`--push` are opt-in, run only after a successful post, and stage the _whole working tree_ (`git add -A`) — use them from a tree that's clean except for this release.
 
 **Standing SHIP CHECKLIST for future sessions — when you ship a user-visible feature or fix, gate on GREEN, then release:**
@@ -74,11 +76,11 @@ pnpm run release 1.0.1 --commit --push               # publish, THEN git add -A 
 2. Bump `package.json` `version` (PATCH for fixes, MINOR for new features, MAJOR for breaking changes).
 3. Add a new dated section to `CHANGELOG.md` in community-friendly Spanish (this exact text is what posts to Discord).
 4. **Update the relevant doc under `docs/`** (per the map above) so it keeps reflecting the live feature set — update this index only if commands/architecture/the map changed.
-5. Commit + push the change, then **`--dry-run` the release** to preview, then publish for real: `pnpm run release <version>` (optionally `--commit --push`). Publishing to the community is live and hard to reverse — only do it once steps 1–4 are done and green. If unsure whether to post publicly, publish the code/commit but leave the Discord announcement for the user to confirm.
+5. Commit + push the change (CI tags `vX.Y.Z` and the Pi's deploy timer ships it within ~10 min — see Deployment), then **`--dry-run` the release** to preview, then publish for real: `pnpm run release <version>` (optionally `--commit --push`). Publishing to the community is live and hard to reverse — only do it once steps 1–4 are done and green. If unsure whether to post publicly, publish the code/commit but leave the Discord announcement for the user to confirm.
 
 ## Deployment — summary
 
-The live deployment is a **Raspberry Pi** and **this repo directory IS that deployment**; a systemd **user** unit `chopperbot.service` runs `node dist/index.js` (`Restart=always`, boot autostart via linger). **Edits go live only after `pnpm run build` + `systemctl --user restart chopperbot.service`.** The unit is generated from `deploy/systemd/chopperbot.service` — keep that template in sync. Discord-facing alerts (IG monitor, LLM health, crash-restart detection) post to the config channel; there are no log files, everything is `journalctl --user -u chopperbot`. Full details (alert surface, lifecycle, macOS rollback artifacts, observability recipes): [docs/deployment.md](docs/deployment.md).
+The live deployment is a **Raspberry Pi** and **this repo directory IS that deployment**; a systemd **user** unit `chopperbot.service` runs `node dist/index.js` (`Restart=always`, boot autostart via linger). **Edits go live only after `pnpm run build` + `systemctl --user restart chopperbot.service`.** The unit is generated from `deploy/systemd/chopperbot.service` — keep that template in sync. **Releases deploy themselves:** `chopperbot-deploy.timer` runs `deploy/pull-deploy.sh` every 5 min, which fast-forwards `main` to the newest `vX.Y.Z` tag, builds, restarts, health-checks and rolls back on failure; it refuses (one alert to the config channel) a dirty tree, a non-`main` checkout or diverged history. GitHub never connects to the Pi — **no self-hosted runner, by design** (public repo + a Pi holding prod credentials). Discord-facing alerts (IG monitor, LLM health, crash-restart detection) post to the config channel; there are no log files, everything is `journalctl --user -u chopperbot`. Full details (alert surface, lifecycle, macOS rollback artifacts, observability recipes): [docs/deployment.md](docs/deployment.md).
 
 ## Remote development — when you are on the Mac, not the Pi
 
@@ -124,7 +126,8 @@ Capabilities that exist only for other/private deploys are **not kept in this re
 - `src/users/` — the framework Discord-user directory (the reserved `__framework__` namespace).
 - `src/attachments/` — image (vision) resolution for incoming Discord attachments.
 - `scripts/` — dev/proof/calibration scripts, **not tests** (some spend real DeepSeek/IG budget — see the per-doc notes).
-- `deploy/` — the reference `systemd/` unit (live, tracked). The decommissioned macOS `launchd/`+`bin/` artifacts are **local-only/untracked** (reference/rollback only; backed up at `pi:~/ChopperBot-private-assets/`).
+- `.github/workflows/ci.yml` — CI on PRs/pushes + the tag/GitHub Release job.
+- `deploy/` — the reference `systemd/` units (live, tracked: the bot + `chopperbot-deploy.{service,timer}`) and `pull-deploy.sh`. The decommissioned macOS `launchd/`+`bin/` artifacts are **local-only/untracked** (reference/rollback only; backed up at `pi:~/ChopperBot-private-assets/`).
 - `calendar/` — the 7 Canva month-PDF templates; **local-only/untracked** (private assets, licensing) but read at runtime from the repo root, so they MUST exist in the deployment working tree (Pi backup: `pi:~/ChopperBot-private-assets/calendar-backup-2026-08-13/`).
 - `docs/` — the topic documentation routed by the map at the top of this file.
 
