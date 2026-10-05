@@ -111,10 +111,28 @@ export interface RuntimeState {
    budget_pause_until: number | null;
    requests_24h: number | null;
    heartbeat_at: number | null;
-   /** Global budget-governor multiplier on every account's poll interval (≥1). 1.0 = inactive. */
+   /**
+    * Aggregate budget pressure (≥1), informational only since v10: how much
+    * slower than its own cadence the fleet polls in total
+    * (Σ natural polls/day ÷ Σ allocated polls/day). 1.0 = the budget isn't
+    * binding. Scheduling reads {@link poll_alloc_scale}, not this.
+    */
    poll_stretch: number;
    /** When the daily status digest was last posted (ms). NULL = never. */
    last_digest_at: number | null;
+   /**
+    * Square-root allocator scale (v10), read by {@link effectiveBaseIntervalMs}.
+    * NULL = never computed / budget disabled → every account at its natural
+    * cadence interval (the pre-governor behavior).
+    */
+   poll_alloc_scale: number | null;
+   /**
+    * Rolling-24h outbound request + poll timestamps (v10), JSON
+    * `{"requests":[…],"polls":[…]}`. Persisted so a restart doesn't zero the
+    * daily-budget guardrail: 113 scheduler starts since 2026-08-01, 14 on
+    * 2026-10-04 alone, each of which used to reset `requests_24h` to 0.
+    */
+   request_window_json: string | null;
 }
 
 export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
@@ -332,6 +350,21 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
         ADD COLUMN prefer_username_feed_at INTEGER;
     `,
    },
+   {
+      // v10 — square-root budget allocator + restart-proof request window.
+      //   poll_alloc_scale — replaces the single `poll_stretch` multiplier as
+      //     the thing scheduling reads (see computeGovernorAllocation). NULL =
+      //     not computed yet → natural cadence; the scheduler computes it in
+      //     start() before the first tick, so a deploy can't open with a burst.
+      //   request_window_json — the rolling-24h request/poll timestamps the
+      //     daily budget and the calls-per-poll measure read; in-memory only
+      //     before this, so every restart zeroed the guardrail.
+      version: 10,
+      up: `
+      ALTER TABLE instagram_monitor_runtime ADD COLUMN poll_alloc_scale    REAL;
+      ALTER TABLE instagram_monitor_runtime ADD COLUMN request_window_json TEXT;
+    `,
+   },
 ];
 
 /** Window over which the circuit breaker counts soft-block events.
@@ -399,7 +432,19 @@ export const CADENCE_INTERVAL_FACTOR = 0.5;
 /** Hard floor — never poll one account faster than this (anti-detection). */
 export const CADENCE_MIN_INTERVAL_MS = 45 * 60 * 1000;
 /**
- * Ceiling — even a dormant account is polled at least this often (twice a day).
+ * Ceiling — even a dormant account is polled at least this often (once a day).
+ *
+ * Raised 12h → 24h (2026-10-04, v10 allocator). With 21 accounts the 12h floor
+ * alone cost ≈36 polls/day — more than the whole poll budget — so the old
+ * single-multiplier governor saturated (`poll_stretch` pinned at its 16× cap for
+ * weeks) and EVERY account sat at 12h: a 9-posts/day account was polled exactly
+ * as often as a 1-post/3-days one, average detection lag was ~9h across the board
+ * (Sep 11 → Oct 4, 964 posts), and the busiest two accounts repeatedly
+ * overflowed the feed window (anchor missing with all 9 unpinned posts new).
+ * Letting rare accounts drift to 24h frees the polls the square-root allocator
+ * ({@link computeGovernorAllocation}) spends on the active ones. The per-account
+ * overflow cap ({@link allocationBounds}) still keeps any account from going so
+ * long that its own posts could fall out of the window.
  *
  * Raised 6h → 12h (2026-05-30) after the live data showed the 6h cap was the
  * binding constraint on genuinely-rare accounts and was wasting the request
@@ -408,23 +453,26 @@ export const CADENCE_MIN_INTERVAL_MS = 45 * 60 * 1000;
  * at 6h — polled ~2× more often than their cadence warrants. Those wasted polls
  * starved the budget the *active* accounts need, and the surplus of MAX-clamped
  * accounts forced the budget governor to over-stretch everyone else (see
- * {@link computeGovernorStretch}). Decoupled from {@link MAX_BACKOFF_MS} (still
+ * the governor, now {@link computeGovernorAllocation}). Decoupled from {@link MAX_BACKOFF_MS} (still
  * 6h) — `dueAccounts`' backoff cap already used `max(MAX_BACKOFF, base)` so a
  * base interval above 6h was never silently capped. Coverage is unaffected: the
  * feed returns 10–16 items and {@link CADENCE_MAX_POSTS_PER_INTERVAL} bounds how
  * many a rare account can accumulate in one interval, so a longer ceiling only
  * adds latency, never a miss.
  */
-export const CADENCE_MAX_INTERVAL_MS = 12 * 60 * 60 * 1000;
-/** Fallback interval (now 12h, kept == {@link CADENCE_MAX_INTERVAL_MS}) for
+export const CADENCE_MAX_INTERVAL_MS = 24 * 60 * 60 * 1000;
+/** Fallback interval (12h — deliberately NOT raised with the 24h ceiling, and
+ * never stretched by the allocator) for
  * accounts whose cadence isn't known yet (too few posts / too little history).
+ * An unknown account might be a busy one, and at 24h a busy account can post
+ * more than the feed window holds before we look.
  * Conservative on purpose: an account with little data is empirically a rare
  * poster, so polling it slowly frees the request budget for the accounts we KNOW
  * are active. Polling slowly does NOT slow learning — cadence is learned from
  * detected POSTS, and a long interval can't miss a rare account's posts (the
  * feed window holds 10–16). New accounts speed up automatically once they accrue
  * enough history for {@link computeCadenceInterval} to trust a cadence. */
-export const CADENCE_COLD_START_INTERVAL_MS = CADENCE_MAX_INTERVAL_MS;
+export const CADENCE_COLD_START_INTERVAL_MS = 12 * 60 * 60 * 1000;
 /** Recency decay: start stretching once silence exceeds this multiple of the median gap. */
 export const CADENCE_DECAY_START = 2;
 /** …capping the stretch multiplier here so a quieted account drifts to MAX, not beyond. */
@@ -434,13 +482,19 @@ export const CADENCE_MAX_POSTS_PER_INTERVAL = 6;
 /** Recompute an account's cadence at most this often in the daily sweep. */
 export const CADENCE_TTL_MS = 24 * 60 * 60 * 1000;
 /** Budget governor targets this fraction of IG_DAILY_REQUEST_BUDGET as the
- * steady-state ceiling. Leaves ~25% headroom to absorb (a) the one-time
- * pk-resolve burst on restart (~1 extra call/account, in-window for 24h) and
- * (b) the ~50% warmup variance. (The governor's old MAX-clamp under-correction
- * — formerly absorbed here too — is gone: {@link computeGovernorStretch} is now
- * clamp-aware and solves for a stretch whose *realized* projection hits this
- * ceiling.) */
-export const CADENCE_BUDGET_HEADROOM = 0.75;
+ * steady-state ceiling. Was 0.75, sized to absorb (a) the restart pk-resolve
+ * burst and (b) the variance of a measured calls-per-poll. Raised to 0.85 on
+ * 2026-10-04 because the browser fetch path removed both: no pk resolve at all,
+ * and a poll costs a fixed {@link BROWSER_REQUESTS_PER_POLL}. 0.85 × 90 / 2 ≈ 38
+ * modeled polls/day ≈ 34 realized (replay of Sep 4 → Oct 4) — the same traffic
+ * the fleet actually made over the 24 clean browser-mode days (33–39/day), not
+ * more. The hard daily budget (90) is unchanged and stays the backstop. */
+export const CADENCE_BUDGET_HEADROOM = 0.85;
+/** The scheduler's nightly quiet window (01:00–08:00 CDMX = 7h), during which
+ * posts pile up on top of an account's normal interval. Feeds the overflow cap
+ * in {@link allocationBounds}; scheduler.test pins it to the scheduler's own
+ * QUIET_HOURS constants so the two can't drift. */
+export const OVERFLOW_QUIET_ALLOWANCE_MS = 7 * 60 * 60 * 1000;
 
 /**
  * Median of a non-empty numeric array (does not mutate the input). Used for the
@@ -520,20 +574,69 @@ export function computeCadenceInterval(
    return { intervalMs: Math.round(interval), postsPerDay };
 }
 
+/** The account columns the allocator reads. */
+export type CadenceFields = Pick<
+   MonitoredAccount,
+   "poll_interval_ms" | "posts_per_day"
+>;
+
 /**
- * The effective base poll interval for an account: its learned cadence (or the
- * global default if not yet learned), scaled by the global budget-governor
- * `stretch`, clamped to the cadence ceiling. Shared by {@link InstagramMonitorStore.dueAccounts}
- * and the status-digest next-poll estimate so the two never drift.
+ * The band the allocator may place one account's interval in.
+ *
+ * - `minMs` — its natural cadence interval (learned, or the cold-start default),
+ *   clamped to [MIN, MAX]. The allocator never polls an account faster than its
+ *   own cadence asks for; with an unconstrained budget everyone sits here.
+ * - `maxMs` — the slowest it may go: the 24h ceiling, tightened by an
+ *   **overflow cap** so its posts can't outrun the feed window between polls:
+ *   `MAX_POSTS_PER_INTERVAL × DAY / posts_per_day − quiet window` (posts keep
+ *   arriving through the night while we don't poll). Cold-start accounts
+ *   (no learned cadence) are pinned at their default — an unknown is not
+ *   stretched.
+ */
+export function allocationBounds(
+   account: CadenceFields,
+   defaultMs: number,
+): { minMs: number; maxMs: number } {
+   // Learned intervals are already clamped to [MIN, MAX] by
+   // computeCadenceInterval; the caller's default is taken as given.
+   const natural = account.poll_interval_ms ?? defaultMs;
+   const minMs = Math.max(1, Math.min(natural, CADENCE_MAX_INTERVAL_MS));
+   if (account.poll_interval_ms === null) return { minMs, maxMs: minMs };
+   const ppd = account.posts_per_day;
+   const overflowCap =
+      ppd !== null && ppd > 0
+         ? (CADENCE_MAX_POSTS_PER_INTERVAL * DAY_MS) / ppd -
+           OVERFLOW_QUIET_ALLOWANCE_MS
+         : CADENCE_MAX_INTERVAL_MS;
+   const maxMs = Math.max(
+      minMs,
+      Math.min(CADENCE_MAX_INTERVAL_MS, overflowCap),
+   );
+   return { minMs, maxMs };
+}
+
+/** Allocator weight: √(the account's natural polls/day). See {@link computeGovernorAllocation}. */
+function allocationWeight(minMs: number): number {
+   return Math.sqrt(DAY_MS / minMs);
+}
+
+/**
+ * The effective base poll interval for an account under the square-root
+ * allocator: `DAY / (scale × √(natural polls/day))`, clamped to
+ * {@link allocationBounds}. `scale` is the single number the governor solves
+ * for ({@link computeGovernorAllocation}); `null` = unconstrained → the natural
+ * interval. Shared by {@link InstagramMonitorStore.dueAccounts}, the governor's
+ * projection and the status-digest next-poll estimate so the three never drift.
  */
 export function effectiveBaseIntervalMs(
-   account: { poll_interval_ms: number | null },
+   account: CadenceFields,
    defaultMs: number,
-   stretch: number,
+   scale: number | null,
 ): number {
-   const s = Number.isFinite(stretch) && stretch > 0 ? stretch : 1;
-   const base = (account.poll_interval_ms ?? defaultMs) * s;
-   return Math.min(base, CADENCE_MAX_INTERVAL_MS);
+   const { minMs, maxMs } = allocationBounds(account, defaultMs);
+   if (scale === null || !Number.isFinite(scale) || scale <= 0) return minMs;
+   const iv = DAY_MS / (scale * allocationWeight(minMs));
+   return Math.min(Math.max(iv, minMs), maxMs);
 }
 
 /**
@@ -545,10 +648,10 @@ export function effectiveBaseIntervalMs(
 export function nextDueAtMs(
    account: MonitoredAccount,
    defaultMs: number,
-   stretch: number,
+   scale: number | null,
 ): number | null {
    if (account.last_polled_at === null) return null;
-   const base = effectiveBaseIntervalMs(account, defaultMs, stretch);
+   const base = effectiveBaseIntervalMs(account, defaultMs, scale);
    return (
       account.last_polled_at +
       Math.min(
@@ -596,30 +699,31 @@ export function expectedPollsPerDay(
 }
 
 /**
- * Budget governor: return a global `stretch` (≥1) that, applied to every
- * account's interval (then clamped to {@link CADENCE_MAX_INTERVAL_MS} by
- * {@link effectiveBaseIntervalMs}), keeps the *realized* projected daily IG
- * request count at or below `dailyRequestBudget × headroom`. A single multiplier
- * preserves the active-vs-rare allocation; the hard budget gate in the scheduler
- * stays the authoritative backstop, this just makes hitting it rare.
- * `dailyRequestBudget ≤ 0` (tests) disables the governor (stretch 1).
+ * Budget governor — **square-root allocation** (v10, 2026-10-04). Solves one
+ * `scale` so that, with every account at
+ * `interval = DAY / (scale × √(natural polls/day))` clamped to its
+ * {@link allocationBounds}, the *realized* projected daily IG request count
+ * stays at or below `dailyRequestBudget × headroom`.
  *
- * **Clamp-aware** (changed 2026-05-30): the projection accounts for the fact
- * that `interval × stretch` saturates at the cadence ceiling. An account already
- * at (or stretched to) MAX contributes a FIXED request rate the stretch can't
- * reduce — so the old `projected / ceiling` closed form under-corrected whenever
- * accounts sat at the clamp (it assumed every interval scaled with stretch),
- * letting realized spend overshoot the ceiling. We instead binary-search the
- * smallest stretch whose realized (post-clamp) projection meets the ceiling.
- * `projected` is that realized figure — the requests we actually expect to make.
+ * Why √: under a fixed poll budget, the allocation that minimizes the mean
+ * detection lag *per post* gives each account a poll rate ∝ √(its post rate)
+ * (minimize Σ λᵢ/2rᵢ subject to Σ rᵢ = R ⇒ rᵢ ∝ √λᵢ). The natural cadence
+ * rate is ∝ λ (it is half the median inter-post gap), so its square root is
+ * the weight. The old governor multiplied every interval by ONE stretch and
+ * clamped at the ceiling — once the fleet's ceiling-clamped polls alone
+ * exceeded the budget (21 accounts × 2/day at 12h vs ~34/day), every account
+ * hit the clamp and allocation collapsed to round-robin. A 30-day replay of
+ * the real posts (Sep 4 → Oct 4, same traffic) puts the median lag on pushed
+ * posts at 7.8h → 4.3h and window-overflow misses at ~8 → ~2.
  *
- * **Quiet-aware** (changed 2026-06-12): per-account polls/day comes from
- * {@link expectedPollsPerDay} instead of a uniform `activeFraction` multiplier —
- * see that function for why the uniform discount under-projected clamped
- * accounts. Pass `quietWindowMs: 0, tickMs: 0` to get the raw `DAY/interval`
- * projection (used by the pure-math unit tests).
+ * Projections use {@link expectedPollsPerDay} (quiet- and jitter-aware).
+ * `stretch` is reported for humans: Σ natural polls ÷ Σ allocated polls (1 =
+ * the budget isn't binding). `dailyRequestBudget ≤ 0` (tests) disables the
+ * governor (`scale: null`). If even every account at its slowest bound can't
+ * meet the ceiling, the slowest allocation is returned and the hard budget
+ * gate in the scheduler backstops.
  */
-export function computeGovernorStretch(
+export function computeGovernorAllocation(
    accounts: MonitoredAccount[],
    opts: {
       callsPerPoll: number;
@@ -629,55 +733,64 @@ export function computeGovernorStretch(
       tickMs: number;
       headroom: number;
    },
-): { stretch: number; projected: number } {
-   if (opts.dailyRequestBudget <= 0) return { stretch: 1, projected: 0 };
-   const intervals = accounts
-      .filter(
-         (a) =>
-            a.paused !== 1 &&
-            a.consecutive_auth_failures < AUTH_PAUSE_THRESHOLD &&
-            a.consecutive_hard_failures < HARD_PAUSE_THRESHOLD,
-      )
-      .map((a) => a.poll_interval_ms ?? opts.defaultIntervalMs)
-      .filter((iv) => iv > 0);
-
-   // Realized daily requests if every interval is stretched by `s`, then clamped
-   // to the cadence ceiling (mirrors effectiveBaseIntervalMs).
-   const projectedAt = (s: number): number =>
-      intervals.reduce(
-         (sum, iv) =>
+): { scale: number | null; projected: number; stretch: number } {
+   const active = accounts.filter(
+      (a) =>
+         a.paused !== 1 &&
+         a.consecutive_auth_failures < AUTH_PAUSE_THRESHOLD &&
+         a.consecutive_hard_failures < HARD_PAUSE_THRESHOLD,
+   );
+   const pollsAt = (scale: number | null): number =>
+      active.reduce(
+         (sum, a) =>
             sum +
             expectedPollsPerDay(
-               Math.min(iv * s, CADENCE_MAX_INTERVAL_MS),
+               effectiveBaseIntervalMs(a, opts.defaultIntervalMs, scale),
                opts.quietWindowMs,
                opts.tickMs,
-            ) *
-               opts.callsPerPoll,
+            ),
          0,
       );
-
+   const naturalPolls = pollsAt(null);
+   const natural = naturalPolls * opts.callsPerPoll;
+   if (opts.dailyRequestBudget <= 0) {
+      return { scale: null, projected: natural, stretch: 1 };
+   }
    const ceiling = opts.dailyRequestBudget * opts.headroom;
-   const base = projectedAt(1);
-   if (ceiling <= 0 || intervals.length === 0 || base <= ceiling) {
-      return { stretch: 1, projected: base };
+   if (ceiling <= 0 || active.length === 0 || natural <= ceiling) {
+      return { scale: null, projected: natural, stretch: 1 };
    }
 
-   // Beyond this stretch the fastest account is already pinned at MAX, so
-   // `projectedAt` is flat — no point searching further (and it bounds the loop).
-   const hi = CADENCE_MAX_INTERVAL_MS / Math.min(...intervals);
-   if (projectedAt(hi) >= ceiling) {
-      // Even fully clamped we can't reach the ceiling (too many accounts for the
-      // budget). Stretch as far as it still helps; the hard budget gate backstops.
-      return { stretch: hi, projected: projectedAt(hi) };
+   // Below `lo` every account sits at its slowest bound; above `hi` every account
+   // sits at its natural interval — the projection is flat outside [lo, hi].
+   let lo = Infinity;
+   let hi = 0;
+   for (const a of active) {
+      const { minMs, maxMs } = allocationBounds(a, opts.defaultIntervalMs);
+      const w = allocationWeight(minMs);
+      lo = Math.min(lo, DAY_MS / (maxMs * w));
+      hi = Math.max(hi, DAY_MS / (minMs * w));
    }
-   let lo = 1;
+   const result = (scale: number) => {
+      const polls = pollsAt(scale);
+      return {
+         scale,
+         projected: polls * opts.callsPerPoll,
+         stretch: polls > 0 ? Math.max(1, naturalPolls / polls) : 1,
+      };
+   };
+   if (pollsAt(lo) * opts.callsPerPoll >= ceiling) return result(lo);
+   // Projection is monotone non-decreasing in scale: find the largest scale
+   // whose projection still fits. Geometric bisection — the range spans orders
+   // of magnitude.
+   let low = lo;
    let high = hi;
-   for (let i = 0; i < 40; i++) {
-      const mid = (lo + high) / 2;
-      if (projectedAt(mid) > ceiling) lo = mid;
-      else high = mid;
+   for (let i = 0; i < 60; i++) {
+      const mid = Math.sqrt(low * high);
+      if (pollsAt(mid) * opts.callsPerPoll > ceiling) high = mid;
+      else low = mid;
    }
-   return { stretch: high, projected: projectedAt(high) };
+   return result(low);
 }
 
 /**
@@ -802,8 +915,9 @@ export class InstagramMonitorStore {
     * auto-stop threshold AND consecutive_hard_failures below the deterministic-
     * failure auto-pause threshold AND (never polled OR enough time has elapsed).
     * Each account's interval is its LEARNED cadence (`poll_interval_ms`) — or
-    * `defaultIntervalMs` when not yet learned — scaled by the global budget-governor
-    * `poll_stretch`, with exponential backoff on `consecutive_failures` and
+    * `defaultIntervalMs` when not yet learned — placed by the square-root budget
+    * allocator (`poll_alloc_scale`, see {@link effectiveBaseIntervalMs}), with
+    * exponential backoff on `consecutive_failures` and
     * per-account jitter on top. Ordered oldest-first so naturally-staggered polls
     * don't burst.
     */
@@ -812,7 +926,7 @@ export class InstagramMonitorStore {
       defaultIntervalMs: number,
       limit: number,
    ): MonitoredAccount[] {
-      const stretch = this.getRuntime().poll_stretch ?? 1;
+      const scale = this.getRuntime().poll_alloc_scale;
       const rows = this.db
          .prepare(
             `SELECT * FROM instagram_monitor_accounts
@@ -824,7 +938,7 @@ export class InstagramMonitorStore {
          .all(AUTH_PAUSE_THRESHOLD, HARD_PAUSE_THRESHOLD) as MonitoredAccount[];
       const out: MonitoredAccount[] = [];
       for (const r of rows) {
-         const base = effectiveBaseIntervalMs(r, defaultIntervalMs, stretch);
+         const base = effectiveBaseIntervalMs(r, defaultIntervalMs, scale);
          // Backoff cap is max(MAX_BACKOFF, base) so a base interval above the 6h
          // backoff ceiling isn't silently capped — now that the cadence ceiling is
          // 12h (> MAX_BACKOFF), this guard binds for rare accounts: a 12h-cadence
@@ -1086,53 +1200,49 @@ export class InstagramMonitorStore {
    }
 
    /**
-    * Recompute and persist ONLY the budget-governor {@link RuntimeState.poll_stretch}
-    * from the CURRENT cached per-account intervals — no per-account cadence
-    * recompute, no IG calls, no transaction. Cheap enough to run on every
-    * scheduler tick.
+    * Recompute and persist ONLY the budget-governor allocation
+    * ({@link RuntimeState.poll_alloc_scale} + the informational
+    * {@link RuntimeState.poll_stretch}) from the CURRENT cached per-account
+    * intervals — no per-account cadence recompute, no IG calls, no transaction.
+    * Cheap enough to run on every scheduler tick.
     *
     * Split out from {@link recomputeAllCadence} (2026-06-02). Previously the
-    * stretch was refreshed ONLY in the 24h-gated cadence sweep, yet per-account
+    * governor was refreshed ONLY in the 24h-gated cadence sweep, yet per-account
     * intervals shrink continuously between sweeps — active accounts tighten as
     * they post (the opportunistic {@link recomputeCadence} in the scheduler's
     * `processAccount`). The daily snapshot, locked to whatever wall-clock hour
     * the bot last restarted, went stale within hours and let realized spend climb
-    * past the headroom target to the hard budget cap: e.g. a ~noon sweep solved
-    * stretch≈2.09 for projected=90, but by the afternoon/evening posting surge the
-    * live-correct stretch was ≈2.67 and realized hit 120/120. Recomputing the
-    * stretch every tick from the latest cached intervals tracks the intra-day
-    * activity cycle and keeps realized near the headroom ceiling.
+    * past the headroom target to the hard budget cap (2026-06-02: a ~noon sweep
+    * solved for projected=90, the afternoon surge then drove realized to
+    * 120/120). Recomputing every tick tracks the intra-day activity cycle.
     */
-   recomputeGovernorStretch(opts: {
+   recomputeGovernorAllocation(opts: {
       callsPerPoll: number;
       dailyRequestBudget: number;
       defaultIntervalMs: number;
       quietWindowMs: number;
       tickMs: number;
       headroom?: number;
-   }): { stretch: number; projected: number } {
+   }): { scale: number | null; stretch: number; projected: number } {
       const headroom = opts.headroom ?? CADENCE_BUDGET_HEADROOM;
-      const { stretch, projected } = computeGovernorStretch(
-         this.listAccounts(),
-         {
-            callsPerPoll: opts.callsPerPoll,
-            dailyRequestBudget: opts.dailyRequestBudget,
-            defaultIntervalMs: opts.defaultIntervalMs,
-            quietWindowMs: opts.quietWindowMs,
-            tickMs: opts.tickMs,
-            headroom,
-         },
-      );
-      this.writePollStretch(stretch);
-      return { stretch, projected };
+      const r = computeGovernorAllocation(this.listAccounts(), {
+         callsPerPoll: opts.callsPerPoll,
+         dailyRequestBudget: opts.dailyRequestBudget,
+         defaultIntervalMs: opts.defaultIntervalMs,
+         quietWindowMs: opts.quietWindowMs,
+         tickMs: opts.tickMs,
+         headroom,
+      });
+      this.writeGovernorAllocation(r.scale, r.stretch);
+      return r;
    }
 
    /**
     * Daily sweep: recompute cadence for every account whose estimate is stale
     * (NULL or older than {@link CADENCE_TTL_MS}), then recompute and persist the
-    * global budget-governor {@link RuntimeState.poll_stretch}. One transaction.
-    * Returns a small summary for logging. (The stretch is ALSO refreshed every
-    * tick via {@link recomputeGovernorStretch}; this just keeps the two in sync
+    * global budget-governor allocation. One transaction.
+    * Returns a small summary for logging. (The allocation is ALSO refreshed every
+    * tick via {@link recomputeGovernorAllocation}; this just keeps the two in sync
     * right after the heavier per-account cadence recompute.)
     */
    recomputeAllCadence(
@@ -1145,7 +1255,12 @@ export class InstagramMonitorStore {
          tickMs: number;
          headroom?: number;
       },
-   ): { swept: number; stretch: number; projected: number } {
+   ): {
+      swept: number;
+      scale: number | null;
+      stretch: number;
+      projected: number;
+   } {
       return this.db.transaction(() => {
          let swept = 0;
          for (const a of this.listAccounts()) {
@@ -1157,8 +1272,7 @@ export class InstagramMonitorStore {
                swept++;
             }
          }
-         const { stretch, projected } = this.recomputeGovernorStretch(opts);
-         return { swept, stretch, projected };
+         return { swept, ...this.recomputeGovernorAllocation(opts) };
       })();
    }
 
@@ -1184,6 +1298,8 @@ export class InstagramMonitorStore {
             heartbeat_at: null,
             poll_stretch: 1,
             last_digest_at: null,
+            poll_alloc_scale: null,
+            request_window_json: null,
          }
       );
    }
@@ -1286,13 +1402,41 @@ export class InstagramMonitorStore {
          );
    }
 
-   /** Persist the budget-governor stretch multiplier (read by {@link dueAccounts}). */
-   writePollStretch(stretch: number): void {
+   /** Persist the governor's allocation scale (read by {@link dueAccounts})
+    * and the informational aggregate stretch. */
+   writeGovernorAllocation(scale: number | null, stretch: number): void {
       this.db
          .prepare(
-            `UPDATE instagram_monitor_runtime SET poll_stretch = ? WHERE id = 1`,
+            `UPDATE instagram_monitor_runtime
+         SET poll_alloc_scale = ?, poll_stretch = ?
+         WHERE id = 1`,
          )
-         .run(stretch);
+         .run(scale, stretch);
+   }
+
+   /** Rolling-24h request/poll timestamps persisted by the scheduler (v10).
+    * Unparseable or missing → empty windows. */
+   readRequestWindow(): { requests: number[]; polls: number[] } {
+      const raw = this.getRuntime().request_window_json;
+      const nums = (v: unknown): number[] =>
+         Array.isArray(v)
+            ? v.filter((n): n is number => typeof n === "number")
+            : [];
+      if (!raw) return { requests: [], polls: [] };
+      try {
+         const o = JSON.parse(raw) as { requests?: unknown; polls?: unknown };
+         return { requests: nums(o.requests), polls: nums(o.polls) };
+      } catch {
+         return { requests: [], polls: [] };
+      }
+   }
+
+   writeRequestWindow(w: { requests: number[]; polls: number[] }): void {
+      this.db
+         .prepare(
+            `UPDATE instagram_monitor_runtime SET request_window_json = ? WHERE id = 1`,
+         )
+         .run(JSON.stringify(w));
    }
 
    /** Stamp the last-posted time of the daily status digest (once-per-day gate). */

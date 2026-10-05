@@ -90,6 +90,14 @@ export interface AskInput {
    channelTranscript?: string;
    /** Classifier-only bounded retry for HTTP 200 with no choices. */
    retryNoChoicesOnce?: boolean;
+   /**
+    * DeepSeek JSON Output (`response_format: {type: 'json_object'}`): the API
+    * guarantees the reply is one valid JSON object. The prompt must contain the
+    * word "json" and show the expected shape (DeepSeek's documented
+    * requirement). Single-shot callers only — the IG classifier; a tool loop's
+    * prose turns must not be forced into JSON.
+    */
+   responseFormat?: "json_object";
    messages: Turn[];
    tools: ComposedTools;
    /** Thinking tier. Defaults to `'high'`. See {@link Effort}. */
@@ -320,6 +328,7 @@ async function askDeepSeek({
    systemTail,
    channelTranscript,
    retryNoChoicesOnce = false,
+   responseFormat,
    messages,
    tools,
    effort = "high",
@@ -405,6 +414,9 @@ async function askDeepSeek({
                            ? (openAiTools as never)
                            : undefined,
                      max_tokens: textBackend.maxOutputTokens,
+                     ...(responseFormat
+                        ? { response_format: { type: responseFormat } }
+                        : {}),
                      ...thinking,
                   } as never),
                ),

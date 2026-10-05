@@ -258,6 +258,8 @@ export interface BrowserFetcherOptions {
  * idle bot does not hold ~200 MB of renderer processes.
  */
 export class BrowserInstagramFetcher implements InstagramFetcher {
+   /** Every browser poll is charged a flat {@link BROWSER_REQUESTS_PER_POLL}. */
+   readonly requestsPerPoll = BROWSER_REQUESTS_PER_POLL;
    private readonly auth: InstagramAuth | null;
    private readonly userAgent: string | undefined;
    private readonly executablePath: string | null;

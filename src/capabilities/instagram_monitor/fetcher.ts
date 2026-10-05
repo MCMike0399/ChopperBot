@@ -35,6 +35,14 @@ export interface InstagramFetcher {
     * 24h request count for the daily-budget guardrail. Safe to leave unset.
     */
    observeRequests?(cb: () => void): void;
+   /**
+    * Optional: the fixed budget cost of one poll, when the fetcher knows it
+    * exactly (the browser path charges a flat {@link BROWSER_REQUESTS_PER_POLL}).
+    * The scheduler then feeds the governor this instead of a measured
+    * requests÷polls ratio — the measurement needs 20 polls of uptime and fell
+    * back to a stale 1.7 after every restart, under-projecting the real 2.0.
+    */
+   readonly requestsPerPoll?: number;
 }
 
 /** Logged-in Instagram session cookies. When present, direct fetches use them

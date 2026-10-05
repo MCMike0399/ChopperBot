@@ -5,13 +5,17 @@ import {
    INSTAGRAM_MONITOR_MIGRATIONS,
    pollJitterMs,
    computeCadenceInterval,
-   computeGovernorStretch,
+   computeGovernorAllocation,
+   allocationBounds,
    expectedPollsPerDay,
    effectiveBaseIntervalMs,
    nextDueAtMs,
    CADENCE_MIN_INTERVAL_MS,
    CADENCE_MAX_INTERVAL_MS,
+   CADENCE_COLD_START_INTERVAL_MS,
+   CADENCE_DECAY_MAX_MULT,
    CADENCE_INTERVAL_FACTOR,
+   OVERFLOW_QUIET_ALLOWANCE_MS,
    HARD_PAUSE_THRESHOLD,
    POLL_JITTER_FRACTION,
    type MonitoredAccount,
@@ -352,13 +356,20 @@ describe("adaptive cadence — computeCadenceInterval", () => {
       );
    });
 
-   test("recency decay stretches a quieted account toward MAX", () => {
+   test("recency decay stretches a quieted account up to the decay cap", () => {
       const newest = 2_000_000_000_000;
       const ts = gapSeries(newest, 14, 6 * HOUR);
-      // Evaluate 5 days after the last post (silence ≫ median gap).
+      // Evaluate 5 days after the last post (silence ≫ median gap): 6h × 0.5 ×
+      // DECAY_MAX_MULT (4) = 12h — under the 24h ceiling since v10.
       expect(computeCadenceInterval(ts, newest + 5 * DAY).intervalMs).toBe(
-         CADENCE_MAX_INTERVAL_MS,
+         6 * HOUR * CADENCE_INTERVAL_FACTOR * CADENCE_DECAY_MAX_MULT,
       );
+   });
+
+   test("a once-every-two-days account may now go past 12h (24h ceiling)", () => {
+      const newest = 2_000_000_000_000;
+      const ts = gapSeries(newest, 8, 40 * HOUR); // median gap 40h → wants 20h
+      expect(computeCadenceInterval(ts, newest).intervalMs).toBe(20 * HOUR);
    });
 
    test("a rare cadence between 6h and the 12h ceiling is honored, not clamped", () => {
@@ -377,38 +388,79 @@ describe("adaptive cadence — computeCadenceInterval", () => {
    });
 });
 
-describe("adaptive cadence — effectiveBaseIntervalMs / nextDueAtMs", () => {
-   test("effective interval applies default + stretch, clamped to MAX", () => {
+describe("square-root allocator — allocationBounds / effectiveBaseIntervalMs / nextDueAtMs", () => {
+   const learned = (iv: number, ppd: number | null = null) => ({
+      poll_interval_ms: iv,
+      posts_per_day: ppd,
+   });
+
+   test("null scale = unconstrained → the natural interval (default for cold start)", () => {
       expect(
-         effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 1),
+         effectiveBaseIntervalMs(
+            { poll_interval_ms: null, posts_per_day: null },
+            60 * 60_000,
+            null,
+         ),
       ).toBe(60 * 60_000);
+      expect(effectiveBaseIntervalMs(learned(3 * HOUR), HOUR, null)).toBe(
+         3 * HOUR,
+      );
+      // non-finite / non-positive scales are treated as unconstrained too
+      expect(effectiveBaseIntervalMs(learned(2 * HOUR), HOUR, 0)).toBe(
+         2 * HOUR,
+      );
+      expect(effectiveBaseIntervalMs(learned(2 * HOUR), HOUR, NaN)).toBe(
+         2 * HOUR,
+      );
+   });
+
+   test("interval = DAY / (scale × √natural-polls), clamped to [natural, max]", () => {
+      // natural 3h → 8 polls/day → weight √8. scale √2 → DAY/(√2·√8) = 6h.
       expect(
-         effectiveBaseIntervalMs({ poll_interval_ms: null }, 60 * 60_000, 2),
-      ).toBe(120 * 60_000);
-      // 3h × 3 = 9h is under the 12h ceiling → not clamped.
+         effectiveBaseIntervalMs(learned(3 * HOUR), HOUR, Math.SQRT2),
+      ).toBeCloseTo(6 * HOUR, 0);
+      // a huge scale never polls faster than the account's own cadence
+      expect(effectiveBaseIntervalMs(learned(3 * HOUR), HOUR, 1e9)).toBe(
+         3 * HOUR,
+      );
+      // a tiny scale stops at the 24h ceiling (no posts/day → no overflow cap)
+      expect(effectiveBaseIntervalMs(learned(3 * HOUR), HOUR, 1e-9)).toBe(
+         CADENCE_MAX_INTERVAL_MS,
+      );
+   });
+
+   test("one scale spreads polls by √rate, not linearly", () => {
+      // natural 1h (24/day) vs 16h (1.5/day): rates differ 16×, intervals only 4×.
+      // At scale 1 neither clamps: 4.9h (≥ 1h) and 19.6h (within [16h, 24h]).
+      const s = 1;
+      const fast = effectiveBaseIntervalMs(learned(HOUR), HOUR, s);
+      const slow = effectiveBaseIntervalMs(learned(16 * HOUR), HOUR, s);
+      expect(slow / fast).toBeCloseTo(4, 6);
+   });
+
+   test("overflow cap: a busy account never waits long enough to outrun the window", () => {
+      // 12 posts/day → 6 posts take 12h, minus the 7h quiet window → 5h max.
+      const b = allocationBounds(learned(HOUR, 12), HOUR);
+      expect(b.minMs).toBe(HOUR);
+      expect(b.maxMs).toBeCloseTo(12 * HOUR - OVERFLOW_QUIET_ALLOWANCE_MS, 0);
       expect(
-         effectiveBaseIntervalMs(
-            { poll_interval_ms: 3 * HOUR },
-            60 * 60_000,
-            3,
-         ),
-      ).toBe(9 * HOUR);
-      // 3h × 5 = 15h exceeds the ceiling → clamped to MAX.
+         effectiveBaseIntervalMs(learned(HOUR, 12), HOUR, 1e-9),
+      ).toBeCloseTo(5 * HOUR, 0);
+      // the cap can't push max below the natural interval
+      expect(allocationBounds(learned(10 * HOUR, 50), HOUR).maxMs).toBe(
+         10 * HOUR,
+      );
+   });
+
+   test("cold-start accounts are pinned at their default, never stretched", () => {
+      const cold = { poll_interval_ms: null, posts_per_day: null };
+      expect(allocationBounds(cold, CADENCE_COLD_START_INTERVAL_MS)).toEqual({
+         minMs: CADENCE_COLD_START_INTERVAL_MS,
+         maxMs: CADENCE_COLD_START_INTERVAL_MS,
+      });
       expect(
-         effectiveBaseIntervalMs(
-            { poll_interval_ms: 3 * HOUR },
-            60 * 60_000,
-            5,
-         ),
-      ).toBe(CADENCE_MAX_INTERVAL_MS);
-      // invalid stretch falls back to 1
-      expect(
-         effectiveBaseIntervalMs(
-            { poll_interval_ms: 2 * HOUR },
-            60 * 60_000,
-            0,
-         ),
-      ).toBe(2 * HOUR);
+         effectiveBaseIntervalMs(cold, CADENCE_COLD_START_INTERVAL_MS, 1e-9),
+      ).toBe(CADENCE_COLD_START_INTERVAL_MS);
    });
 
    test("nextDueAtMs mirrors the due formula without jitter; null when never polled", () => {
@@ -416,16 +468,24 @@ describe("adaptive cadence — effectiveBaseIntervalMs / nextDueAtMs", () => {
          nextDueAtMs(
             acct({ poll_interval_ms: 2 * HOUR, last_polled_at: null }),
             60 * 60_000,
-            1,
+            null,
          ),
       ).toBeNull();
       expect(
          nextDueAtMs(
             acct({ poll_interval_ms: 2 * HOUR, last_polled_at: 1_000_000 }),
             60 * 60_000,
-            1,
+            null,
          ),
       ).toBe(1_000_000 + 2 * HOUR);
+      // natural 2h → weight √12; scale √3 → DAY/(√3·√12) = 4h
+      expect(
+         nextDueAtMs(
+            acct({ poll_interval_ms: 2 * HOUR, last_polled_at: 1_000_000 }),
+            60 * 60_000,
+            Math.sqrt(3),
+         ),
+      ).toBeCloseTo(1_000_000 + 4 * HOUR, 0);
    });
 });
 
@@ -580,82 +640,111 @@ describe("adaptive cadence — expectedPollsPerDay", () => {
    });
 });
 
-describe("adaptive cadence — budget governor", () => {
-   test("stretch keeps projected at/under the headroom ceiling; preserves ratio", () => {
-      const accounts = [
-         acct({ poll_interval_ms: HOUR }),
-         acct({ poll_interval_ms: HOUR }),
-      ];
-      const { stretch, projected } = computeGovernorStretch(accounts, {
-         callsPerPoll: 1,
-         dailyRequestBudget: 10,
-         defaultIntervalMs: HOUR,
-         quietWindowMs: 0,
-         tickMs: 0,
-         headroom: 1,
-      });
-      // No account clamps at this stretch (1h × 4.8 = 4.8h < 12h MAX), so the
-      // clamp-aware solve matches the old closed form: stretch = 48/10 = 4.8, and
-      // `projected` is now the REALIZED spend at that stretch == the ceiling.
-      expect(stretch).toBeCloseTo(4.8, 5);
-      expect(projected).toBeCloseTo(10, 5);
-   });
-
-   test("clamp-aware: realized spend respects the ceiling when accounts pin at MAX", () => {
-      // 2 fast (1h) + 4 pinned at the 12h ceiling. The pinned accounts contribute a
-      // FIXED rate the stretch can't reduce, so the old `projected/ceiling` closed
-      // form under-corrected (stretch 56/20 = 2.8 → realized ~25 > 20). The
-      // clamp-aware solve pushes stretch until realized actually meets the ceiling.
-      const accounts = [
-         acct({ poll_interval_ms: HOUR }),
-         acct({ poll_interval_ms: HOUR }),
-         ...Array.from({ length: 4 }, () =>
-            acct({ poll_interval_ms: CADENCE_MAX_INTERVAL_MS }),
-         ),
-      ];
-      const { stretch, projected } = computeGovernorStretch(accounts, {
-         callsPerPoll: 1,
-         dailyRequestBudget: 20,
-         defaultIntervalMs: HOUR,
-         quietWindowMs: 0,
-         tickMs: 0,
-         headroom: 1,
-      });
-      // Independently recompute realized spend with the same clamp the scheduler applies.
-      const realized = accounts.reduce(
-         (s, a) =>
-            s +
-            DAY /
-               Math.min(
-                  (a.poll_interval_ms as number) * stretch,
-                  CADENCE_MAX_INTERVAL_MS,
-               ),
+describe("adaptive cadence — budget governor (square-root allocation)", () => {
+   const raw = {
+      callsPerPoll: 1,
+      defaultIntervalMs: HOUR,
+      quietWindowMs: 0,
+      tickMs: 0,
+      headroom: 1,
+   };
+   const pollsPerDay = (accounts: MonitoredAccount[], scale: number | null) =>
+      accounts.reduce(
+         (s, a) => s + DAY / effectiveBaseIntervalMs(a, HOUR, scale),
          0,
       );
-      expect(realized).toBeLessThanOrEqual(20 + 1e-6);
-      expect(projected).toBeCloseTo(realized, 4);
-      expect(projected).toBeCloseTo(20, 4); // solved to the ceiling, not under it
-      expect(stretch).toBeGreaterThan(2.8); // strictly more than the clamp-blind value
-      expect(stretch).toBeCloseTo(4, 4); // 48/s + 8 = 20 → s = 4
+
+   test("not binding → scale null (natural cadence), stretch 1", () => {
+      const accounts = [acct({ poll_interval_ms: 6 * HOUR })];
+      const r = computeGovernorAllocation(accounts, {
+         ...raw,
+         dailyRequestBudget: 100,
+      });
+      expect(r.scale).toBeNull();
+      expect(r.stretch).toBe(1);
+      expect(r.projected).toBeCloseTo(4, 6);
    });
 
-   test("clamp-aware: caps stretch at the all-pinned point when the ceiling is unreachable", () => {
-      // 10 fast accounts, a tiny budget: even with every interval clamped to MAX the
-      // floor (10 × DAY/12h = 20) exceeds the ceiling (2). Stretch maxes out where
-      // the fastest account first hits MAX (12h/1h = 12); going further is a no-op.
-      const accounts = Array.from({ length: 10 }, () =>
+   test("binding → projection solved to the ceiling; symmetric accounts share evenly", () => {
+      const accounts = [
          acct({ poll_interval_ms: HOUR }),
-      );
-      const { stretch, projected } = computeGovernorStretch(accounts, {
-         callsPerPoll: 1,
-         dailyRequestBudget: 2,
-         defaultIntervalMs: HOUR,
-         quietWindowMs: 0,
-         tickMs: 0,
-         headroom: 1,
+         acct({ poll_interval_ms: HOUR }),
+      ];
+      const r = computeGovernorAllocation(accounts, {
+         ...raw,
+         dailyRequestBudget: 10,
       });
-      expect(stretch).toBeCloseTo(12, 4);
-      expect(projected).toBeCloseTo(20, 4); // all clamped to 12h → 10 × 2
+      expect(r.projected).toBeCloseTo(10, 4);
+      expect(r.stretch).toBeCloseTo(4.8, 3); // 48 natural polls → 10
+      expect(effectiveBaseIntervalMs(accounts[0], HOUR, r.scale)).toBeCloseTo(
+         4.8 * HOUR,
+         -3,
+      );
+   });
+
+   test("allocates polls ∝ √rate: a 4× busier account gets 2× the polls", () => {
+      // natural 1h (24/day) and 4h (6/day), budget 9 → 6 + 3 polls/day.
+      const accounts = [
+         acct({ poll_interval_ms: HOUR }),
+         acct({ poll_interval_ms: 4 * HOUR }),
+      ];
+      const r = computeGovernorAllocation(accounts, {
+         ...raw,
+         dailyRequestBudget: 9,
+      });
+      expect(r.projected).toBeCloseTo(9, 4);
+      expect(effectiveBaseIntervalMs(accounts[0], HOUR, r.scale)).toBeCloseTo(
+         4 * HOUR,
+         -3,
+      );
+      expect(effectiveBaseIntervalMs(accounts[1], HOUR, r.scale)).toBeCloseTo(
+         8 * HOUR,
+         -3,
+      );
+   });
+
+   test("the live failure mode: many accounts, a tight budget — busy ones still poll faster", () => {
+      // Mirrors 2026-10-04: 21 accounts, ~34 polls/day. The old multiplier pinned
+      // every account at the ceiling; the allocator keeps the spread.
+      const accounts = [
+         acct({ poll_interval_ms: 45 * 60_000, posts_per_day: 9 }),
+         acct({ poll_interval_ms: HOUR, posts_per_day: 8 }),
+         ...Array.from({ length: 19 }, () =>
+            acct({ poll_interval_ms: 10 * HOUR, posts_per_day: 0.6 }),
+         ),
+      ];
+      const r = computeGovernorAllocation(accounts, {
+         ...raw,
+         dailyRequestBudget: 34,
+      });
+      expect(r.projected).toBeLessThanOrEqual(34 + 1e-6);
+      expect(r.projected).toBeCloseTo(34, 2);
+      const busy = effectiveBaseIntervalMs(accounts[0], HOUR, r.scale);
+      const rare = effectiveBaseIntervalMs(accounts[2], HOUR, r.scale);
+      expect(busy).toBeLessThan(8 * HOUR);
+      expect(rare).toBeGreaterThan(12 * HOUR);
+      expect(rare).toBeLessThanOrEqual(CADENCE_MAX_INTERVAL_MS);
+   });
+
+   test("unreachable ceiling → everyone at their slowest bound; overflow caps still hold", () => {
+      const accounts = [
+         ...Array.from({ length: 10 }, () => acct({ poll_interval_ms: HOUR })),
+         acct({ poll_interval_ms: HOUR, posts_per_day: 12 }), // capped at 5h
+      ];
+      const r = computeGovernorAllocation(accounts, {
+         ...raw,
+         dailyRequestBudget: 2,
+      });
+      expect(r.scale).not.toBeNull();
+      expect(effectiveBaseIntervalMs(accounts[0], HOUR, r.scale)).toBeCloseTo(
+         CADENCE_MAX_INTERVAL_MS,
+         -3,
+      );
+      expect(effectiveBaseIntervalMs(accounts[10], HOUR, r.scale)).toBeCloseTo(
+         5 * HOUR,
+         -3,
+      );
+      expect(r.projected).toBeCloseTo(pollsPerDay(accounts, r.scale), 4);
    });
 
    test("disabled when budget ≤ 0; excludes paused / auth-blocked / hard-auto-paused", () => {
@@ -667,31 +756,21 @@ describe("adaptive cadence — budget governor", () => {
             consecutive_hard_failures: HARD_PAUSE_THRESHOLD,
          }),
       ];
+      const off = computeGovernorAllocation(accounts, {
+         ...raw,
+         dailyRequestBudget: 0,
+      });
+      expect(off.scale).toBeNull();
+      expect(off.stretch).toBe(1);
       expect(
-         computeGovernorStretch(accounts, {
-            callsPerPoll: 1,
-            dailyRequestBudget: 0,
-            defaultIntervalMs: HOUR,
-            quietWindowMs: 0,
-            tickMs: 0,
-            headroom: 1,
-         }).stretch,
-      ).toBe(1);
-      expect(
-         computeGovernorStretch(accounts, {
-            callsPerPoll: 1,
-            dailyRequestBudget: 10,
-            defaultIntervalMs: HOUR,
-            quietWindowMs: 0,
-            tickMs: 0,
-            headroom: 1,
-         }).projected,
+         computeGovernorAllocation(accounts, { ...raw, dailyRequestBudget: 10 })
+            .projected,
       ).toBe(0);
    });
 });
 
 describe("adaptive cadence — store integration", () => {
-   test("v6/v7 columns default correctly (null cadence, stretch 1) + roundtrip", async () => {
+   test("v6/v7/v10 columns default correctly (null cadence, stretch 1, no scale) + roundtrip", async () => {
       const { store, mem } = await newStore();
       store.upsertAccount({ username: "foo", added_by: "U" });
       const a = store.getAccount("foo")!;
@@ -700,11 +779,54 @@ describe("adaptive cadence — store integration", () => {
       expect(a.cadence_updated_at).toBeNull();
       const rt = store.getRuntime();
       expect(rt.poll_stretch).toBe(1);
+      expect(rt.poll_alloc_scale).toBeNull();
       expect(rt.last_digest_at).toBeNull();
-      store.writePollStretch(2.5);
+      store.writeGovernorAllocation(0.25, 2.5);
       store.writeLastDigestAt(999);
       expect(store.getRuntime().poll_stretch).toBe(2.5);
+      expect(store.getRuntime().poll_alloc_scale).toBe(0.25);
       expect(store.getRuntime().last_digest_at).toBe(999);
+      store.writeGovernorAllocation(null, 1);
+      expect(store.getRuntime().poll_alloc_scale).toBeNull();
+      mem.close();
+   });
+
+   test("v10 request window survives a store round-trip; garbage reads as empty", async () => {
+      const { store, mem } = await newStore();
+      expect(store.readRequestWindow()).toEqual({ requests: [], polls: [] });
+      store.writeRequestWindow({ requests: [1, 2, 3], polls: [2] });
+      expect(store.readRequestWindow()).toEqual({
+         requests: [1, 2, 3],
+         polls: [2],
+      });
+      mem.db()
+         .prepare(
+            "UPDATE instagram_monitor_runtime SET request_window_json = 'nope' WHERE id = 1",
+         )
+         .run();
+      expect(store.readRequestWindow()).toEqual({ requests: [], polls: [] });
+      mem.close();
+   });
+
+   test("dueAccounts honours the persisted allocation scale", async () => {
+      const { store, mem } = await newStore();
+      const r = store.upsertAccount({ username: "busy", added_by: "U" });
+      const now = 1_000_000_000;
+      mem.db()
+         .prepare(
+            "UPDATE instagram_monitor_accounts SET poll_interval_ms = ? WHERE id = ?",
+         )
+         .run(2 * HOUR, r.account.id);
+      // Natural 2h + max jitter 1.5h = 3.5h, so 4h ago is always due.
+      store.markPollSuccess(r.account.id, now - 4 * HOUR, "A");
+      expect(store.dueAccounts(now, HOUR, 10).map((a) => a.username)).toEqual([
+         "busy",
+      ]);
+      // Scale √3 → 4h interval: 4h elapsed < 4h + jitter → not due yet.
+      store.writeGovernorAllocation(Math.sqrt(3), 2);
+      for (let i = 0; i < 20; i++) {
+         expect(store.dueAccounts(now - 1, HOUR, 10)).toEqual([]);
+      }
       mem.close();
    });
 
@@ -784,13 +906,15 @@ describe("adaptive cadence — store integration", () => {
       });
       expect(res.swept).toBe(1);
       expect(store.getAccount("foo")!.poll_interval_ms).toBe(3 * HOUR);
-      // one 3h-interval account ≈ 9 calls/day ≪ 96 ceiling → no stretch
+      // one 3h-interval account ≈ 9 calls/day ≪ the ceiling → unconstrained
       expect(res.stretch).toBe(1);
+      expect(res.scale).toBeNull();
       expect(store.getRuntime().poll_stretch).toBe(1);
+      expect(store.getRuntime().poll_alloc_scale).toBeNull();
       mem.close();
    });
 
-   test("recomputeGovernorStretch tracks CURRENT cached intervals without a cadence sweep", async () => {
+   test("recomputeGovernorAllocation tracks CURRENT cached intervals without a cadence sweep", async () => {
       const { store, mem } = await newStore();
       // Many short-interval (active) accounts so the projection blows past the
       // ceiling and the governor must stretch > 1.
@@ -811,10 +935,12 @@ describe("adaptive cadence — store integration", () => {
          quietWindowMs: 5 * HOUR,
          tickMs: 60_000,
       };
-      // No recomputeAllCadence / no sweep — just the cheap stretch recompute.
-      const first = store.recomputeGovernorStretch(opts);
+      // No recomputeAllCadence / no sweep — just the cheap allocation recompute.
+      const first = store.recomputeGovernorAllocation(opts);
       expect(first.stretch).toBeGreaterThan(1);
+      expect(first.scale).not.toBeNull();
       expect(store.getRuntime().poll_stretch).toBe(first.stretch);
+      expect(store.getRuntime().poll_alloc_scale).toBe(first.scale);
       // Now mimic the intra-day drift: active accounts tighten (more would clamp at
       // the floor → already there) AND a couple more accounts turn active. The
       // stretch must RISE off the latest cached intervals, with no sweep in between.
@@ -829,8 +955,9 @@ describe("adaptive cadence — store integration", () => {
             )
             .run(45 * 60_000, r.account.id);
       }
-      const second = store.recomputeGovernorStretch(opts);
+      const second = store.recomputeGovernorAllocation(opts);
       expect(second.stretch).toBeGreaterThan(first.stretch);
+      expect(second.scale!).toBeLessThan(first.scale!);
       expect(store.getRuntime().poll_stretch).toBe(second.stretch);
       mem.close();
    });

@@ -109,7 +109,7 @@ describe("parseClassificationReply", () => {
    });
 });
 
-describe("classifyPost — ONE multimodal call (v4.1)", () => {
+describe("classifyPost — ONE multimodal call, JSON mode", () => {
    const post: RecentPost = {
       igPostId: "123",
       shortcode: "ABC",
@@ -145,7 +145,7 @@ describe("classifyPost — ONE multimodal call (v4.1)", () => {
       };
       expect(arg.effort).toBe("low");
       expect(arg.messages[0].attachments).toBeUndefined();
-      expect(arg.messages[0].content).not.toContain("adjunta como imagen");
+      expect(arg.messages[0].content).not.toContain("adjunta");
       expect(out.relevant).toBe(true);
    });
 
@@ -153,8 +153,8 @@ describe("classifyPost — ONE multimodal call (v4.1)", () => {
       askMock.mockResolvedValueOnce(goodReply);
       const out = await classifyPost("acc", post, { cover, nowMs: Date.now() });
 
-      // The old flow made TWO calls here (Nova transcribed, then the text brain
-      // decided). One multimodal call is the whole point of the migration.
+      // The pre-v4.1 flow made TWO calls here (a vision model transcribed, a text
+      // model decided). One multimodal call is the whole point.
       expect(askMock).toHaveBeenCalledTimes(1);
       const arg = askMock.mock.calls[0][0] as {
          effort: string;
@@ -171,8 +171,52 @@ describe("classifyPost — ONE multimodal call (v4.1)", () => {
       });
       // The caption still rides along — the flyer and the caption are read together.
       expect(arg.messages[0].content).toContain("Convocatoria");
-      expect(arg.messages[0].content).toContain("adjunta como imagen");
+      expect(arg.messages[0].content).toContain(
+         "La imagen del post va adjunta",
+      );
       expect(out.relevant).toBe(true);
+   });
+
+   test("carousel slides ride the SAME call, cover first, in display order", async () => {
+      askMock.mockResolvedValueOnce(goodReply);
+      const slide = (n: number) => ({
+         bytes: new Uint8Array([n]),
+         mimeType: "image/png",
+         format: "png" as const,
+      });
+      await classifyPost(
+         "acc",
+         { ...post, mediaType: "carousel" },
+         { cover, slides: [slide(2), slide(3)], nowMs: Date.now() },
+      );
+      expect(askMock).toHaveBeenCalledTimes(1);
+      const arg = askMock.mock.calls[0][0] as {
+         messages: Array<{
+            attachments?: Array<{ fileName: string; format: string }>;
+            content: string;
+         }>;
+      };
+      const atts = arg.messages[0].attachments!;
+      expect(atts.map((a) => a.format)).toEqual(["jpeg", "png", "png"]);
+      expect(atts.map((a) => a.fileName)).toEqual([
+         "post-ABC-1.jpg",
+         "post-ABC-2.png",
+         "post-ABC-3.png",
+      ]);
+      expect(arg.messages[0].content).toContain("Van adjuntas 3 imágenes");
+   });
+
+   test("asks the API for JSON output (response_format json_object)", async () => {
+      askMock.mockResolvedValueOnce(goodReply);
+      await classifyPost("acc", post, { nowMs: Date.now() });
+      const arg = askMock.mock.calls[0][0] as {
+         responseFormat?: string;
+         system: string;
+      };
+      expect(arg.responseFormat).toBe("json_object");
+      // DeepSeek's JSON mode requires the prompt to say "json" and show the shape.
+      expect(arg.system.toLowerCase()).toContain("json");
+      expect(arg.system).toContain('"relevant": true|false');
    });
 
    test("a failed classification call is non-fatal but marks the post undecided", async () => {

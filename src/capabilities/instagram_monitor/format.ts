@@ -186,6 +186,7 @@ export function formatStatusDigest(input: StatusDigestInput): string[] {
       Number.isFinite(runtime.poll_stretch) && runtime.poll_stretch > 0
          ? runtime.poll_stretch
          : 1;
+   const scale = runtime.poll_alloc_scale ?? null;
 
    const head: string[] = ["📊 **Instagram monitor — resumen diario**"];
    head.push(`Estado: ${describeState(runtime, nowMs)}`);
@@ -203,7 +204,7 @@ export function formatStatusDigest(input: StatusDigestInput): string[] {
    }
    if (stretch > 1.001) {
       head.push(
-         `Ajuste de presupuesto: ×${stretch.toFixed(2)} (intervalos estirados para respetar el presupuesto)`,
+         `Ajuste de presupuesto: ×${stretch.toFixed(2)} (sondeos repartidos según la actividad de cada cuenta para respetar el presupuesto)`,
       );
    }
 
@@ -241,12 +242,12 @@ export function formatStatusDigest(input: StatusDigestInput): string[] {
             a.username,
             cadenceCell(a),
             formatAgeEs(
-               effectiveBaseIntervalMs(a, defaultPollIntervalMs, stretch),
+               effectiveBaseIntervalMs(a, defaultPollIntervalMs, scale),
             ),
             a.last_post_at
                ? formatAgeEs(Math.max(0, nowMs - a.last_post_at))
                : "—",
-            nextCell(a, defaultPollIntervalMs, stretch, nowMs),
+            nextCell(a, defaultPollIntervalMs, scale, nowMs),
             stCell(a),
          ],
          widths,
@@ -310,7 +311,7 @@ function cadenceCell(a: MonitoredAccount): string {
 function nextCell(
    a: MonitoredAccount,
    defaultMs: number,
-   stretch: number,
+   scale: number | null,
    now: number,
 ): string {
    if (
@@ -319,7 +320,7 @@ function nextCell(
       a.consecutive_hard_failures >= HARD_PAUSE_THRESHOLD
    )
       return "—";
-   const nd = nextDueAtMs(a, defaultMs, stretch);
+   const nd = nextDueAtMs(a, defaultMs, scale);
    if (nd === null || nd <= now) return "due";
    return formatAgeEs(nd - now);
 }

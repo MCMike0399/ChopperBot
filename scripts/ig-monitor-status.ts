@@ -26,10 +26,12 @@ interface RuntimeRow {
    requests_24h: number | null;
    heartbeat_at: number | null;
    poll_stretch: number | null;
+   poll_alloc_scale: number | null;
 }
 const rt = db
    .prepare(
-      `SELECT global_stop, stop_reason, requests_24h, heartbeat_at, poll_stretch
+      `SELECT global_stop, stop_reason, requests_24h, heartbeat_at, poll_stretch,
+              poll_alloc_scale
          FROM instagram_monitor_runtime WHERE id = 1`,
    )
    .get() as RuntimeRow | undefined;
@@ -84,9 +86,12 @@ try {
 
 console.log("Instagram monitor — triage\n");
 console.log(`  kill-switch     : ${rt?.global_stop === 1 ? `ENGAGED — ${rt.stop_reason}` : "off"}`);
-console.log(`  requests_24h    : ${rt?.requests_24h ?? "—"}   (resets to 0 on restart — not a liveness signal)`);
+console.log(`  requests_24h    : ${rt?.requests_24h ?? "—"}   (rolling 24h, restored across restarts since v10)`);
 console.log(`  heartbeat       : ${fmt(rt?.heartbeat_at)}  (${ago(rt?.heartbeat_at)}) ← scheduler liveness`);
-console.log(`  poll_stretch    : ${rt?.poll_stretch?.toFixed(2) ?? "—"}`);
+console.log(
+   `  poll_stretch    : ${rt?.poll_stretch?.toFixed(2) ?? "—"}  (aggregate budget pressure; 1 = not binding)`,
+);
+console.log(`  poll_alloc_scale: ${rt?.poll_alloc_scale?.toFixed(4) ?? "— (unconstrained)"}`);
 console.log(
    `  accounts        : ${acct.total} total | ${acct.unseeded ?? 0} unseeded | ${acct.due_now ?? 0} due now | ${acct.paused ?? 0} paused`,
 );

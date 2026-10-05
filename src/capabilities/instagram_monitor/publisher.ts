@@ -77,6 +77,9 @@ export async function publishPost(
    classification: Classification,
    /** Pre-fetched cover image bytes (the same buffer used by the classifier). */
    coverBytes: Uint8Array | null,
+   /** Pre-fetched carousel slides after the cover (the same buffers the
+    * classifier read). When given — even empty — nothing is re-downloaded. */
+   slideBytes?: Uint8Array[],
 ): Promise<PublishResult> {
    const channel = client.channels.cache.get(channelId);
    if (!channel || !channel.isTextBased() || !("send" in channel)) {
@@ -94,8 +97,22 @@ export async function publishPost(
    }
 
    // For carousels, append up to 3 more images so the user can scan the set
-   // without opening Instagram. Skip on oversized fetches.
-   if (
+   // without opening Instagram. Skip oversized ones. The scheduler already
+   // fetched these for the classifier; reuse them instead of a second CDN pass.
+   if (slideBytes) {
+      slideBytes.forEach((bytes, i) => {
+         if (
+            files.length < MAX_CAROUSEL_ATTACHMENTS &&
+            bytes.byteLength <= DISCORD_FILE_LIMIT_BYTES
+         ) {
+            files.push(
+               new AttachmentBuilder(Buffer.from(bytes), {
+                  name: `${post.shortcode}-${i + 2}.jpg`,
+               }),
+            );
+         }
+      });
+   } else if (
       post.mediaType === "carousel" &&
       post.carouselUrls &&
       post.carouselUrls.length > 1

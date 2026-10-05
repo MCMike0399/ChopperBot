@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.7.0 — 2026-10-04
+
+- El monitor de Instagram reparte mejor sus revisiones: las cuentas que publican seguido se revisan más veces y las que publican poco, menos, sin hacer más visitas en total que antes. Las noticias de las cuentas más activas deberían llegar varias horas antes y ya casi no se deberían perder publicaciones cuando una cuenta publica mucho de golpe.
+- Al revisar un carrusel, ChopperBot ahora lee también las siguientes imágenes, no solo la portada. Así encuentra más seguido la fecha y el lugar de un evento cuando vienen en la segunda o tercera imagen.
+- Los reinicios ya no borran la cuenta de cuántas revisiones lleva el día, así que el límite diario se respeta siempre.
+
 ## 2.6.1 — 2026-10-04
 
 - Si se repite un fallo, ChopperBot evita llenar el canal con el mismo mensaje de error (deja solo la ❌).

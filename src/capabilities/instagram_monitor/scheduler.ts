@@ -1,10 +1,13 @@
 import type { Client } from "discord.js";
 import { log } from "../../log.js";
 import {
+   AUTH_PAUSE_THRESHOLD,
    CADENCE_COLD_START_INTERVAL_MS,
    CADENCE_TTL_MS,
    EVENT_WINDOW_MS,
    HARD_PAUSE_THRESHOLD,
+   POLL_JITTER_FRACTION,
+   effectiveBaseIntervalMs,
    type InstagramMonitorStore,
    type MonitoredAccount,
 } from "./store.js";
@@ -16,11 +19,12 @@ import {
    type InstagramFetcher,
    type RecentPost,
 } from "./fetcher.js";
-import { classifyPost, type Classification } from "./classifier.js";
 import {
-   sniffImageFormat,
-   type ImageFormat,
-} from "../../attachments/attachable.js";
+   classifyPost,
+   type Classification,
+   type ClassifierImage,
+} from "./classifier.js";
+import { sniffImageFormat } from "../../attachments/attachable.js";
 import {
    fetchCover as defaultFetchCover,
    publishPost as defaultPublishPost,
@@ -53,6 +57,16 @@ export const UNDECIDED_RETRY_HORIZON_MS = 24 * 60 * 60 * 1000;
 // POLL_JITTER_FRACTION, sized to each account's *adaptive* interval inside
 // dueAccounts (so a 6h-interval account jitters proportionally, not by a global).
 const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
+// Carousel slides fetched beyond the cover for the classifier. Cover + 3 is the
+// same set the publisher re-uploads, so a relevant carousel costs no extra CDN
+// fetches (the bytes are reused for the card); only a non-relevant carousel adds
+// up to three image loads — what a person swiping it would load anyway.
+const MAX_CLASSIFIER_SLIDES = 3;
+// Instagram allows at most 3 pinned posts, which sort below the anchor. When the
+// anchor post is missing and at most this many window posts are older than it,
+// every unpinned post in the window is new — posts between the anchor and the
+// window's oldest were most likely never seen (`window_overflow`).
+const MAX_PINNED_POSTS = 3;
 
 // Quiet hours: skip polling between these wall-clock hours in America/Mexico_City.
 // Real users don't browse IG at 4 AM — a 24/7 cadence is one of the loudest
@@ -60,8 +74,8 @@ const MAX_PUSHES_PER_ACCOUNT_PER_TICK_PER_CHANNEL = 5;
 // product impact (any posts published overnight surface naturally on the
 // 07:00 resume).
 const QUIET_HOURS_TZ = "America/Mexico_City";
-const QUIET_HOURS_START_HOUR = 1;
-const QUIET_HOURS_END_HOUR = 8;
+export const QUIET_HOURS_START_HOUR = 1;
+export const QUIET_HOURS_END_HOUR = 8;
 // Per-day deterministic jitter (± minutes) applied to the quiet-hour
 // boundaries, so the monitor doesn't resume at exactly 07:00 every single day
 // (a perfectly fixed daily edge is itself a weak automation tell). Stable
@@ -95,6 +109,10 @@ export const RATE_LIMIT_TRIP_COUNT = 3;
 // every account is due at once. Catching them up at the normal ~1–3 min tick
 // is a request burst — the same pattern that earned the 2026-09-02 429s.
 // Production enables a drip: 10 min between polls until the fleet is fresh.
+// "Stale" = overdue by more than RESUME_DRIP_STALE_MS past the account's OWN
+// latest jittered due time. It used to be a flat "not polled for 6h", which
+// every 12h-cadence account satisfied in normal operation, so the drip was
+// engaged permanently (30–100 `resume_drip` lines a day, Sep 10 → Oct 4).
 export const RESUME_DRIP_STALE_MS = 6 * 60 * 60 * 1000;
 export const RESUME_DRIP_GAP_MS = 10 * 60 * 1000;
 const GLOBAL_STOP_LOG_EVERY_MS = 30 * 60 * 1000;
@@ -141,7 +159,8 @@ export type ClassifyFn = (
    account: string,
    post: RecentPost,
    opts: {
-      cover?: { bytes: Uint8Array; mimeType: string; format: ImageFormat };
+      cover?: ClassifierImage;
+      slides?: ClassifierImage[];
       nowMs: number;
    },
 ) => Promise<Classification>;
@@ -152,6 +171,7 @@ export type PublishFn = (
    post: RecentPost,
    classification: Classification,
    coverBytes: Uint8Array | null,
+   slideBytes?: Uint8Array[],
 ) => Promise<PublishResult>;
 export type FetchCoverFn = (url: string) => Promise<Uint8Array | null>;
 
@@ -414,6 +434,15 @@ export class InstagramMonitorScheduler {
       // global-stop row, so a circuit breaker tripped before the restart stays
       // tripped (resume is manual-only via the admin tool).
       const cleared = this.deps.store.clearFailureBackoff();
+      // Resume the rolling 24h request/poll windows from the last heartbeat so a
+      // restart doesn't zero the daily-budget guardrail.
+      const saved = this.deps.store.readRequestWindow();
+      const cutoff = Date.now() - REQUEST_WINDOW_MS;
+      this.requestTimestamps = saved.requests.filter((t) => t >= cutoff);
+      this.pollTimestamps = saved.polls.filter((t) => t >= cutoff);
+      // Solve the allocation BEFORE the first tick: dueAccounts reads it, and a
+      // stale/NULL scale would mean natural (fastest) intervals for one tick.
+      this.recomputeStretch(Date.now());
       const runtime = this.deps.store.getRuntime();
       // Seed resume-detection so a kill-switch cleared after this restart still
       // produces exactly one "resumed" alert. (Auth/rate/budget pauses are
@@ -443,6 +472,8 @@ export class InstagramMonitorScheduler {
             pollIntervalMs: this.pollIntervalMs,
             cleared_backoff_rows: cleared.cleared,
             daily_request_budget: this.dailyRequestBudget || null,
+            requests_24h_restored: this.requestTimestamps.length,
+            poll_alloc_scale: runtime.poll_alloc_scale,
             global_stop: runtime.global_stop === 1,
             stop_reason: runtime.stop_reason,
          },
@@ -514,6 +545,10 @@ export class InstagramMonitorScheduler {
     * polls accrue (fresh restart → tiny, pk-burst-skewed sample), and clamps the
     * ratio to [{@link CALLS_PER_POLL_MIN}, {@link CALLS_PER_POLL_MAX}]. */
    private measuredCallsPerPoll(now: number): number {
+      // A fetcher with a fixed per-poll charge (browser mode) is exact — no
+      // need to measure, and no restart-reset fallback to under-project with.
+      const fixed = this.deps.fetcher.requestsPerPoll;
+      if (fixed !== undefined && fixed > 0) return fixed;
       const cutoff = now - REQUEST_WINDOW_MS;
       this.pollTimestamps = this.pollTimestamps.filter((t) => t >= cutoff);
       const polls = this.pollTimestamps.length;
@@ -561,6 +596,12 @@ export class InstagramMonitorScheduler {
             budgetPauseUntil,
             requests24h: used,
             nowMs: now,
+         });
+         const cutoff = now - REQUEST_WINDOW_MS;
+         this.pollTimestamps = this.pollTimestamps.filter((t) => t >= cutoff);
+         this.deps.store.writeRequestWindow({
+            requests: this.requestTimestamps,
+            polls: this.pollTimestamps,
          });
       } catch (err) {
          log.debug({ err }, "instagram_monitor.heartbeat_failed");
@@ -655,6 +696,7 @@ export class InstagramMonitorScheduler {
             {
                swept: r.swept,
                stretch: Number(r.stretch.toFixed(3)),
+               scale: r.scale === null ? null : Number(r.scale.toFixed(4)),
                projected: Math.round(r.projected),
                calls_per_poll: Number(callsPerPoll.toFixed(2)),
             },
@@ -679,7 +721,7 @@ export class InstagramMonitorScheduler {
       try {
          const { callsPerPoll, quietWindowMs, tickMs } =
             this.governorInputs(now);
-         const r = this.deps.store.recomputeGovernorStretch({
+         const r = this.deps.store.recomputeGovernorAllocation({
             callsPerPoll,
             dailyRequestBudget: this.dailyRequestBudget,
             defaultIntervalMs: CADENCE_COLD_START_INTERVAL_MS,
@@ -696,6 +738,7 @@ export class InstagramMonitorScheduler {
             log.info(
                {
                   stretch: Number(r.stretch.toFixed(3)),
+                  scale: r.scale === null ? null : Number(r.scale.toFixed(4)),
                   projected: Math.round(r.projected),
                   calls_per_poll: Number(callsPerPoll.toFixed(2)),
                },
@@ -861,13 +904,28 @@ export class InstagramMonitorScheduler {
       }
    }
 
+   /** True when any pollable account is overdue by more than
+    * `resumeDripStaleMs` past its own latest jittered due time — i.e. the fleet
+    * is catching up after an outage, not running on cadence. Auto-paused
+    * accounts are excluded: they never poll, so they would read as stale forever. */
    private fleetIsStale(now: number): boolean {
-      return this.deps.store.listAccounts().some(
-         (a) =>
-            a.paused === 0 &&
-            (a.last_polled_at === null ||
-               now - a.last_polled_at >= this.resumeDripStaleMs),
-      );
+      const scale = this.deps.store.getRuntime().poll_alloc_scale;
+      return this.deps.store.listAccounts().some((a) => {
+         if (
+            a.paused !== 0 ||
+            a.consecutive_auth_failures >= AUTH_PAUSE_THRESHOLD ||
+            a.consecutive_hard_failures >= HARD_PAUSE_THRESHOLD
+         )
+            return false;
+         if (a.last_polled_at === null) return true;
+         const base = effectiveBaseIntervalMs(
+            a,
+            CADENCE_COLD_START_INTERVAL_MS,
+            scale,
+         );
+         const latestDue = base * (1 + POLL_JITTER_FRACTION);
+         return now - a.last_polled_at >= latestDue + this.resumeDripStaleMs;
+      });
    }
 
    /** True when the fleet is stale AND we already polled too recently. */
@@ -876,6 +934,41 @@ export class InstagramMonitorScheduler {
       if (this.lastPollAttemptAtMs === 0) return false;
       if (now - this.lastPollAttemptAtMs >= this.resumeDripGapMs) return false;
       return this.fleetIsStale(now);
+   }
+
+   /** Download a post's cover and (carousels) up to {@link MAX_CLASSIFIER_SLIDES}
+    * further slides through the session's CDN client. Formats are sniffed from
+    * magic bytes — DeepSeek decodes by content, and an unrecognizable image is
+    * dropped (the classifier still has the caption) rather than sent as junk. */
+   private async fetchPostMedia(post: RecentPost): Promise<{
+      cover: ClassifierImage | undefined;
+      slides: ClassifierImage[];
+      coverBytes: Uint8Array | null;
+      slideBytes: Uint8Array[];
+   }> {
+      const toImage = (bytes: Uint8Array | null): ClassifierImage | undefined => {
+         const format = bytes ? sniffImageFormat(bytes) : null;
+         return bytes && format
+            ? { bytes, mimeType: `image/${format}`, format }
+            : undefined;
+      };
+      const coverBytes = await this.fetchCover(post.displayUrl);
+      const slideBytes: Uint8Array[] = [];
+      const slideUrls =
+         post.mediaType === "carousel" ? (post.carouselUrls ?? []).slice(1) : [];
+      for (const url of slideUrls.slice(0, MAX_CLASSIFIER_SLIDES)) {
+         if (this.disposed) break;
+         const bytes = url ? await this.fetchCover(url) : null;
+         if (bytes) slideBytes.push(bytes);
+      }
+      return {
+         cover: toImage(coverBytes),
+         slides: slideBytes
+            .map(toImage)
+            .filter((i): i is ClassifierImage => i !== undefined),
+         coverBytes,
+         slideBytes,
+      };
    }
 
    private async processAccount(acc: MonitoredAccount): Promise<void> {
@@ -1120,6 +1213,39 @@ export class InstagramMonitorScheduler {
          newPostsNewestFirst = ordered.filter(
             (p) => p.takenAtMs > (acc.last_post_at as number),
          );
+         // Every unpinned post in the window is newer than the anchor: the window
+         // no longer reaches back to where we left off, so posts in between were
+         // probably never seen. Distinct from a deleted anchor (candidates 0).
+         const olderThanAnchor = ordered.length - newPostsNewestFirst.length;
+         if (
+            newPostsNewestFirst.length > 0 &&
+            olderThanAnchor <= MAX_PINNED_POSTS
+         ) {
+            const oldestNew = newPostsNewestFirst[newPostsNewestFirst.length - 1];
+            log.warn(
+               {
+                  account: acc.username,
+                  candidates: newPostsNewestFirst.length,
+                  window: ordered.length,
+                  unseen_gap_h: Number(
+                     (
+                        (oldestNew.takenAtMs - (acc.last_post_at as number)) /
+                        3_600_000
+                     ).toFixed(1),
+                  ),
+                  since_last_poll_h:
+                     acc.last_polled_at === null
+                        ? null
+                        : Number(
+                             ((Date.now() - acc.last_polled_at) / 3_600_000).toFixed(
+                                1,
+                             ),
+                          ),
+                  posts_per_day: acc.posts_per_day,
+               },
+               "instagram_monitor.window_overflow",
+            );
+         }
          log.warn(
             {
                account: acc.username,
@@ -1203,28 +1329,15 @@ export class InstagramMonitorScheduler {
          }
 
          // Classify once per post; same outcome for every channel that gets it.
-         // The cover is fetched anyway for publishing, so we hand it to the
-         // classifier too: many activist flyers carry the real qué/cuándo/dónde
-         // ONLY in the image, not the caption (the gap that made the bot miss a
-         // post's actual content). Since the v4.1 migration the classifier makes
-         // ONE multimodal call — the model reads the flyer and decides in the same
-         // request — so this costs the same as the old text-only stage did.
-         const coverBytes = await this.fetchCover(post.displayUrl);
-         // Sniff the real format from magic bytes — IG covers are usually JPEG but
-         // not guaranteed, and DeepSeek detects the image format from the actual
-         // bytes (not the declared MIME type), so mislabeling would be wasteful
-         // rather than fatal. If we can't recognize it at all, omit it and let the
-         // classifier work from the caption alone.
-         const coverFormat = coverBytes ? sniffImageFormat(coverBytes) : null;
-         const hadCover = Boolean(coverBytes && coverFormat);
+         // The images are fetched anyway for publishing, so the classifier reads
+         // them too — cover plus, for carousels, the next slides: many activist
+         // flyers carry the real qué/cuándo/dónde ONLY in the image, often on
+         // slide 2–3. It is ONE multimodal call; the bytes are reused for the card.
+         const media = await this.fetchPostMedia(post);
+         const hadCover = media.cover !== undefined;
          const classification = await this.classify(acc.username, post, {
-            cover: hadCover
-               ? {
-                    bytes: coverBytes!,
-                    mimeType: `image/${coverFormat}`,
-                    format: coverFormat!,
-                 }
-               : undefined,
+            cover: media.cover,
+            slides: media.slides,
             nowMs: Date.now(),
          });
 
@@ -1237,6 +1350,7 @@ export class InstagramMonitorScheduler {
                shortcode: post.shortcode,
                media_type: post.mediaType,
                had_cover: hadCover,
+               slides: media.slides.length,
                relevant: classification.relevant,
                type: classification.type,
                when: classification.when,
@@ -1321,7 +1435,8 @@ export class InstagramMonitorScheduler {
                acc.username,
                post,
                classification,
-               coverBytes,
+               media.coverBytes,
+               media.slideBytes,
             );
             this.deps.store.recordSeen({
                channel_id: channelId,

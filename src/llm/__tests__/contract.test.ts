@@ -141,6 +141,39 @@ describe("DeepSeek wire contract", () => {
       expect(req.presence_penalty).toBeUndefined();
    });
 
+   test("responseFormat json_object → response_format on the wire; absent by default", async () => {
+      createMock.mockResolvedValueOnce(end('{"ok":true}'));
+      await ask({
+         system: "Responde en JSON",
+         messages: [
+            { role: "user", content: "q", attachments: [img(), img()] },
+         ],
+         tools: {
+            tools: [],
+            handle: async () => ({ status: "success", payload: {} }),
+         },
+         effort: "low",
+         responseFormat: "json_object",
+      });
+      expect(reqAt(0).response_format).toEqual({ type: "json_object" });
+      // several images ride the same JSON-mode request
+      const parts = (reqAt(0).messages as Array<{ content: unknown }>)[1]
+         .content as Array<{ type: string }>;
+      expect(parts.map((p) => p.type)).toEqual([
+         "text",
+         "image_url",
+         "image_url",
+      ]);
+
+      createMock.mockResolvedValueOnce(end("hi"));
+      await ask({
+         system: "s",
+         messages: [{ role: "user", content: "q" }],
+         tools: toolsWithSample(),
+      });
+      expect(reqAt(1).response_format).toBeUndefined();
+   });
+
    test("tool result follow-up: one role:tool message per call, in order, JSON-encoded payload", async () => {
       createMock
          .mockResolvedValueOnce(

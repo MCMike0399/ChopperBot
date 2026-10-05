@@ -288,6 +288,10 @@ export class ConfigInstagramAdminSource implements ToolSource {
             with_cadence: accounts.filter((a) => a.poll_interval_ms !== null)
                .length,
             poll_stretch: Number((r.poll_stretch ?? 1).toFixed(3)),
+            poll_alloc_scale:
+               r.poll_alloc_scale === null
+                  ? null
+                  : Number(r.poll_alloc_scale.toFixed(4)),
          },
          // The exact text the daily digest would post, so the operator can eyeball it.
          digest_preview: formatStatusDigest({

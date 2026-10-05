@@ -32,9 +32,9 @@ export interface Classification {
     * its reply didn't parse. Distinct from an honest `relevant: false`, which is
     * a *decision*. Callers must not treat an undecided post as settled: the
     * scheduler holds its dedup anchor back so the post is retried on a later
-    * poll instead of being recorded seen and lost forever. (2026-08-11: the Kimi
-    * endpoint went hard-500 and every in-flight post was silently discarded;
-    * 114 posts had been dropped this way over the monitor's lifetime.)
+    * poll instead of being recorded seen and lost forever. (2026-08-11: the
+    * then-provider went hard-500 and every in-flight post was silently
+    * discarded; 114 posts had been dropped this way over the monitor's lifetime.)
     */
    undecided?: true;
 }
@@ -48,6 +48,8 @@ Tu trabajo es decidir si un post de Instagram contiene algo que el canal deberí
 - ACUERPAMIENTO: solicitud de presencia colectiva para acompañar a alguien.
 - ACTUALIZACIÓN: novedad importante sobre un caso ya conocido.
 - NOTICIA: cobertura sustantiva, no genérica.
+
+Junto al texto pueden venir imágenes del post: la portada y, en carruseles, las siguientes diapositivas en orden. Léelas TODAS junto con el caption — muchos flyers ponen el qué/cuándo/dónde solo en la imagen, y en los carruseles la fecha y el lugar suelen estar en la segunda o tercera diapositiva, no en la portada.
 
 Descarta: arte y citas sin contexto de acción, memes, reposts genéricos, fotos de archivo, agradecimientos rutinarios, anuncios comerciales, contenido puramente decorativo.
 
@@ -66,48 +68,46 @@ IMPORTANTE para \`when\` y \`where\`: cuando no apliquen, usa el valor JSON \`nu
 
 Si el post no es relevante, igual devuelve un objeto válido con \`relevant: false\` y \`type: "otro"\` y deja \`title\`/\`summary\` vacíos o muy breves. No expliques tu razonamiento fuera del JSON.`;
 
-/** System prompt for the image-reading path. Kept exported (the dev scripts
- * import it) and still useful on its own: it is the prompt that makes the model
- * transcribe a flyer rather than summarize it. The classifier itself no longer
- * runs a separate transcription stage — see `classifyPost` — but a caller that
- * only wants the text off an image can use this. */
-export const TRANSCRIBE_SYSTEM_PROMPT = `Eres un transcriptor de imágenes. Te doy la imagen de portada de un post de Instagram — normalmente un flyer de un colectivo activista mexicano.
-
-Transcribe TODO el texto visible en la imagen, en español, tal como aparece: títulos, fechas, horas, lugares, nombres, convocatorias, hashtags, datos de contacto. Conserva el orden de lectura de arriba a abajo. Si la imagen tiene poco o ningún texto, describe en 1-2 líneas qué se ve.
-
-Responde SOLO con el texto transcrito (o la breve descripción). Sin comentarios, sin encabezados, sin formato adicional.`;
+/** One image handed to the classifier, already sniffed from its magic bytes. */
+export interface ClassifierImage {
+   bytes: Uint8Array;
+   mimeType: string;
+   format: ImageFormat;
+}
 
 export interface ClassifierOptions {
-   /** Optional cover image as raw bytes. Since the 2026-09-14 v4.1 migration this
-    * goes straight to the model as an image part — the same call that decides. */
-   cover?: { bytes: Uint8Array; mimeType: string; format: ImageFormat };
+   /** The post's cover image (first carousel slide / video frame / the photo). */
+   cover?: ClassifierImage;
+   /** Carousel slides after the cover, in display order. They ride the SAME
+    * request as the cover — the model reads every slide and decides once. */
+   slides?: ClassifierImage[];
    nowMs: number;
 }
 
 /**
- * ONE call, image included (v4.1 migration, 2026-09-14).
+ * ONE call, every image included, JSON output enforced by the API.
  *
- * History, because this function has been through three shapes and why each
- * earlier one was abandoned still matters:
+ * Shape history, because each abandoned shape still explains a guard below:
+ *   1. Until 2026-07-15 — cover attached, routed to a small vision-only model
+ *      that was a weak DECIDER (`"when": "null"` as a STRING on the card).
+ *   2. 2026-07-15 → 2026-09-14 — two stages: the vision model transcribed the
+ *      cover, a blind text model decided. The split existed only because the
+ *      deciding model could not see.
+ *   3. 2026-09-14 — one multimodal call on DeepSeek V4.1 Flash, cover only.
+ *   4. Now (2026-10-04) — the same single call, but with the carousel slides
+ *      as well and `response_format: json_object`. "Cover only" was the last
+ *      leftover of the vision-model era: that model got one image because each
+ *      image was a separate, pricier call. On one natively multimodal model the
+ *      slides cost a few hundred input tokens in the call we make anyway, and
+ *      the data says they matter — Sep 10 → Oct 4, 47% of relevant carousels
+ *      published with no event date vs 28% of single images.
  *
- *   1. Until 2026-07-15 — one `ask()` with the cover attached, which the routing
- *      rule sent to Amazon Nova Lite. Nova is a weak DECIDER: it intermittently
- *      emitted the JSON schema wrong (`"when": "null"` as a STRING, printed
- *      literally as `Cuándo: null` on the card).
- *   2. 2026-07-15 → 2026-09-14 — TWO stages: Nova transcribed the flyer at
- *      `effort: 'low'`, then the text brain decided from caption + transcription.
- *      That split existed ONLY because the text brain was blind.
- *   3. Now — one call again, and it is NOT a regression to shape 1: the reader
- *      and the decider are the same frontier model, and V4.1 Flash reads images
- *      natively. The old failure came from handing the DECISION to a small
- *      vision-only model, not from attaching an image.
- *
- * `parseClassificationReply` still folds nullish string tokens, and the prompt
- * still demands a JSON literal: that guard was written for Nova's sloppiness but
- * costs nothing and keeps a future regression caught.
+ * `parseClassificationReply` keeps its brace-scan and nullish-token folding as
+ * defence in depth; JSON mode guarantees syntax, not the schema's semantics.
  *
  * Returns a parsed Classification, or — on parse/call failure — a non-relevant
- * one with a `reason` set, so the caller never has to handle a null.
+ * one with a `reason` set and `undecided: true`, so the caller never has to
+ * handle a null and the scheduler can retry the post.
  */
 export async function classifyPost(
    account: string,
@@ -115,6 +115,7 @@ export async function classifyPost(
    opts: ClassifierOptions,
 ): Promise<Classification> {
    const takenIso = new Date(post.takenAtMs).toISOString();
+   const images = [...(opts.cover ? [opts.cover] : []), ...(opts.slides ?? [])];
    const userText = [
       `Cuenta: @${account}`,
       `Fecha del post (UTC): ${takenIso}`,
@@ -123,23 +124,26 @@ export async function classifyPost(
       "",
       "Caption:",
       post.caption || "(sin caption)",
-      ...(opts.cover
+      ...(images.length > 0
          ? [
               "",
-              "La portada del post va adjunta como imagen. Léela JUNTO con el caption para clasificar " +
-                 "y resumir — muchos flyers ponen el qué/cuándo/dónde SOLO en la imagen, no en el caption.",
+              images.length === 1
+                 ? "La imagen del post va adjunta. Léela JUNTO con el caption para clasificar y resumir."
+                 : `Van adjuntas ${images.length} imágenes del post: la portada primero y luego las ` +
+                   "diapositivas del carrusel en orden. Léelas TODAS junto con el caption para clasificar y resumir.",
            ]
          : []),
    ].join("\n");
 
-   const attachment = opts.cover
-      ? new ImageAttachable(
-           `post-${post.shortcode}.${opts.cover.format === "jpeg" ? "jpg" : opts.cover.format}`,
-           opts.cover.mimeType,
-           opts.cover.bytes,
-           opts.cover.format,
-        )
-      : undefined;
+   const attachments = images.map(
+      (img, i) =>
+         new ImageAttachable(
+            `post-${post.shortcode}-${i + 1}.${img.format === "jpeg" ? "jpg" : img.format}`,
+            img.mimeType,
+            img.bytes,
+            img.format,
+         ),
+   );
 
    const tools = composeToolSources([]);
    let raw = "";
@@ -147,17 +151,20 @@ export async function classifyPost(
       const turn: Turn = {
          role: "user",
          content: userText,
-         ...(attachment ? { attachments: [attachment] } : {}),
+         ...(attachments.length > 0 ? { attachments } : {}),
       };
       // `low` = thinking OFF. Classification is a single-shot read-and-decide task
       // on essentially all the IG volume, so it takes the cheapest tier; the vision
-      // read rides the same request at no extra call.
+      // read rides the same request at no extra call. JSON mode makes the API
+      // itself guarantee a parseable object (the prompt already says "JSON" and
+      // shows the shape, which DeepSeek requires for json_object).
       raw = await ask({
          system: SYSTEM_PROMPT,
          messages: [turn],
          tools,
          effort: "low",
          retryNoChoicesOnce: true,
+         responseFormat: "json_object",
       });
    } catch (err) {
       log.warn(
@@ -165,7 +172,7 @@ export async function classifyPost(
             err,
             account,
             shortcode: post.shortcode,
-            had_cover: Boolean(opts.cover),
+            images: images.length,
          },
          "classifier ask() failed",
       );
@@ -251,12 +258,12 @@ export function parseClassificationReply(raw: string): Classification | null {
 }
 
 /**
- * Tokens a model writes as a *string* when it means "no value". The weaker
- * vision model (Nova Lite, which handles the image-carrying classifier calls —
- * Kimi is text-only) regularly emits `"when": "null"` / `"where": "none"`
+ * Tokens a model writes as a *string* when it means "no value". The retired
+ * vision-only model regularly emitted `"when": "null"` / `"where": "none"`
  * instead of the JSON literal `null` the prompt asks for. Left verbatim, that
  * string is truthy, so `renderText` printed a literal `Cuándo: null` on the
- * card (observed 2026-07-15). We fold every such token back to a real absence.
+ * card (observed 2026-07-15). JSON mode can't prevent this (it is valid JSON),
+ * so we still fold every such token back to a real absence.
  * Accent/case-insensitive so `"N/A"`, `"Sin Fecha"`, `"No especificado"` all
  * match.
  */
