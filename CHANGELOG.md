@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.7.1 — 2026-10-06
+
+- Las minutas siguen transcribiendo lo que ya quedó grabado sin esperar a que alguien vuelva a hablar. Las intervenciones breves también se procesan durante la asamblea, para dejar menos trabajo al terminar.
+- Las minutas conservan los relatos de hechos públicos y los balances políticos: ya no los ocultan por confundirlos con asuntos internos de convivencia. Los casos sobre integrantes del servidor siguen separados del acta pública.
+- ChopperBot distingue mejor las propuestas de los acuerdos aprobados y los encargos de los compromisos que alguien sí aceptó. Dos personas con el mismo apodo conservan sus voces separadas.
+
 ## 2.7.0 — 2026-10-04
 
 - El monitor de Instagram reparte mejor sus revisiones: las cuentas que publican seguido se revisan más veces y las que publican poco, menos, sin hacer más visitas en total que antes. Las noticias de las cuentas más activas deberían llegar varias horas antes y ya casi no se deberían perder publicaciones cuando una cuenta publica mucho de golpe.

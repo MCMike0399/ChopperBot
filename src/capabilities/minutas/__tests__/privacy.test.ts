@@ -56,12 +56,10 @@ test.each([
    "- Persona ficticia A leyó el código de conducta del círculo.",
 ])("ordinary political/study lines are not conduct cases: %s", (line) => {
    const body = `## Resumen\nSesión de estudio.\n## Temas tratados\n${line}`;
-   // Only lines pairing a conduct term with a NAME are touched; these
-   // fixtures name people only beside political terms — still flagged when
-   // a conduct term meets a name, so assert the acta is never wiped whole.
    const result = publicMinutes(body, meta);
-   expect(result.body).toContain("Sesión de estudio.");
-   expect(result.body.split("\n")).toHaveLength(body.split("\n").length);
+   expect(result.body).toBe(body);
+   expect(result.redacted).toBe(false);
+   expect(result.meta.participants).toEqual(meta.participants);
 });
 test("ordinary study minutes remain useful", () => {
    const body =
@@ -78,4 +76,63 @@ test("an assembly-sized synthetic transcript uses one full-context pass", async 
    expect(askMock).toHaveBeenCalledTimes(1);
    expect(askMock.mock.calls[0][0].messages[0].content).toContain(draft);
    expect(askMock.mock.calls[0][0].effort).toBe("low");
+});
+
+test("a reporter's political/public-news paragraph remains public", () => {
+   const body =
+      "## Temas tratados\n- Persona ficticia A relató la represión policial y denunció detenciones en una marcha.\n- Persona ficticia B relató un feminicidio público en una universidad, con señalamientos previos de acoso y fallas del protocolo institucional.";
+   expect(publicMinutes(body, meta).body).toBe(body);
+   expect(publicMinutes(body, meta).redacted).toBe(false);
+});
+
+test.each([
+   "No se trataron asuntos de convivencia sobre personas concretas.",
+   "Sin asuntos de convivencia.",
+   "No hubo incidentes.",
+])(
+   "an empty internal section does not hide the participant roster: %s",
+   (placeholder) => {
+      const body = "## Resumen\nSe revisó la agenda.";
+      const result = publicMinutes(
+         `${body}\n\n## Convivencia (interna)\n${placeholder}`,
+         meta,
+      );
+      expect(result.body).toBe(body);
+      expect(result.internal).toBeNull();
+      expect(result.redacted).toBe(false);
+      expect(result.meta.participants).toEqual(meta.participants);
+   },
+);
+
+test.each([
+   "Persona ficticia A denunció a Persona ficticia B por acoso.",
+   "Se recibió una denuncia contra Persona ficticia A.",
+   "Se acordó banear a Persona ficticia B.",
+   "Persona ficticia A relató un insulto de Persona ficticia B.",
+   "Persona ficticia A explicó que Persona ficticia B acosó a alguien.",
+   "Persona ficticia A sufrió acoso.",
+   "Persona ficticia A explicó que sufrió acoso.",
+])("misplaced named member incidents stay private: %s", (line) => {
+   const result = publicMinutes(`## Resumen\n${line}`, meta);
+   expect(result.redacted).toBe(true);
+   expect(result.body).not.toContain("Persona ficticia");
+   expect(result.internal).toContain(line);
+});
+
+test("decorated names and nickname aliases remain protected", () => {
+   const result = publicMinutes(
+      "## Resumen\nLuna acosó a Sol.\nRayo insultó a Luna.",
+      { ...meta, participants: ["Luna ✩", "Sol (Rayo)"] },
+   );
+   expect(result.redacted).toBe(true);
+   expect(result.body).not.toContain("Luna");
+   expect(result.body).not.toContain("Rayo");
+});
+
+test("an internal case title using a nickname does not publish", () => {
+   const result = publicMinutes(
+      "## Resumen\nSe revisó la agenda.\n## Convivencia (interna)\n- Rayo acosó a Luna.",
+      { ...meta, title: "Caso Rayo", participants: ["Luna ✩", "Sol (Rayo)"] },
+   );
+   expect(result.meta.title).toBe("Reunión");
 });

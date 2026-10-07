@@ -230,6 +230,7 @@ export class MinutasCapability implements Capability {
       this.detachListeners = [];
       // Rows stay 'active'/'processing' on purpose so the next boot's sweep
       // finishes whatever this process didn't.
+      this.live?.dispose();
       this.sessions?.disposeAll();
    }
 
@@ -246,9 +247,14 @@ export class MinutasCapability implements Capability {
          channelName: string;
          startedAtMs: number;
       } | null;
+      liveTranscription: ReturnType<LiveTranscriber["status"]> | null;
       recent: MinutasSessionRow[];
    } {
+      const active = guildId ? this.sessions?.getActive(guildId) : null;
       return {
+         liveTranscription: active
+            ? (this.live?.status(join(this.sessionsDir, active.id)) ?? null)
+            : null,
          outputChannelId: this.store?.getOutputChannelId() ?? null,
          transcriberAvailable: this.transcriber?.isAvailable() ?? false,
          storageBackend: this.storage?.backend ?? "disabled",

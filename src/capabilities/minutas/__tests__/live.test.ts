@@ -421,3 +421,161 @@ describe.skipIf(!hasFfmpeg)("LiveTranscriber.drain", () => {
       await expect(live.drain("/nonexistent")).resolves.toBeUndefined();
    });
 });
+
+describe.skipIf(!hasFfmpeg)("live queue handoff and aging", () => {
+   async function fixture() {
+      const dir = mkdtempSync(join(tmpdir(), "minutas-handoff-"));
+      mkdirSync(join(dir, ARTIFACTS.audioDir));
+      mkdirSync(join(dir, ARTIFACTS.whisperDir));
+      const add = (
+         live: LiveTranscriber,
+         seq: number,
+         seconds = 45,
+         userId = "u1",
+      ) => {
+         const b = burst({
+            seq,
+            userId,
+            bytes: PCM_BYTES_PER_SECOND * seconds,
+         });
+         writeFileSync(join(dir, b.file), Buffer.alloc(b.bytes));
+         live.enqueue(dir, b);
+      };
+      return { dir, add };
+   }
+
+   it("starts ready audio after the busy batch finishes without another enqueue", async () => {
+      const { vi } = await import("vitest");
+      const { dir, add } = await fixture();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let calls = 0;
+      const t: Transcriber = {
+         isAvailable: () => true,
+         transcribe: async () => {
+            if (++calls === 1) await gate;
+            return [];
+         },
+      };
+      const live = new LiveTranscriber(t);
+      try {
+         add(live, 1);
+         await vi.waitFor(() => expect(calls).toBe(1));
+         add(live, 2);
+         expect(live.status(dir).pendingAudioSec).toBe(45);
+         release();
+         // Calling drain here would conceal the regression by handing tails to finalize.
+         await vi.waitFor(() => expect(readLedger(dir).size).toBe(2));
+         expect(calls).toBe(2);
+         await live.drain(dir);
+      } finally {
+         release();
+         live.dispose();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("continues ready work after a failed batch without retrying the failure", async () => {
+      const { vi } = await import("vitest");
+      const { dir, add } = await fixture();
+      const t = new RecordingTranscriber();
+      t.failNext = true;
+      const live = new LiveTranscriber(t);
+      try {
+         add(live, 1);
+         add(live, 2);
+         await vi.waitFor(() => expect(readLedger(dir).size).toBe(1));
+         expect(readLedger(dir).has("audio/001-x.pcm")).toBe(false);
+         expect(readLedger(dir).has("audio/002-x.pcm")).toBe(true);
+         expect(t.calls).toEqual(["batch-002-Ana.wav"]);
+         await live.drain(dir);
+      } finally {
+         live.dispose();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("flushes a short finished contribution when its age limit expires", async () => {
+      const { vi } = await import("vitest");
+      const { dir, add } = await fixture();
+      const live = new LiveTranscriber(new RecordingTranscriber(), 40);
+      try {
+         add(live, 1, 1);
+         await vi.waitFor(() => expect(readLedger(dir).size).toBe(1));
+         await live.drain(dir);
+      } finally {
+         live.dispose();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("drain freezes queued and aged work while waiting for the current batch", async () => {
+      const { vi } = await import("vitest");
+      const { dir, add } = await fixture();
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      let calls = 0;
+      const live = new LiveTranscriber(
+         {
+            isAvailable: () => true,
+            transcribe: async () => {
+               calls++;
+               await gate;
+               return [];
+            },
+         },
+         40,
+      );
+      try {
+         add(live, 1);
+         await vi.waitFor(() => expect(calls).toBe(1));
+         add(live, 2);
+         const draining = live.drain(dir);
+         add(live, 3);
+         await new Promise((r) => setTimeout(r, 60));
+         release();
+         await draining;
+         expect(calls).toBe(1);
+         expect(readLedger(dir).size).toBe(1);
+         expect(live.status(dir).pendingBursts).toBe(0);
+      } finally {
+         release();
+         live.dispose();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("keeps different user ids separate when they share the same display name", async () => {
+      const { dir, add } = await fixture();
+      const t = new RecordingTranscriber();
+      const live = new LiveTranscriber(t);
+      try {
+         add(live, 1, 25, "u1");
+         add(live, 2, 25, "u2");
+         expect(live.status(dir).inFlightBatches).toBe(0);
+         expect(
+            planBatches([burst({ seq: 1 }), burst({ seq: 2, userId: "u2" })]),
+         ).toHaveLength(2);
+         await live.drain(dir);
+         expect(t.calls).toHaveLength(0);
+      } finally {
+         live.dispose();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   it("dispose cancels the pending contribution timer", async () => {
+      const { dir, add } = await fixture();
+      const t = new RecordingTranscriber();
+      const live = new LiveTranscriber(t, 40);
+      try {
+         add(live, 1, 1);
+         live.dispose();
+         await new Promise((r) => setTimeout(r, 80));
+         expect(t.calls).toHaveLength(0);
+      } finally {
+         live.dispose();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+});

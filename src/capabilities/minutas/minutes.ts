@@ -34,10 +34,12 @@ export function buildMinutesSystemPrompt(): string {
 Reglas duras:
 - Atribuye lo dicho a las personas EXACTAMENTE con el nombre que aparece en la transcripción. Nunca inventes quién dijo algo.
 - **Nombres: la lista de participantes manda.** El texto hablado es automático y oye mal los nombres («Repseta» por «RevZ»; un apodo como «tlacuache» que se oye «Tlacuachi»). Cuando un nombre dicho en voz alta se refiere claramente a alguien de la lista de participantes, escríbelo con la ortografía EXACTA de la lista (sin los adornos decorativos: «tlacuache ✩‧₊˚» → «tlacuache»). Una persona = un solo nombre en toda el acta; si alguien aparece con un alias, usa el nombre principal.
+- **Acuerdos nuevos:** solo decisiones aprobadas explícitamente o con consenso claro EN ESTA sesión. Un plan presentado, una propuesta todavía en discusión, un evento ya organizado o un acuerdo de una asamblea anterior van en Temas tratados; no los conviertas en una aprobación nueva.
+- **Compromisos verificables:** registra solo tareas futuras que la propia persona aceptó en voz, o cuya aceptación se confirmó expresamente en voz. «Propongo pedirle a Ana que añada una cuenta» no significa «Ana se comprometió»: queda como propuesta en Temas tratados. Una invitación a colaborar, un ofrecimiento solo en el chat, un trabajo ya realizado o avisar que alguien se retira no son compromisos nuevos.
 - No inventes contenido: si algo no está en la transcripción hablada, no existe. La transcripción es automática y puede tener errores; si un tramo es ambiguo, resume lo seguro.
 - **Nada de conocimiento externo.** No completes nombres de autorxs, títulos, fechas ni datos que no se dijeron («Calibán y la bruja» no se vuelve «de Silvia Federici» si nadie lo dijo).
 - **Fechas:** usa la tabla de fechas del encabezado para poner día de la semana y mes. Nunca agregues un mes que no se dijo si la tabla no lo resuelve; «el sábado» o «el 29» se quedan así si no hay forma segura de saber cuál.
-- **Privacidad:** esto se publica al servidor. Si se trataron asuntos de conducta, convivencia o moderación sobre personas concretas (denuncias, acoso, sanciones a alguien, disculpas entre personas), NO los pongas en las secciones públicas: escríbelos SOLO en una sección final «## Convivencia (interna)» con lo necesario para el equipo de moderación; esa sección nunca se publica. En las secciones públicas basta una viñeta neutra: «Se trataron asuntos de convivencia (detalle en el registro interno)», sin nombres. Los temas políticos o de estudio (sanciones entre países, denuncias públicas, expulsiones de migrantes) NO son asuntos de convivencia. Si alguien compartió algo personal (salud mental, terapia, diagnósticos, historia de violencia), no registres nombres ni detalles identificables en ninguna sección.
+- **Privacidad:** esto se publica al servidor. Si se trataron asuntos de conducta, convivencia o moderación sobre personas concretas (denuncias, acoso, sanciones a alguien, disculpas entre personas), NO los pongas en las secciones públicas: escríbelos SOLO en una sección final «## Convivencia (interna)» con lo necesario para el equipo de moderación; esa sección nunca se publica. En las secciones públicas basta una viñeta neutra: «Se trataron asuntos de convivencia (detalle en el registro interno)», sin nombres. Los temas políticos o de estudio (sanciones entre países, denuncias públicas, expulsiones de migrantes), la represión policial y los relatos de hechos públicos ajenos al servidor, incluidos casos públicos de violencia y acoso en universidades, NO son asuntos de convivencia de miembros del servidor. La persona que relata un hecho público no se convierte en denunciada por narrarlo. Si alguien compartió algo personal (salud mental, terapia, diagnósticos, historia de violencia), no registres nombres ni detalles identificables en ninguna sección.
 - El chat NO se publica: no copies comentarios, no armes una sección de chat, no cites «lo que escribieron». Si un comentario aclara un tema hablado, incorpóralo en Resumen/Temas/Acuerdos con las palabras de la minuta, no como cita del chat.
 - Bromas, memes, hipérboles y comentarios en chiste (p. ej. «el 2do aniversario tomamos palacio nacional») NO son acuerdos, compromisos ni temas. El tono de acta es sobrio: lo jocoso del chat o de la sala no entra al registro formal.
 - Estructura EXACTA del acta (markdown de Discord), sin más secciones:
@@ -50,7 +52,7 @@ Reglas duras:
   ## Compromisos
   (quién se comprometió a qué; si no hubo, "Sin compromisos.")
   ## Convivencia (interna)
-  (SOLO si hubo asuntos de convivencia sobre personas concretas; si no, omite la sección)
+  (SOLO si hubo asuntos de convivencia sobre personas concretas del servidor; si no, OMITE la sección completa, incluso su encabezado: no escribas «No se trataron asuntos» ni «Sin asuntos».)
 - No uses @menciones con <@id>: escribe los nombres en texto plano.
 - Tono de acta: claro, sobrio y fiel. Nada de relleno corporativo.
 
@@ -79,7 +81,7 @@ export function buildBlockExtractionPrompt(
 
 ${block}
 
-Extrae, en viñetas breves y en español: los temas discutidos, las posturas de cada persona (con su nombre), cualquier acuerdo/decisión y cualquier compromiso que aparezca EN ESTA PARTE. Las líneas 💬 son contexto del chat: no las extraigas como temas, acuerdos ni compromisos; solo úsalas para aclarar lo hablado. Bromas, memes e hipérboles no son acuerdos. No redactes todavía el acta; solo notas fieles a la transcripción.`;
+Extrae, en viñetas breves y en español: los temas discutidos, las posturas de cada persona (con su nombre), cualquier acuerdo/decisión y cualquier compromiso que aparezca EN ESTA PARTE. Las líneas 💬 son contexto del chat: no las extraigas como temas, acuerdos ni compromisos; solo úsalas para aclarar lo hablado. Distingue decisiones aprobadas de propuestas y anuncios; solo extrae compromisos que la persona aceptó en voz. Bromas, memes e hipérboles no son acuerdos. No redactes todavía el acta; solo notas fieles a la transcripción.`;
 }
 
 export function buildFinalFromNotesPrompt(
@@ -341,17 +343,72 @@ export async function generateMinutes(
 /**
  * Public rendering for conduct material. The model files conduct matters about
  * specific people under `## Convivencia (interna)`, which never publishes. As
- * a fail-closed net for a model that ignores that, any public line pairing a
- * conduct term with a participant's name is replaced by a neutral line — line
+ * a fail-closed net for a model that ignores that, a misplaced incident naming a
+ * member as actor or target is replaced by a neutral line — line
  * level, so an ordinary political/study acta ("sanciones contra Cuba", "hay
  * que denunciar…", "disculpa, ¿me escuchan?") is never wiped. Only the model's
  * acta is scanned, never the raw speech.
  */
 export const INTERNAL_CONDUCT_HEADING = /^##\s*Convivencia\b.*$/im;
-const CONDUCT_TERM =
-   /(?<![\p{L}\d])(?:acos\p{L}*|hostig\p{L}*|doxx\p{L}*|denunci\p{L}*|sancion\p{L}*|banea\p{L}*|banear|baneo|expuls\p{L}*|timeout|maltrat\p{L}*|difam\p{L}*|bullying|insult\p{L}*|disculp\p{L}*|conducta|convivencia)(?![\p{L}\d])/u;
 const fold = (s: string) =>
    s.normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+const plain = (s: string) =>
+   fold(s)
+      .replace(/[^\p{L}\d ]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+/** Empty model placeholders are not incidents and must not anonymize a roster. */
+function hasInternalConduct(section: string | null): boolean {
+   if (!section) return false;
+   const lines = section.split("\n").slice(1).map(plain).filter(Boolean);
+   const empty =
+      /^(?:no se (?:trataron|abordaron|reportaron|registraron|discutieron) asuntos de convivencia(?: sobre personas concretas)?|no hubo(?: asuntos de convivencia| incidentes(?: de convivencia)?| casos(?: de convivencia)?)?|sin (?:asuntos de convivencia|incidentes(?: de convivencia)?|casos(?: de convivencia)?)|ninguno|ninguna|no aplica|n a)$/;
+   return lines.some((line) => !empty.test(line));
+}
+
+/**
+ * Fallback for a misplaced member incident: require a relationship to a named
+ * member, not merely a reporter's name somewhere in a political-news paragraph.
+ */
+function participantNames(participants: readonly string[]): string[] {
+   return [
+      ...new Set(
+         participants.flatMap((name) => {
+            const base = name.replace(/\([^)]*\)/g, " ").split(",")[0]!;
+            const aliases = [...name.matchAll(/\(([\p{L}\d_-]+)\)/gu)].map(
+               (m) => m[1]!,
+            );
+            return [name, base, ...aliases]
+               .map(plain)
+               .filter((n) => n.length >= 3);
+         }),
+      ),
+   ];
+}
+
+function memberConductPatterns(participants: readonly string[]): RegExp[] {
+   const names = participantNames(participants);
+   const actor = String.raw`(?:acos\p{L}*|hostig\p{L}*|doxx\p{L}*|maltrat\p{L}*|insult\p{L}*|difam\p{L}*|amenaz\p{L}*)`;
+   const matter = String.raw`(?:acos\p{L}*|hostig\p{L}*|doxx\p{L}*|denunci\p{L}*|sancion\p{L}*|banea\p{L}*|banear|baneo|expuls\p{L}*|timeout|maltrat\p{L}*|difam\p{L}*|bullying|insult\p{L}*|amenaz\p{L}*)`;
+   return names.flatMap((name) => {
+      const n = `(?<![\\p{L}\\d])${name}(?![\\p{L}\\d])`;
+      return [
+         new RegExp(
+            `${n} (?:${actor}|(?:se )?disculp\\p{L}*|(?:(?:dijo|conto|explico|relato|reporto) que )?(?:fue|ha sido|esta siendo|sufrio|sufre|recibio) (?:\\p{L}+ ){0,2}${matter})(?![\\p{L}\\d])`,
+            "u",
+         ),
+         new RegExp(
+            `(?<![\\p{L}\\d])${matter} (?:\\p{L}+ ){0,2}(?:a|contra|hacia|sobre|de|por parte de) ${n}`,
+            "u",
+         ),
+         new RegExp(
+            `(?<![\\p{L}\\d])(?:caso|reporte|queja|acusacion) (?:contra|sobre|de) ${n}`,
+            "u",
+         ),
+      ];
+   });
+}
 
 export function publicMinutes(
    body: string,
@@ -363,29 +420,21 @@ export function publicMinutes(
    internal: string | null;
 } {
    const heading = body.search(INTERNAL_CONDUCT_HEADING);
-   const section = heading >= 0 ? body.slice(heading).trim() : null;
+   const candidate = heading >= 0 ? body.slice(heading).trim() : null;
+   const section = hasInternalConduct(candidate) ? candidate : null;
    const visible = heading >= 0 ? body.slice(0, heading).trimEnd() : body;
-   const names = meta.participants
-      .map((p) =>
-         fold(p)
-            .replace(/[^\p{L}\d ]/gu, "")
-            .trim(),
-      )
-      .filter((n) => n.length >= 3);
-   // Whole-word match: a short name ("Ana") must not hit "mañana".
-   const nameRes = names.map(
-      (n) => new RegExp(`(?<![\\p{L}\\d])${n}(?![\\p{L}\\d])`, "u"),
-   );
-   const named = (line: string) => {
-      const folded = fold(line);
-      return nameRes.some((re) => re.test(folded));
-   };
+   const patterns = memberConductPatterns(meta.participants);
+   const named = (line: string) =>
+      participantNames(meta.participants).some((name) =>
+         new RegExp(`(?<![\\p{L}\\d])${name}(?![\\p{L}\\d])`, "u").test(
+            plain(line),
+         ),
+      );
    const flagged: string[] = [];
    const lines = visible.split("\n").map((line) => {
       if (
          !line.startsWith("#") &&
-         CONDUCT_TERM.test(fold(line)) &&
-         named(line)
+         patterns.some((re) => re.test(plain(line)))
       ) {
          flagged.push(line);
          return "- Se trataron asuntos de convivencia (detalle en el registro interno).";
@@ -393,7 +442,8 @@ export function publicMinutes(
       return line;
    });
    const redacted = section !== null || flagged.length > 0;
-   if (!redacted) return { body, meta, redacted: false, internal: null };
+   if (!redacted)
+      return { body: visible, meta, redacted: false, internal: null };
    const internal = [section, ...flagged].filter(Boolean).join("\n");
    return {
       redacted: true,

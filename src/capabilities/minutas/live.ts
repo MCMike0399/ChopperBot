@@ -7,6 +7,7 @@ import {
    BATCH_GAP_MS,
    LIVE_FLUSH_AUDIO_SEC,
    LIVE_FLUSH_MAX_BURSTS,
+   LIVE_FLUSH_MAX_WAIT_MS,
    MAX_BATCH_AUDIO_SEC,
    PCM_BYTES_PER_SECOND,
    WHISPER_PROMPT_MAX_CHARS,
@@ -75,14 +76,15 @@ export function planBatches(
    pending: PendingBurst[],
    maxBatchAudioSec = MAX_BATCH_AUDIO_SEC,
 ): Batch[] {
-   const bySpeaker = new Map<string, PendingBurst[]>();
+   const byUser = new Map<string, PendingBurst[]>();
    for (const b of [...pending].sort((a, z) => a.seq - z.seq)) {
-      const list = bySpeaker.get(b.speaker) ?? [];
+      const list = byUser.get(b.userId) ?? [];
       list.push(b);
-      bySpeaker.set(b.speaker, list);
+      byUser.set(b.userId, list);
    }
    const batches: Batch[] = [];
-   for (const [speaker, bursts] of bySpeaker) {
+   for (const bursts of byUser.values()) {
+      const speaker = bursts[0]!.speaker;
       let current: PendingBurst[] = [];
       let audioSec = 0;
       const cut = () => {
@@ -327,69 +329,139 @@ export async function transcribeBatch(
 /**
  * Accumulates finished bursts per session+speaker while the meeting runs and
  * flushes them through `transcribeBatch` once a speaker has enough pending
- * audio. Failures are logged and NOT retried here — an unledgered burst is
+ * audio or has waited two minutes. Completion rechecks ready work without
+ * another speech turn. Failures are logged and NOT retried here — an unledgered burst is
  * finalize's to pick up, so nothing is ever lost, only deferred.
  */
-export class LiveTranscriber {
-   private readonly pending = new Map<string, Map<string, PendingBurst[]>>();
-   /** Running flushes by dir + "\u0000" + speaker — awaited by {@link drain}. */
-   private readonly inFlight = new Map<string, Promise<void>>();
+interface PendingSpeaker {
+   bursts: PendingBurst[];
+   queuedAt: number;
+   expired: boolean;
+   timer: NodeJS.Timeout;
+}
 
-   constructor(private readonly transcriber: Transcriber) {}
+export class LiveTranscriber {
+   private readonly pending = new Map<string, Map<string, PendingSpeaker>>();
+   /** A user id identifies a voice; display names may be shared by two people. */
+   private readonly inFlight = new Map<string, Promise<void>>();
+   private readonly draining = new Set<string>();
+   private stopped = false;
+
+   constructor(
+      private readonly transcriber: Transcriber,
+      private readonly maxWaitMs = LIVE_FLUSH_MAX_WAIT_MS,
+   ) {}
 
    enqueue(dir: string, burst: PendingBurst): void {
-      if (!this.transcriber.isAvailable()) return;
+      if (
+         this.stopped ||
+         this.draining.has(dir) ||
+         !this.transcriber.isAvailable()
+      )
+         return;
       const speakers =
-         this.pending.get(dir) ?? new Map<string, PendingBurst[]>();
+         this.pending.get(dir) ?? new Map<string, PendingSpeaker>();
       this.pending.set(dir, speakers);
-      const list = speakers.get(burst.speaker) ?? [];
-      list.push(burst);
-      speakers.set(burst.speaker, list);
-      const audioSec = list.reduce(
+      let pending = speakers.get(burst.userId);
+      if (!pending) {
+         const timer = setTimeout(() => {
+            const waiting = this.pending.get(dir)?.get(burst.userId);
+            if (waiting) waiting.expired = true;
+            this.maybeFlush(dir, burst.userId);
+         }, this.maxWaitMs);
+         timer.unref();
+         pending = { bursts: [], queuedAt: Date.now(), expired: false, timer };
+         speakers.set(burst.userId, pending);
+      }
+      pending.bursts.push(burst);
+      this.maybeFlush(dir, burst.userId);
+   }
+
+   status(dir: string): {
+      pendingBursts: number;
+      pendingAudioSec: number;
+      inFlightBatches: number;
+      oldestPendingMs: number;
+   } {
+      const speakers = [...(this.pending.get(dir)?.values() ?? [])];
+      const bursts = speakers.flatMap((s) => s.bursts);
+      return {
+         pendingBursts: bursts.length,
+         pendingAudioSec: Math.round(
+            bursts.reduce((s, b) => s + b.bytes, 0) / PCM_BYTES_PER_SECOND,
+         ),
+         inFlightBatches: [...this.inFlight.keys()].filter((key) =>
+            key.startsWith(`${dir}\u0000`),
+         ).length,
+         oldestPendingMs: speakers.length
+            ? Math.max(
+                 0,
+                 Date.now() - Math.min(...speakers.map((s) => s.queuedAt)),
+              )
+            : 0,
+      };
+   }
+
+   private maybeFlush(dir: string, userId: string): void {
+      if (this.stopped || this.draining.has(dir)) return;
+      const pending = this.pending.get(dir)?.get(userId);
+      if (!pending?.bursts.length) return;
+      const audioSec = pending.bursts.reduce(
          (s, b) => s + b.bytes / PCM_BYTES_PER_SECOND,
          0,
       );
       if (
-         audioSec >= LIVE_FLUSH_AUDIO_SEC ||
-         list.length >= LIVE_FLUSH_MAX_BURSTS
-      ) {
-         const key = `${dir}\u0000${burst.speaker}`;
-         if (this.inFlight.has(key)) return;
-         const run = this.flush(dir, burst.speaker).finally(() =>
-            this.inFlight.delete(key),
-         );
-         this.inFlight.set(key, run);
-      }
+         audioSec < LIVE_FLUSH_AUDIO_SEC &&
+         pending.bursts.length < LIVE_FLUSH_MAX_BURSTS &&
+         !pending.expired
+      )
+         return;
+      const key = `${dir}\u0000${userId}`;
+      if (this.inFlight.has(key)) return;
+      const run = this.flush(dir, userId).finally(() => {
+         this.inFlight.delete(key);
+         // Finished audio can arrive while whisper is busy. Recheck without
+         // requiring another speech turn (observed with 157 s waiting on Oct 6).
+         this.maybeFlush(dir, userId);
+      });
+      this.inFlight.set(key, run);
    }
 
-   /**
-    * Session over: wait for this session's running batches to land in the
-    * ledger, then drop its pending state (finalize owns the leftovers).
-    *
-    * Waiting is the point (2026-09-23 audit). The old `forget()` returned at
-    * once, so finalize read the ledger while live batches were still running —
-    * and transcribed those bursts a SECOND time: 2 / 9 / 115 / 25 / 12 bursts
-    * duplicated across the five most recent sessions, ~43% of all whisper time
-    * between /chopperbot-leave and the post (0922: a 345 s live batch finished
-    * 4 s after leave, then finalize re-ran the same bursts in a 521 s batch).
-    * A failed batch still resolves here (flush logs and swallows), so drain can
-    * never block finalize on an error.
-    */
+   /** Freeze new flushes before waiting; finalize owns every pending tail. */
    async drain(dir: string): Promise<void> {
-      const prefix = `${dir}\u0000`;
+      this.draining.add(dir);
+      for (const pending of this.pending.get(dir)?.values() ?? [])
+         clearTimeout(pending.timer);
       const running = [...this.inFlight.entries()]
-         .filter(([key]) => key.startsWith(prefix))
+         .filter(([key]) => key.startsWith(`${dir}\u0000`))
          .map(([, p]) => p);
       await Promise.allSettled(running);
       this.pending.delete(dir);
+      this.draining.delete(dir);
    }
 
-   private async flush(dir: string, speaker: string): Promise<void> {
-      const list = this.pending.get(dir)?.get(speaker);
-      if (!list || list.length === 0) return;
-      this.pending.get(dir)!.set(speaker, []);
+   dispose(): void {
+      this.stopped = true;
+      for (const speakers of this.pending.values())
+         for (const pending of speakers.values()) clearTimeout(pending.timer);
+      this.pending.clear();
+   }
+
+   private async flush(dir: string, userId: string): Promise<void> {
+      const pending = this.pending.get(dir)?.get(userId);
+      if (!pending?.bursts.length) return;
+      clearTimeout(pending.timer);
+      this.pending.get(dir)!.delete(userId);
+      const list = pending.bursts;
       try {
          for (const batch of planBatches(list)) {
+            const started = Date.now();
+            const audioSec =
+               batch.bursts.reduce(
+                  (s, b) => s + b.bytes / PCM_BYTES_PER_SECOND,
+                  0,
+               ) +
+               ((batch.bursts.length - 1) * BATCH_GAP_MS) / 1000;
             const entries = await transcribeBatch(this.transcriber, dir, batch);
             log.info(
                {
@@ -397,15 +469,17 @@ export class LiveTranscriber {
                   batch: batch.name,
                   bursts: batch.bursts.length,
                   segments: entries.reduce((s, e) => s + e.segments.length, 0),
+                  audioSec: Math.round(audioSec),
+                  tookMs: Date.now() - started,
+                  pending: this.status(dir),
                },
                "minutas.live_batch_transcribed",
             );
          }
       } catch (err) {
-         // Not retried live: the bursts are absent from the ledger, so finalize
-         // will transcribe them. Losing the live head start, never the audio.
+         // Failed batches remain unledgered for finalize; never retry them live.
          log.warn(
-            { err, dir: basename(dir), speaker },
+            { err, dir: basename(dir), userId },
             "minutas.live_batch_failed",
          );
       }

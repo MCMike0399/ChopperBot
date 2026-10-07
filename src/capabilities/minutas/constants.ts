@@ -49,6 +49,8 @@ export const WHISPER_SEC_PER_AUDIO_SEC = 0.82;
  */
 export const LIVE_FLUSH_AUDIO_SEC = 45;
 export const LIVE_FLUSH_MAX_BURSTS = 8;
+/** Flush short finished contributions even when the speaker never speaks again. */
+export const LIVE_FLUSH_MAX_WAIT_MS = 120_000;
 export const BATCH_GAP_MS = 1000;
 /** Cap one whisper invocation's audio (finalize-time batches of a whole assembly). */
 export const MAX_BATCH_AUDIO_SEC = 600;
