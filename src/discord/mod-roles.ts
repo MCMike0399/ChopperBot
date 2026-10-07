@@ -32,9 +32,11 @@ export const DEFAULT_MOD_ROLES = [
    "1436055845392879778",
 ] as const;
 
+export const GESTION_ROLE_ID = "1483694810253492235";
+
 export const DEFAULT_EVENT_ROLES = [
    ...DEFAULT_MOD_ROLES,
-   "1483694810253492235",
+   GESTION_ROLE_ID,
 ] as const;
 export type AuthorityTier = "moderation" | "events";
 export function effectiveRoleTokens(

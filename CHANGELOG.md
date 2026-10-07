@@ -14,6 +14,10 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.7.2 — 2026-10-07
+
+- Los recordatorios de eventos sin imagen de portada ahora también mencionan a la Comisión de Gestión, para que el equipo reciba el aviso y pueda agregar el flyer.
+
 ## 2.7.1 — 2026-10-06
 
 - Las minutas siguen transcribiendo lo que ya quedó grabado sin esperar a que alguien vuelva a hablar. Las intervenciones breves también se procesan durante la asamblea, para dejar menos trabajo al terminar.

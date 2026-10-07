@@ -21,11 +21,17 @@
  * announced (without a link), and a model outage costs the message its *style*,
  * never the heads-up itself.
  */
-import type { Client } from 'discord.js';
+import { PermissionFlagsBits, type Client } from 'discord.js';
 import { log } from '../../log.js';
 import { ask } from '../../llm/client.js';
 import { composeToolSources } from '../../tools/source.js';
-import { resolveModMentions, type ModMentions } from '../../discord/mod-roles.js';
+import {
+  effectiveRoleTokens,
+  GESTION_ROLE_ID,
+  resolveModMentions,
+  type ModMentions,
+} from '../../discord/mod-roles.js';
+import { CONFIGURATION_CHANNEL_ID } from '../configuration/constants.js';
 import { sendAdminAlert } from '../../discord/admin-alert.js';
 import type { CalendarStore } from './store.js';
 import { localParts } from './grid.js';
@@ -691,16 +697,19 @@ export class CalendarAnnouncer {
     kind: 'nudge' | 'banner_reminder',
     opts: RunOptions,
   ): Promise<boolean> {
-    const mentions = await this.resolveModMentions(guildId);
-    const body = mentions.text
-      ? `${text}\n\n${mentions.notifies ? mentions.text : `Aviso para ${mentions.text}`}`
+    const managementChannelId = this.deps.getManagementChannelId();
+    const mentions = await this.resolveModMentions(
+      guildId, kind, managementChannelId ?? CONFIGURATION_CHANNEL_ID,
+    );
+    const renderBody = (m: ModMentions) => m.text
+      ? `${text}\n\n${m.notifies ? m.text : `Aviso para ${m.text}`}`
       : text;
+    const body = renderBody(mentions);
     if (opts.dryRun) {
       log.info({ kind, body }, `calendar.announce.${kind}_dry_run`);
       return true;
     }
 
-    const managementChannelId = this.deps.getManagementChannelId();
     if (managementChannelId) {
       try {
         const ch = await this.deps.client.channels.fetch(managementChannelId);
@@ -726,28 +735,53 @@ export class CalendarAnnouncer {
     }
     // Fallback surface (no mod-facing channel resolvable): the nudge still has
     // to ring the approver roles, so they're passed as the explicit allowlist.
-    await sendAdminAlert(this.deps.client, [body], `calendar.announce.${kind}`, mentions.notifyIds);
+    const fallbackMentions = managementChannelId
+      ? await this.resolveModMentions(guildId, kind, CONFIGURATION_CHANNEL_ID)
+      : mentions;
+    await sendAdminAlert(
+      this.deps.client, [renderBody(fallbackMentions)],
+      `calendar.announce.${kind}`, fallbackMentions.notifyIds,
+    );
     return true;
   }
 
   /**
-   * Approver roles for the nudge, restricted to roles marked **mentionable**.
-   *
-   * Deliberately passes `canMentionAny: false` even when the bot holds
-   * MentionEveryone: a role left unmentionable is the admins saying "don't ping
-   * this one", and a recurring housekeeping reminder is the last thing that
-   * should override that. In this guild the difference is real — the approver set
-   * is five roles, of which two are mentionable; without the restriction a
-   * routine "create the Discord event" nudge would page all five.
+   * Housekeeping only pings mentionable approver roles. Cover reminders also
+   * notify Gestión when the bot has MentionEveryone in the destination channel.
+   * That exception is limited to Gestión; other silent staff roles stay silent.
    */
-  private async resolveModMentions(guildId: string): Promise<ModMentions> {
+  private async resolveModMentions(
+    guildId: string,
+    kind: 'nudge' | 'banner_reminder',
+    channelId: string,
+  ): Promise<ModMentions> {
     try {
       const guild = await this.deps.client.guilds.fetch(guildId);
       let roles = guild.roles.cache;
       if (roles.size === 0) roles = await guild.roles.fetch();
+      let canMentionGestion = false;
+      const gestion = roles.get(GESTION_ROLE_ID);
+      if (kind === 'banner_reminder' && gestion && !gestion.mentionable) {
+        try {
+          const channel = await this.deps.client.channels.fetch(channelId);
+          const me = await guild.members.fetchMe();
+          canMentionGestion = !!channel &&
+            'guildId' in channel && channel.guildId === guildId &&
+            'permissionsFor' in channel &&
+            channel.permissionsFor(me)?.has(PermissionFlagsBits.MentionEveryone) === true;
+        } catch (err) {
+          log.warn({ err, guildId, channelId }, 'calendar.announce.gestion_permission_failed');
+        }
+      }
       return resolveModMentions(
-        roles.map((r) => ({ id: r.id, name: r.name, mentionable: r.mentionable })),
-        this.deps.getModRoles(),
+        roles.map((r) => ({
+          id: r.id,
+          name: r.name,
+          mentionable: r.mentionable || (r.id === GESTION_ROLE_ID && canMentionGestion),
+        })),
+        kind === 'banner_reminder'
+          ? [...effectiveRoleTokens(this.deps.getModRoles(), 'events'), GESTION_ROLE_ID]
+          : this.deps.getModRoles(),
         { canMentionAny: false },
       );
     } catch (err) {
