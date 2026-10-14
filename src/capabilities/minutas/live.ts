@@ -1,5 +1,5 @@
 import { appendFileSync, readFileSync } from "node:fs";
-import { unlink } from "node:fs/promises";
+import { rename, unlink } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { log } from "../../log.js";
 import {
@@ -9,6 +9,7 @@ import {
    LIVE_FLUSH_MAX_BURSTS,
    LIVE_FLUSH_MAX_WAIT_MS,
    MAX_BATCH_AUDIO_SEC,
+   DEGENERATE_MIN_AUDIO_SEC,
    PCM_BYTES_PER_SECOND,
    WHISPER_PROMPT_MAX_CHARS,
    WHISPER_VOCABULARY,
@@ -129,6 +130,30 @@ const HALLUCINATION_RE = new RegExp(
 
 export function isWhisperHallucination(text: string): boolean {
    return HALLUCINATION_RE.test(text.trim());
+}
+
+/**
+ * Whisper stuck in a repetition loop: on real audio, most segments are stock
+ * hallucinations or one line repeated.
+ *
+ * Why (2026-10-13 live review): one batch of 24 bursts / 289 s, opened by four
+ * near-silent bursts, came back as «(Los Chacóns)» 60 times. Every segment was
+ * a bracket tag, so the filter dropped them all and the ledger silently got
+ * 4½ minutes of the moderator's speech as nothing, right where the action plan
+ * was moved to the next assembly. Re-run with `-mc 0` (no conditioning on its
+ * own previous text) on the same WAV: 519 words, punctuated, same wall time.
+ */
+export function isDegenerateTranscript(
+   segments: readonly TranscriptSegment[],
+   audioSec: number,
+): boolean {
+   if (audioSec < DEGENERATE_MIN_AUDIO_SEC || segments.length < 4) return false;
+   const texts = segments.map((s) => s.text.trim().toLowerCase());
+   const junk = texts.filter((t) => isWhisperHallucination(t)).length;
+   const counts = new Map<string, number>();
+   for (const t of texts) counts.set(t, (counts.get(t) ?? 0) + 1);
+   const top = Math.max(...counts.values());
+   return junk / texts.length >= 0.5 || top / texts.length >= 0.5;
 }
 
 /**
@@ -307,11 +332,33 @@ export async function transcribeBatch(
    const wavPath = join(dir, ARTIFACTS.audioDir, `${batch.name}.wav`);
    await pcmToWav(concatPcm, wavPath);
    await unlink(concatPcm).catch(() => {});
-   const segments = await transcriber.transcribe(
-      wavPath,
-      join(dir, ARTIFACTS.whisperDir, batch.name),
-      { prompt: whisperPromptFor(dir) },
-   );
+   const outBase = join(dir, ARTIFACTS.whisperDir, batch.name);
+   const prompt = whisperPromptFor(dir);
+   let segments = await transcriber.transcribe(wavPath, outBase, { prompt });
+   const audioSec = slots.reduce((s, x) => s + x.durationMs, 0) / 1000;
+   if (isDegenerateTranscript(segments, audioSec)) {
+      // Keep the looping raw beside the retry: it is the evidence.
+      await rename(`${outBase}.json`, `${outBase}-degenerate.json`).catch(
+         () => {},
+      );
+      const retried = await transcriber.transcribe(wavPath, outBase, {
+         prompt,
+         noContext: true,
+      });
+      log.warn(
+         {
+            dir: basename(dir),
+            batch: batch.name,
+            audioSec: Math.round(audioSec),
+            segments: segments.length,
+            sample: segments[0]?.text,
+            retriedSegments: retried.length,
+            stillDegenerate: isDegenerateTranscript(retried, audioSec),
+         },
+         "minutas.whisper_degenerate_retried",
+      );
+      segments = retried;
+   }
    const entries = mapBatchSegments(
       segments,
       slots.map((s, i) => ({

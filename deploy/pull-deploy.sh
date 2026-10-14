@@ -13,6 +13,8 @@
 #   - tracked files are modified (in-flight work on the Pi is never discarded),
 #   - the tag is not on origin/main, or main cannot fast-forward to it.
 # Untracked files (calendar/*.pdf, .env, data/, local-only docs) are never touched.
+# A minutas recording or finalize in progress defers the deploy quietly (no alert):
+# a restart would cut the recording short. The next timer run retries.
 # A tag that failed its health check is remembered in data/.deploy-failed-tag and
 # not retried; delete that file (or ship a newer tag) to try again.
 set -euo pipefail
@@ -109,6 +111,19 @@ git merge-base --is-ancestor "${tag}^{commit}" "origin/$BRANCH" \
    || blocked "$tag no está en origin/$BRANCH; no se despliega."
 git merge-base --is-ancestor HEAD "${tag}^{commit}" \
    || blocked "$BRANCH en el Pi tiene commits que no están en $tag; no se puede avanzar sin fusionar."
+
+# A restart mid-meeting ends the recording early: the voice connection drops and
+# the boot sweep finalizes the session with whatever was captured. Defer instead.
+# (No sqlite3 or no DB → nothing to protect, deploy as usual.)
+busy=0
+if [[ -f data/chopperbot.db ]] && command -v sqlite3 >/dev/null; then
+   busy=$(sqlite3 -readonly data/chopperbot.db \
+      "select count(*) from minutas_sessions where status in ('active','processing')" 2>/dev/null || echo 0)
+fi
+if [[ "${busy:-0}" != "0" ]]; then
+   log "$tag waits: a minutas session is recording or finalizing"
+   exit 0
+fi
 
 if [[ "$DRY_RUN" == "1" ]]; then
    log "would deploy $(git rev-parse --short HEAD) -> $tag"

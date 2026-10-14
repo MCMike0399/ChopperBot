@@ -10,6 +10,7 @@ import {
 } from "@discordjs/voice";
 import {
    GuildScheduledEventStatus,
+   MessageType,
    type Guild,
    type GuildScheduledEvent,
    type Message,
@@ -183,6 +184,11 @@ export class MinutasSessions {
          channelName: s.channelName,
          startedAtMs: s.startedAtMs,
       };
+   }
+
+   /** Whether any guild is capturing audio right now (whisper thread width). */
+   isRecording(): boolean {
+      return this.active.size > 0;
    }
 
    /** Whether a message belongs to an active session's voice-channel chat. */
@@ -588,6 +594,8 @@ export class MinutasSessions {
       );
       if (!session || session.closed) return;
       if (message.author?.bot) return;
+      const content = chatContentOf(message);
+      if (!content) return;
       const author =
          message.member?.displayName ??
          message.author?.globalName ??
@@ -596,7 +604,7 @@ export class MinutasSessions {
       this.recordChatLine(session.guild.id, {
          userId: message.author.id,
          author,
-         content: chatContentOf(message),
+         content,
          messageId: message.id,
          ...(message.poll ? { poll: pollOf(message.poll) } : {}),
       });
@@ -774,8 +782,28 @@ function pollOf(poll: NonNullable<Message["poll"]>): ChatPoll {
 }
 
 /**
+ * Stage-channel system notices, as the minutes writer should read them. In a
+ * stage, who is on stage is who may speak, so these are timeline context.
+ *
+ * Why (2026-10-13 live review): they have no content, attachments or stickers,
+ * so they were stored as EMPTY chat lines — «Infestissumam: » right when that
+ * member went up to present the collective (6 of 419 lines on 2026-10-06 too).
+ */
+const STAGE_NOTES: Partial<Record<MessageType, (topic: string) => string>> = {
+   [MessageType.StageStart]: (t) =>
+      `[abrió el escenario${t ? `: «${t}»` : ""}]`,
+   [MessageType.StageEnd]: () => "[cerró el escenario]",
+   [MessageType.StageSpeaker]: () => "[subió al escenario]",
+   [MessageType.StageRaiseHand]: () => "[levantó la mano para hablar]",
+   [MessageType.StageTopic]: (t) =>
+      `[cambió el tema del escenario${t ? `: «${t}»` : ""}]`,
+};
+
+/**
  * A chat message as the minutes writer should read it: one line, mentions as
- * names, and a note for what text can't carry.
+ * names, and a note for what text can't carry. Empty means "nothing to
+ * record": other system notices (joins, pins, boosts, threads) and messages
+ * with nothing readable are skipped rather than stored as blank lines.
  *
  * Why (2026-09-23 audit): only `content` was stored, so 262 of 3,472 captured
  * lines were EMPTY — attachments, stickers and polls — and the assemblies vote
@@ -784,6 +812,11 @@ function pollOf(poll: NonNullable<Message["poll"]>): ChatPoll {
  * one-line draft format.
  */
 export function chatContentOf(message: Message): string {
+   const type = message.type ?? MessageType.Default;
+   if (type !== MessageType.Default && type !== MessageType.Reply) {
+      const note = STAGE_NOTES[type];
+      return note ? note((message.content ?? "").trim()) : "";
+   }
    const names = new Map<string, string>();
    for (const u of message.mentions?.users?.values() ?? []) {
       names.set(

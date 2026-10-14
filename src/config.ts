@@ -478,6 +478,15 @@ const ConfigSchema = z
       // whisper at leave is the last un-flushed tail. A single whisper process at
       // a time. Live .env often uses 2 so cores stay free alongside the gateway.
       MINUTAS_WHISPER_THREADS: z.coerce.number().int().min(1).max(8).default(4),
+      // Threads once NO session is recording (the leave → post tail and the boot
+      // sweep): nothing live competes for the cores then, so the tail runs at
+      // full width. Measured on real audio: -t 4 = 166 s vs -t 2 = 203 s.
+      MINUTAS_WHISPER_IDLE_THREADS: z.coerce
+         .number()
+         .int()
+         .min(1)
+         .max(8)
+         .default(4),
       // Backstop auto-end for a forgotten session (e.g. the mod walks away).
       MINUTAS_MAX_SESSION_MINUTES: z.coerce
          .number()

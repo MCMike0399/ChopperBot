@@ -54,6 +54,11 @@ export const LIVE_FLUSH_MAX_WAIT_MS = 120_000;
 export const BATCH_GAP_MS = 1000;
 /** Cap one whisper invocation's audio (finalize-time batches of a whole assembly). */
 export const MAX_BATCH_AUDIO_SEC = 600;
+/**
+ * Below this much speech a run of identical short segments can be genuine
+ * («sí», «sí», «sí»…), so the repetition-loop check only applies above it.
+ */
+export const DEGENERATE_MIN_AUDIO_SEC = 20;
 
 /**
  * Bursts shorter than this are skipped at transcribe time. Kept deliberately

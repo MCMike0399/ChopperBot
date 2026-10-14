@@ -28,11 +28,13 @@ export interface Transcriber {
    /**
     * Transcribe a 16 kHz mono WAV; rejects on engine failure. `prompt` is
     * whisper's initial prompt — vocabulary and names to spell right.
+    * `noContext` stops whisper conditioning on its own previous text
+    * (`-mc 0`), the retry for a repetition loop.
     */
    transcribe(
       wavPath: string,
       outBase: string,
-      opts?: { prompt?: string },
+      opts?: { prompt?: string; noContext?: boolean },
    ): Promise<TranscriptSegment[]>;
 }
 
@@ -40,7 +42,12 @@ interface WhisperCliOptions {
    bin: string;
    modelPath: string;
    language: string;
+   /** Threads while a session is recording (cores stay free for capture). */
    threads: number;
+   /** Threads once nothing is recording; defaults to `threads`. */
+   idleThreads?: number;
+   /** Whether any session is capturing audio right now. */
+   isRecording?: () => boolean;
 }
 
 /**
@@ -61,21 +68,37 @@ export class WhisperCliTranscriber implements Transcriber {
    transcribe(
       wavPath: string,
       outBase: string,
-      opts?: { prompt?: string },
+      opts?: { prompt?: string; noContext?: boolean },
    ): Promise<TranscriptSegment[]> {
       const run = this.queue.then(() =>
-         this.transcribeNow(wavPath, outBase, opts?.prompt),
+         this.transcribeNow(wavPath, outBase, opts),
       );
       this.queue = run.catch(() => {});
       return run;
    }
 
+   /**
+    * Chosen when the process SPAWNS, not when the call was queued: batches
+    * still waiting behind the serialized queue at `/chopperbot-leave` run at
+    * full width. Why (2026-10-13 live review): the 2-thread setting exists to
+    * keep cores free alongside a live recording, yet the whole leave → post
+    * wait (16 min on 2026-10-06, ~15 of it whisper) also ran at 2 threads
+    * with nothing else recording.
+    */
+   threadsNow(): number {
+      return this.opts.isRecording?.() === false
+         ? (this.opts.idleThreads ?? this.opts.threads)
+         : this.opts.threads;
+   }
+
    private async transcribeNow(
       wavPath: string,
       outBase: string,
-      prompt?: string,
+      opts?: { prompt?: string; noContext?: boolean },
    ): Promise<TranscriptSegment[]> {
+      const prompt = opts?.prompt;
       const started = Date.now();
+      const threads = this.threadsNow();
       const running = execFileAsync(
          this.opts.bin,
          [
@@ -89,8 +112,9 @@ export class WhisperCliTranscriber implements Transcriber {
             "-of",
             outBase,
             "-t",
-            String(this.opts.threads),
+            String(threads),
             "-np",
+            ...(opts?.noContext ? ["-mc", "0"] : []),
             ...(prompt ? ["--prompt", prompt] : []),
          ],
          // A 2 h monologue on the small model is ~1.5 h of Pi CPU worst case —
@@ -122,7 +146,13 @@ export class WhisperCliTranscriber implements Transcriber {
          }))
          .filter((s) => s.text.length > 0);
       log.info(
-         { wavPath, segments: segments.length, tookMs: Date.now() - started },
+         {
+            wavPath,
+            segments: segments.length,
+            threads,
+            ...(opts?.noContext ? { noContext: true } : {}),
+            tookMs: Date.now() - started,
+         },
          "minutas.transcribed",
       );
       return segments;

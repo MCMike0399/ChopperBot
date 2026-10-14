@@ -358,13 +358,35 @@ const plain = (s: string) =>
       .replace(/\s+/g, " ")
       .trim();
 
-/** Empty model placeholders are not incidents and must not anonymize a roster. */
-function hasInternalConduct(section: string | null): boolean {
+/**
+ * Empty model placeholders are not incidents and must not anonymize a roster.
+ *
+ * Besides the exact phrasings, a line is a placeholder when it only negates a
+ * "nothing" noun — «N/A. No se registraron asuntos de conducta, convivencia o
+ * moderación sobre personas concretas del servidor.» (2026-10-13: that exact
+ * line anonymized 34 names and sent an empty staff post) — names nobody, and
+ * carries no «pero / aunque / sin embargo» clause. The section never publishes
+ * either way; this only decides anonymization and the internal record.
+ */
+function hasInternalConduct(
+   section: string | null,
+   participants: readonly string[],
+): boolean {
    if (!section) return false;
    const lines = section.split("\n").slice(1).map(plain).filter(Boolean);
    const empty =
       /^(?:no se (?:trataron|abordaron|reportaron|registraron|discutieron) asuntos de convivencia(?: sobre personas concretas)?|no hubo(?: asuntos de convivencia| incidentes(?: de convivencia)?| casos(?: de convivencia)?)?|sin (?:asuntos de convivencia|incidentes(?: de convivencia)?|casos(?: de convivencia)?)|ninguno|ninguna|no aplica|n a)$/;
-   return lines.some((line) => !empty.test(line));
+   const negatedNothing =
+      /^(?:(?:n a|no aplica|ninguno|ninguna) )?(?:no se \p{L}+|no (?:hubo|hay|existen|existieron)|sin) (?:ningun\p{L}* )?(?:asuntos?|incidentes?|casos?|temas?|situaciones?|reportes?|quejas?|denuncias?)\b/u;
+   const names = participantNames(participants);
+   const placeholder = (line: string) =>
+      empty.test(line) ||
+      (negatedNothing.test(line) &&
+         !/\b(?:pero|aunque|sin embargo|salvo|excepto)\b/.test(line) &&
+         !names.some((n) =>
+            new RegExp(`(?<![\\p{L}\\d])${n}(?![\\p{L}\\d])`, "u").test(line),
+         ));
+   return lines.some((line) => !placeholder(line));
 }
 
 /**
@@ -421,7 +443,9 @@ export function publicMinutes(
 } {
    const heading = body.search(INTERNAL_CONDUCT_HEADING);
    const candidate = heading >= 0 ? body.slice(heading).trim() : null;
-   const section = hasInternalConduct(candidate) ? candidate : null;
+   const section = hasInternalConduct(candidate, meta.participants)
+      ? candidate
+      : null;
    const visible = heading >= 0 ? body.slice(0, heading).trimEnd() : body;
    const patterns = memberConductPatterns(meta.participants);
    const named = (line: string) =>

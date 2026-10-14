@@ -14,6 +14,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
    LiveTranscriber,
    appendLedger,
+   isDegenerateTranscript,
    mapBatchSegments,
    planBatches,
    readLedger,
@@ -293,6 +294,137 @@ describe.skipIf(!hasFfmpeg)("transcribeBatch", () => {
       expect(readLedger(dir).size).toBe(2);
       expect(existsSync(join(dir, "audio/batch-001-Ana.pcm"))).toBe(false); // temp removed
       expect(existsSync(join(dir, "audio/batch-001-Ana.wav"))).toBe(true); // archive kept
+   });
+});
+
+describe("isDegenerateTranscript (2026-10-13 «(Los Chacóns)» ×60)", () => {
+   const seg = (text: string, i = 0) => ({
+      startMs: i * 3000,
+      endMs: i * 3000 + 2000,
+      text,
+   });
+
+   it("flags the live loop: one bracket tag for every segment of 289 s", () => {
+      const loop = Array.from({ length: 60 }, (_, i) =>
+         seg("(Los Chacóns)", i),
+      );
+      expect(isDegenerateTranscript(loop, 289)).toBe(true);
+   });
+
+   it("flags one repeated sentence that is not a known tag", () => {
+      const loop = Array.from({ length: 10 }, (_, i) =>
+         seg("Gracias por su atención.", i),
+      );
+      expect(isDegenerateTranscript(loop, 60)).toBe(true);
+   });
+
+   it("leaves normal speech alone, even with an occasional tag", () => {
+      const ok = [
+         "A ver, dentro de las acciones que se puedan llevar a cabo.",
+         "Creo que sí hay que establecer tiempos para los relatos.",
+         "[Música]",
+         "Lo podemos tomar para la próxima asamblea.",
+         "¿Están de acuerdo?",
+      ].map(seg);
+      expect(isDegenerateTranscript(ok, 60)).toBe(false);
+   });
+
+   it("leaves short audio alone: «sí, sí, sí» can be genuine", () => {
+      const yes = Array.from({ length: 5 }, (_, i) => seg("Sí.", i));
+      expect(isDegenerateTranscript(yes, 8)).toBe(false);
+      expect(isDegenerateTranscript([seg("(risas)")], 120)).toBe(false);
+   });
+});
+
+describe.skipIf(!hasFfmpeg)("transcribeBatch repetition-loop retry", () => {
+   const dir = mkdtempSync(join(tmpdir(), "minutas-loop-"));
+   afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+   class LoopingTranscriber implements Transcriber {
+      opts: Array<{ prompt?: string; noContext?: boolean } | undefined> = [];
+      isAvailable(): boolean {
+         return true;
+      }
+      async transcribe(
+         _wav: string,
+         outBase: string,
+         opts?: { prompt?: string; noContext?: boolean },
+      ): Promise<TranscriptSegment[]> {
+         this.opts.push(opts);
+         await writeFile(
+            `${outBase}.json`,
+            JSON.stringify({ run: this.opts.length }),
+         );
+         return opts?.noContext
+            ? [
+                 {
+                    startMs: 500,
+                    endMs: 20_000,
+                    text: "lo llevamos a la próxima asamblea",
+                 },
+              ]
+            : Array.from({ length: 10 }, (_, i) => ({
+                 startMs: i * 2500,
+                 endMs: i * 2500 + 2000,
+                 text: "(Los Chacóns)",
+              }));
+      }
+   }
+
+   it("re-runs a looping batch once with noContext and keeps the looping raw", async () => {
+      mkdirSync(join(dir, ARTIFACTS.audioDir), { recursive: true });
+      mkdirSync(join(dir, ARTIFACTS.whisperDir), { recursive: true });
+      writeFileSync(
+         join(dir, "audio/288-Galaxy.pcm"),
+         Buffer.alloc(PCM_BYTES_PER_SECOND * 25),
+      );
+      const t = new LoopingTranscriber();
+      const entries = await transcribeBatch(t, dir, {
+         name: "batch-288-Galaxy",
+         speaker: "Galaxy",
+         bursts: [
+            burst({
+               seq: 288,
+               file: "audio/288-Galaxy.pcm",
+               startedAtMs: 0,
+               bytes: PCM_BYTES_PER_SECOND * 25,
+            }),
+         ],
+      });
+      expect(t.opts.map((o) => o?.noContext ?? false)).toEqual([false, true]);
+      expect(t.opts[1]!.prompt).toBe(t.opts[0]!.prompt);
+      expect(entries[0]!.segments.map((s) => s.text)).toEqual([
+         "lo llevamos a la próxima asamblea",
+      ]);
+      expect(
+         readLedger(dir).get("audio/288-Galaxy.pcm")!.segments,
+      ).toHaveLength(1);
+      const raw = (f: string) =>
+         JSON.parse(readFileSync(join(dir, ARTIFACTS.whisperDir, f), "utf8"));
+      expect(raw("batch-288-Galaxy-degenerate.json")).toEqual({ run: 1 });
+      expect(raw("batch-288-Galaxy.json")).toEqual({ run: 2 });
+   });
+
+   it("a normal batch is transcribed exactly once", async () => {
+      writeFileSync(
+         join(dir, "audio/400-Ana.pcm"),
+         Buffer.alloc(PCM_BYTES_PER_SECOND * 25),
+      );
+      const t = new RecordingTranscriber();
+      t.segments = [{ startMs: 0, endMs: 3000, text: "buenas noches" }];
+      await transcribeBatch(t, dir, {
+         name: "batch-400-Ana",
+         speaker: "Ana",
+         bursts: [
+            burst({
+               seq: 400,
+               file: "audio/400-Ana.pcm",
+               startedAtMs: 0,
+               bytes: PCM_BYTES_PER_SECOND * 25,
+            }),
+         ],
+      });
+      expect(t.calls).toEqual(["batch-400-Ana.wav"]);
    });
 });
 

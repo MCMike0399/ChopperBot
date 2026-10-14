@@ -81,6 +81,8 @@ export class MinutasCapability implements Capability {
          modelPath: resolve(projectRoot, config.MINUTAS_WHISPER_MODEL_PATH),
          language: config.MINUTAS_WHISPER_LANGUAGE,
          threads: config.MINUTAS_WHISPER_THREADS,
+         idleThreads: config.MINUTAS_WHISPER_IDLE_THREADS,
+         isRecording: () => this.sessions?.isRecording() ?? false,
       });
       this.sessionsDir = resolve(
          projectRoot,

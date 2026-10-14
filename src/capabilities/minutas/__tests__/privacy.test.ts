@@ -89,6 +89,9 @@ test.each([
    "No se trataron asuntos de convivencia sobre personas concretas.",
    "Sin asuntos de convivencia.",
    "No hubo incidentes.",
+   // 2026-10-13 live session: anonymized a 34-name roster before this fix.
+   "- N/A. No se registraron asuntos de conducta, convivencia o moderación sobre personas concretas del servidor.",
+   "- Ninguno. No hubo casos de convivencia que reportar.",
 ])(
    "an empty internal section does not hide the participant roster: %s",
    (placeholder) => {
@@ -103,6 +106,24 @@ test.each([
       expect(result.meta.participants).toEqual(meta.participants);
    },
 );
+
+test.each([
+   "No se registraron asuntos de convivencia, pero hubo una discusión entre dos personas.",
+   "No se registraron incidentes salvo el aviso a Persona ficticia A.",
+   "No hubo denuncias formales; Persona ficticia B pidió hablar con moderación.",
+   "Hubo una discusión fuerte en el chat que moderación debe revisar.",
+])("a real internal section is still treated as conduct: %s", (line) => {
+   const result = publicMinutes(
+      `## Resumen\nSe revisó la agenda.\n\n## Convivencia (interna)\n- ${line}`,
+      meta,
+   );
+   expect(result.redacted).toBe(true);
+   expect(result.body).not.toContain(line);
+   expect(result.internal).toContain(line);
+   expect(result.meta.participants).toEqual([
+      `${meta.participants.length} personas`,
+   ]);
+});
 
 test.each([
    "Persona ficticia A denunció a Persona ficticia B por acoso.",

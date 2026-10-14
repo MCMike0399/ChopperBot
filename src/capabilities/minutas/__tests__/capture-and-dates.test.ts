@@ -4,7 +4,7 @@
  * the date table that stops "sábado 29" drifting into the wrong month.
  */
 import { describe, test, expect } from "vitest";
-import type { Message } from "discord.js";
+import { MessageType, type Message } from "discord.js";
 import { chatContentOf } from "../session.js";
 import { buildMinutesSystemPrompt, renderDateTable } from "../minutes.js";
 
@@ -73,6 +73,46 @@ describe("chatContentOf", () => {
             }),
          ),
       ).toBe("[encuesta: «¿Cambiamos el horario?»]");
+   });
+});
+
+describe("chatContentOf — system notices (2026-10-13 live review)", () => {
+   test("stage notices become readable timeline notes, not empty lines", () => {
+      expect(chatContentOf(msg({ type: MessageType.StageSpeaker }))).toBe(
+         "[subió al escenario]",
+      );
+      expect(chatContentOf(msg({ type: MessageType.StageRaiseHand }))).toBe(
+         "[levantó la mano para hablar]",
+      );
+      expect(
+         chatContentOf(
+            msg({ type: MessageType.StageStart, content: "Asamblea" }),
+         ),
+      ).toBe("[abrió el escenario: «Asamblea»]");
+      expect(
+         chatContentOf(
+            msg({ type: MessageType.StageTopic, content: "Plan de acción" }),
+         ),
+      ).toBe("[cambió el tema del escenario: «Plan de acción»]");
+      expect(chatContentOf(msg({ type: MessageType.StageEnd }))).toBe(
+         "[cerró el escenario]",
+      );
+   });
+
+   test("other system notices and blank messages record nothing", () => {
+      expect(
+         chatContentOf(msg({ type: MessageType.UserJoin, content: "hola" })),
+      ).toBe("");
+      expect(
+         chatContentOf(msg({ type: MessageType.ChannelPinnedMessage })),
+      ).toBe("");
+      expect(chatContentOf(msg({}))).toBe("");
+   });
+
+   test("replies are ordinary chat", () => {
+      expect(
+         chatContentOf(msg({ type: MessageType.Reply, content: "de acuerdo" })),
+      ).toBe("de acuerdo");
    });
 });
 

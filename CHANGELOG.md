@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.7.3 — 2026-10-13
+
+- Cuando alguien sube al escenario, levanta la mano o cambia el tema en un canal de escenario, la minuta ahora lo registra como una nota clara en lugar de una línea vacía. Los demás avisos automáticos de Discord ya no se guardan.
+- Al terminar una grabación, ChopperBot usa toda la potencia del equipo para transcribir lo que falta, así que la minuta debería publicarse antes. Mientras la asamblea sigue en curso, conserva el modo ligero de siempre.
+- Si la transcripción automática se atora repitiendo la misma frase sin sentido, ChopperBot lo detecta y vuelve a transcribir ese tramo. Antes, ese error podía dejar fuera de la minuta varios minutos de una intervención.
+- Cuando no hubo asuntos de convivencia, la minuta vuelve a mostrar los nombres de quienes participaron y ya no manda un aviso vacío al canal de moderación.
+- Las actualizaciones automáticas de ChopperBot esperan a que termine cualquier grabación de minuta en curso, para no cortarla a la mitad.
+
 ## 2.7.2 — 2026-10-07
 
 - Los recordatorios de eventos sin imagen de portada ahora también mencionan a la Comisión de Gestión, para que el equipo reciba el aviso y pueda agregar el flyer.
