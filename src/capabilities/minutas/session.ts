@@ -850,7 +850,11 @@ export function chatContentOf(message: Message): string {
    for (const st of message.stickers?.values() ?? [])
       extras.push(`[sticker: ${st.name}]`);
    if (message.poll) {
-      extras.push(`[encuesta: «${message.poll.question?.text ?? ""}»]`);
+      // A poll question can carry a line break; the draft is one line per entry.
+      const question = (message.poll.question?.text ?? "")
+         .replace(/\s*\n+\s*/g, " ")
+         .trim();
+      extras.push(`[encuesta: «${question}»]`);
    }
    text = [text, ...extras].filter(Boolean).join(" ");
    return text;

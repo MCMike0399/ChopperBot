@@ -67,7 +67,7 @@ test("ordinary study minutes remain useful", () => {
    expect(publicMinutes(body, meta).body).toBe(body);
 });
 
-test("an assembly-sized synthetic transcript uses one full-context pass", async () => {
+test("an assembly-sized synthetic transcript uses one full-context, thinking pass", async () => {
    askMock.mockReset();
    askMock.mockResolvedValue("## Resumen\nSe estudió un texto.");
    const draft =
@@ -75,7 +75,30 @@ test("an assembly-sized synthetic transcript uses one full-context pass", async 
    await generateMinutes(draft, { ...meta, title: "Encuentro de lectura" });
    expect(askMock).toHaveBeenCalledTimes(1);
    expect(askMock.mock.calls[0][0].messages[0].content).toContain(draft);
-   expect(askMock.mock.calls[0][0].effort).toBe("low");
+   expect(askMock.mock.calls[0][0].effort).toBe("high");
+});
+
+test("over the single-pass budget: blocks extract at low, the acta is written at high", async () => {
+   askMock.mockReset();
+   askMock.mockResolvedValue("## Resumen\nSe estudió un texto.");
+   const draft =
+      "[00:00] Persona ficticia: Comentario sobre un texto largo.\n".repeat(
+         20_000,
+      ); // ~1.06M chars > 900k
+   await generateMinutes(draft, meta);
+   const efforts = askMock.mock.calls.map((c) => c[0].effort);
+   expect(efforts.length).toBeGreaterThan(2);
+   expect(efforts.slice(0, -1).every((e) => e === "low")).toBe(true);
+   expect(efforts.at(-1)).toBe("high");
+});
+
+test.each([
+   "Persona ficticia B leyó en el chat el reporte de Persona ficticia A sobre la marcha.",
+   "Se atendió la queja de Persona ficticia A sobre el horario.",
+])("authorship is not an incident: %s", (line) => {
+   const body = `## Temas tratados\n- ${line}`;
+   expect(publicMinutes(body, meta).redacted).toBe(false);
+   expect(publicMinutes(body, meta).body).toBe(body);
 });
 
 test("a reporter's political/public-news paragraph remains public", () => {
@@ -128,6 +151,8 @@ test.each([
 test.each([
    "Persona ficticia A denunció a Persona ficticia B por acoso.",
    "Se recibió una denuncia contra Persona ficticia A.",
+   "Hubo un reporte contra Persona ficticia B.",
+   "Se revisó el caso de Persona ficticia A.",
    "Se acordó banear a Persona ficticia B.",
    "Persona ficticia A relató un insulto de Persona ficticia B.",
    "Persona ficticia A explicó que Persona ficticia B acosó a alguien.",

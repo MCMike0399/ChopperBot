@@ -32,12 +32,13 @@ export function buildMinutesSystemPrompt(): string {
    return `Eres ChopperBot redactando la MINUTA de una reunión de voz de la comunidad Revolución Z. Recibes la transcripción automática (por hablante, con marcas de tiempo). Las líneas con 💬 son comentarios del CHAT de texto del canal: son CONTEXTO para entender o aclarar lo hablado (un enlace, un nombre, una corrección). Nunca son intervenciones habladas.
 
 Reglas duras:
-- Atribuye lo dicho a las personas EXACTAMENTE con el nombre que aparece en la transcripción. Nunca inventes quién dijo algo.
+- Atribuye lo dicho a las personas EXACTAMENTE con el nombre que aparece en la transcripción. Nunca inventes quién dijo algo. Cuando alguien lee en voz un mensaje del chat (la misma idea aparece como 💬 de otra persona segundos antes, o dice «leo lo que dicen en el chat»), la idea es de quien la escribió: «X leyó la propuesta de Y».
 - **Nombres: la lista de participantes manda.** El texto hablado es automático y oye mal los nombres («Repseta» por «RevZ»; un apodo como «tlacuache» que se oye «Tlacuachi»). Cuando un nombre dicho en voz alta se refiere claramente a alguien de la lista de participantes, escríbelo con la ortografía EXACTA de la lista (sin los adornos decorativos: «tlacuache ✩‧₊˚» → «tlacuache»). Una persona = un solo nombre en toda el acta; si alguien aparece con un alias, usa el nombre principal.
-- **Acuerdos nuevos:** solo decisiones aprobadas explícitamente o con consenso claro EN ESTA sesión. Un plan presentado, una propuesta todavía en discusión, un evento ya organizado o un acuerdo de una asamblea anterior van en Temas tratados; no los conviertas en una aprobación nueva.
-- **Compromisos verificables:** registra solo tareas futuras que la propia persona aceptó en voz, o cuya aceptación se confirmó expresamente en voz. «Propongo pedirle a Ana que añada una cuenta» no significa «Ana se comprometió»: queda como propuesta en Temas tratados. Una invitación a colaborar, un ofrecimiento solo en el chat, un trabajo ya realizado o avisar que alguien se retira no son compromisos nuevos.
+- **Acuerdos nuevos:** solo decisiones aprobadas explícitamente o con consenso claro EN ESTA sesión. Un plan presentado, una propuesta todavía en discusión, un evento ya organizado o un acuerdo de una asamblea anterior van en Temas tratados; no los conviertas en una aprobación nueva. La comunidad también aprueba desde el chat: una ronda de señales de aprobación justo después de una propuesta hablada (stickers «Si autorizo», ✅, «apoyo», «sí») es consenso claro sobre ESA propuesta. Si la sesión pospuso una decisión (p. ej. «el viernes retomamos el plan de acción»), lo que no recibió esa aprobación sigue siendo propuesta pendiente: el acuerdo es posponerla.
+- **Cobertura completa:** el acta recorre la sesión ENTERA, del inicio al cierre; una reunión larga tiene muchos temas y ninguno se omite por ocurrir al final. Cada propuesta concreta que alguien hizo en voz aparece en Temas tratados con quién la hizo y en qué quedó (aprobada, pospuesta para otra asamblea, a enviar por ticket, sin decisión). Un punto del orden del día que se pospuso o no alcanzó a tratarse se menciona como pendiente.
+- **Compromisos verificables:** registra solo tareas futuras que la propia persona aceptó en voz, o cuya aceptación se confirmó expresamente en voz. Una frase en primera persona como «me comprometo a…», «yo me encargo de…» o «yo lo preparo» dicha en voz SÍ es un compromiso de quien la dice. «Propongo pedirle a Ana que añada una cuenta» no significa «Ana se comprometió»: queda como propuesta en Temas tratados. Una invitación a colaborar, un ofrecimiento solo en el chat, un trabajo ya realizado o avisar que alguien se retira no son compromisos nuevos.
 - No inventes contenido: si algo no está en la transcripción hablada, no existe. La transcripción es automática y puede tener errores; si un tramo es ambiguo, resume lo seguro.
-- **Nada de conocimiento externo.** No completes nombres de autorxs, títulos, fechas ni datos que no se dijeron («Calibán y la bruja» no se vuelve «de Silvia Federici» si nadie lo dijo).
+- **Nada de conocimiento externo.** No completes nombres de autorxs, títulos, fechas ni datos que no se dijeron («Calibán y la bruja» no se vuelve «de Silvia Federici» si nadie lo dijo). Una sigla o un nombre que el texto automático dejó ininteligible no se adivina: escribe lo que sí se entiende («trabajadores de una institución que no se alcanzó a entender»).
 - **Fechas:** usa la tabla de fechas del encabezado para poner día de la semana y mes. Nunca agregues un mes que no se dijo si la tabla no lo resuelve; «el sábado» o «el 29» se quedan así si no hay forma segura de saber cuál.
 - **Privacidad:** esto se publica al servidor. Si se trataron asuntos de conducta, convivencia o moderación sobre personas concretas (denuncias, acoso, sanciones a alguien, disculpas entre personas), NO los pongas en las secciones públicas: escríbelos SOLO en una sección final «## Convivencia (interna)» con lo necesario para el equipo de moderación; esa sección nunca se publica. En las secciones públicas basta una viñeta neutra: «Se trataron asuntos de convivencia (detalle en el registro interno)», sin nombres. Los temas políticos o de estudio (sanciones entre países, denuncias públicas, expulsiones de migrantes), la represión policial y los relatos de hechos públicos ajenos al servidor, incluidos casos públicos de violencia y acoso en universidades, NO son asuntos de convivencia de miembros del servidor. La persona que relata un hecho público no se convierte en denunciada por narrarlo. Si alguien compartió algo personal (salud mental, terapia, diagnósticos, historia de violencia), no registres nombres ni detalles identificables en ninguna sección.
 - El chat NO se publica: no copies comentarios, no armes una sección de chat, no cites «lo que escribieron». Si un comentario aclara un tema hablado, incorpóralo en Resumen/Temas/Acuerdos con las palabras de la minuta, no como cita del chat.
@@ -46,7 +47,7 @@ Reglas duras:
   ## Resumen
   (3–6 líneas del propósito y el tono de la sesión)
   ## Temas tratados
-  (una viñeta por tema: qué se dijo y quién lo planteó/defendió, con nombres)
+  (una viñeta por tema: qué se dijo y quién lo planteó/defendió, con nombres; incluye las propuestas y en qué quedaron, y los puntos pendientes)
   ## Acuerdos y decisiones
   (solo lo que quedó acordado o decidido de verdad; si no hubo, escribe "Sin acuerdos formales.")
   ## Compromisos
@@ -81,7 +82,7 @@ export function buildBlockExtractionPrompt(
 
 ${block}
 
-Extrae, en viñetas breves y en español: los temas discutidos, las posturas de cada persona (con su nombre), cualquier acuerdo/decisión y cualquier compromiso que aparezca EN ESTA PARTE. Las líneas 💬 son contexto del chat: no las extraigas como temas, acuerdos ni compromisos; solo úsalas para aclarar lo hablado. Distingue decisiones aprobadas de propuestas y anuncios; solo extrae compromisos que la persona aceptó en voz. Bromas, memes e hipérboles no son acuerdos. No redactes todavía el acta; solo notas fieles a la transcripción.`;
+Extrae, en viñetas breves y en español: los temas discutidos, las posturas de cada persona (con su nombre), cada propuesta concreta y en qué quedó, los puntos pospuestos, cualquier acuerdo/decisión y cualquier compromiso que aparezca EN ESTA PARTE. Las líneas 💬 son contexto del chat: no las extraigas como temas, acuerdos ni compromisos; solo úsalas para aclarar lo hablado. Distingue decisiones aprobadas de propuestas y anuncios; solo extrae compromisos que la persona aceptó en voz. Bromas, memes e hipérboles no son acuerdos. No redactes todavía el acta; solo notas fieles a la transcripción.`;
 }
 
 export function buildFinalFromNotesPrompt(
@@ -284,10 +285,20 @@ export function splitTranscriptIntoBlocks(
 }
 
 /**
+ * The pass that writes the acta thinks (`high`); block extraction stays `low`.
+ *
+ * Why (2026-10-13 live review, same 3 h 22 min draft, same prompt): `low`
+ * listed chat-only offers and a garbled sentence as compromisos; `high`
+ * (≈19k reasoning tokens, +~100 s) kept only spoken, accepted tasks, credited
+ * a proposal read aloud from the chat to its author, and still covered the
+ * whole session. One replay each — re-check at the next assemblies.
+ */
+export const MINUTES_WRITER_EFFORT = "high" as const;
+
+/**
  * Draft → minutes via the LLM. One pass when the draft fits; for long
- * assemblies a map pass extracts per-block notes and a final pass merges them
- * into the acta. Every pass is `low` (thinking OFF): no tools are involved and
- * the work is summarization, which thinking only makes slower and dearer.
+ * assemblies a map pass extracts per-block notes (`low`) and a final pass
+ * merges them into the acta ({@link MINUTES_WRITER_EFFORT}). No tools.
  */
 export async function generateMinutes(
    draft: string,
@@ -302,7 +313,7 @@ export async function generateMinutes(
             { role: "user", content: buildMinutesUserPrompt(draft, meta) },
          ],
          tools: composeToolSources([]),
-         effort: "low",
+         effort: MINUTES_WRITER_EFFORT,
       });
    } else {
       const blocks = splitTranscriptIntoBlocks(draft);
@@ -334,7 +345,7 @@ export async function generateMinutes(
             },
          ],
          tools: composeToolSources([]),
-         effort: "low",
+         effort: MINUTES_WRITER_EFFORT,
       });
    }
    return stripMinutesChatSection(body);
@@ -424,8 +435,11 @@ function memberConductPatterns(participants: readonly string[]): RegExp[] {
             `(?<![\\p{L}\\d])${matter} (?:\\p{L}+ ){0,2}(?:a|contra|hacia|sobre|de|por parte de) ${n}`,
             "u",
          ),
+         // «reporte/queja/acusación de X» names X as its AUTHOR, not its target
+         // (2026-10-13 replay: «leyó en el chat el reporte de Dylan» about a
+         // march blanked a whole public relatoría); only «caso de X» is about X.
          new RegExp(
-            `(?<![\\p{L}\\d])(?:caso|reporte|queja|acusacion) (?:contra|sobre|de) ${n}`,
+            `(?<![\\p{L}\\d])(?:(?:caso|reporte|queja|acusacion) (?:contra|sobre)|caso de) ${n}`,
             "u",
          ),
       ];

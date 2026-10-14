@@ -14,6 +14,15 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.7.4 — 2026-10-14
+
+- Las minutas vuelven a leer bien los resultados de las encuestas de Discord: antes podían aparecer en cero aunque la gente sí hubiera votado.
+- La minuta recorre toda la sesión, del inicio al cierre: cada propuesta aparece con quién la hizo y en qué quedó, y los puntos que se pospusieron quedan anotados.
+- Cuando alguien acepta una tarea en voz («me comprometo a…»), queda en Compromisos. Las aprobaciones con stickers en el chat, como «Si autorizo», cuentan como acuerdo de la asamblea.
+- Si quien modera lee en voz una propuesta del chat, la minuta se la reconoce a quien la escribió.
+- ChopperBot se toma un par de minutos más para redactar la minuta, para que salga más fiel a lo que se dijo.
+- Mencionar el reporte de alguien ya no oculta por error un párrafo de la minuta.
+
 ## 2.7.3 — 2026-10-13
 
 - Cuando alguien sube al escenario, levanta la mano o cambia el tema en un canal de escenario, la minuta ahora lo registra como una nota clara en lugar de una línea vacía. Los demás avisos automáticos de Discord ya no se guardan.

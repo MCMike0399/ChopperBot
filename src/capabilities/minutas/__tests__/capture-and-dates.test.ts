@@ -132,5 +132,14 @@ describe("minutes prompt carries the audit rules", () => {
       /conocimiento externo/,
       /tabla de fechas/,
       /Privacidad/,
+      // 2026-10-13 live review: a 3 h acta dropped a whole security thread,
+      // a deferred point and a spoken «me comprometo a preparar algo».
+      /Cobertura completa/,
+      /en qué quedó/,
+      /me comprometo a/,
+      /el acuerdo es posponerla/,
+      /Si autorizo/,
+      /leyó la propuesta de Y/,
+      /no se adivina/,
    ])("%s", (re) => expect(p).toMatch(re));
 });

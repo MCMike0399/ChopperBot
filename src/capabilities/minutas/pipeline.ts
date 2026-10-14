@@ -363,8 +363,13 @@ async function transcribeBursts(
  * assemblies vote with Discord polls, and until now the minutes only knew a
  * result if somebody read it out loud. Best-effort: a poll we can't fetch keeps
  * its question and options.
+ *
+ * The fetch is FORCED: the bot has no poll-vote intent, so the cached copy from
+ * MessageCreate keeps the zero counts it was created with. 2026-10-13: the
+ * draft said «A favor (0 votos), En contra (0 votos)…» for a poll Discord had
+ * at 13 a favor / 4 abstención.
  */
-async function withPollResults(
+export async function withPollResults(
    deps: FinalizeDeps,
    channelId: string,
    lines: ChatLine[],
@@ -377,7 +382,7 @@ async function withPollResults(
       channel && "messages" in channel
          ? (id: string) =>
               (channel as import("discord.js").TextBasedChannel).messages
-                 .fetch(id)
+                 .fetch({ message: id, force: true })
                  .catch(() => null)
          : null;
    const out: ChatLine[] = [];
@@ -399,7 +404,8 @@ async function withPollResults(
          ...line,
          content: line.content.replace(
             /\[encuesta: «([^»]*)»\]/,
-            (_m, q: string) => `[encuesta: «${q}» — ${summary}]`,
+            (_m, q: string) =>
+               `[encuesta: «${q.replace(/\s*\n+\s*/g, " ")}» — ${summary}]`,
          ),
       });
    }
