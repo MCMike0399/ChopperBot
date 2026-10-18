@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.7.6 — 2026-10-18
+
+- Si tres revisiones seguidas de Instagram fallan, ChopperBot avisa en el canal de monitoreo aunque siga encendido. También avisa cuando vuelve a leer correctamente.
+- El estado de esos avisos se conserva al reiniciar. Si Discord no recibe uno, ChopperBot vuelve a intentar enviarlo sin hacer más consultas a Instagram.
+- El resumen diario y la consulta de estado ya distinguen entre estar encendido y poder leer publicaciones. Los periodos de descanso y la falta de publicaciones nuevas no se toman como fallos.
+
 ## 2.7.5 — 2026-10-18
 
 - El monitor de Instagram vuelve a compartir publicaciones. Un cambio en Instagram había dejado las revisiones sin resultados desde el viernes por la tarde.

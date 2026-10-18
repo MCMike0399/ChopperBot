@@ -1,5 +1,6 @@
+import { parseFetchHealth } from "../src/capabilities/instagram_monitor/fetch-health.js";
 // One-command triage for "the monitor looks dead" — checks the silent
-// silent states that all present as an empty channel (see the 2026-09-10 note in
+// states that all present as an empty channel (see the 2026-09-10 note in
 // docs/capabilities/instagram-monitor.md):
 //
 //   1. kill-switch engaged      → nothing is ever polled
@@ -30,6 +31,7 @@ const ago = (ms: number | null | undefined): string =>
    ms ? `${Math.round((Date.now() - ms) / 1000)}s ago` : "never";
 
 interface RuntimeRow {
+   fetch_health_json?: string | null;
    global_stop: number;
    stop_reason: string | null;
    requests_24h: number | null;
@@ -38,11 +40,7 @@ interface RuntimeRow {
    poll_alloc_scale: number | null;
 }
 const rt = db
-   .prepare(
-      `SELECT global_stop, stop_reason, requests_24h, heartbeat_at, poll_stretch,
-              poll_alloc_scale
-         FROM instagram_monitor_runtime WHERE id = 1`,
-   )
+   .prepare(`SELECT * FROM instagram_monitor_runtime WHERE id = 1`)
    .get() as RuntimeRow | undefined;
 
 const acct = db
@@ -131,6 +129,16 @@ try {
    /* journal unavailable — not fatal */
 }
 
+const persistentFetchHealth = rt?.fetch_health_json != null;
+if (persistentFetchHealth) {
+   const state = parseFetchHealth(rt.fetch_health_json);
+   consecutiveFetchFailures = state.failures;
+   lastFetchSuccess = state.lastSuccessAt;
+}
+const fetchHealthSource = persistentFetchHealth
+   ? "persistent poll outcomes"
+   : "48h journal window";
+
 console.log("Instagram monitor — triage\n");
 console.log(
    `  kill-switch     : ${rt?.global_stop === 1 ? `ENGAGED — ${rt.stop_reason}` : "off"}`,
@@ -161,7 +169,7 @@ if (soonest) {
    );
 }
 console.log(
-   `  fetch health    : ${journalAvailable ? `${consecutiveFetchFailures} consecutive failures; last success ${fmt(lastFetchSuccess)} (48h journal window)` : "unknown (journal unavailable)"}`,
+   `  fetch health    : ${persistentFetchHealth || journalAvailable ? `${consecutiveFetchFailures} consecutive failures; last success ${fmt(lastFetchSuccess)} (${fetchHealthSource})` : "unknown (journal unavailable)"}`,
 );
 console.log(`  pushes (30 min) : ${pushCounts}`);
 if (recentEvents) console.log(`  last journal ev : ${recentEvents}`);
@@ -176,7 +184,7 @@ if (rt?.global_stop === 1) {
       "SCHEDULER STALE — no heartbeat in the last 10 minutes. Check the service and journal.";
 } else if (consecutiveFetchFailures > 0) {
    verdict =
-      `FETCH FAILING — ${consecutiveFetchFailures} consecutive failed polls since the last success in the 48h journal window. ` +
+      `FETCH FAILING — ${consecutiveFetchFailures} consecutive failed polls (${fetchHealthSource}). ` +
       "The scheduler is alive but fetching is broken; check instagram_monitor.fetch.failed before changing cadence or anchors.";
 } else if (unseeded > 0) {
    verdict =

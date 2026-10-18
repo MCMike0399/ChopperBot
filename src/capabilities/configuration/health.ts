@@ -1,3 +1,7 @@
+import {
+   parseFetchHealth,
+   fetchHealthStatus,
+} from "../instagram_monitor/fetch-health.js";
 /**
  * Cross-capability health snapshot — the "how is ChopperBot actually doing?"
  * answer in ONE tool call.
@@ -234,6 +238,22 @@ export function collectHealth(deps: HealthDeps): HealthReport {
       const authBlocked = accounts.filter(
          (a) => a.consecutive_auth_failures >= 5,
       );
+      const fetchHealth = parseFetchHealth(rt.fetch_health_json);
+      const fetchStatus = fetchHealthStatus(fetchHealth);
+      if (fetchStatus === "degraded") {
+         problems.push(
+            `Monitor de Instagram: ${fetchHealth.failures} lecturas fallidas seguidas. Revisa instagram_monitor.fetch.failed; un proceso activo no confirma que pueda leer publicaciones.`,
+         );
+      }
+      if (
+         accounts.some((a) => !a.paused) &&
+         rt.heartbeat_at !== null &&
+         now - rt.heartbeat_at > 10 * 60_000
+      ) {
+         problems.push(
+            "Monitor de Instagram: sin latido del planificador en más de 10 minutos. Revisa el servicio y su registro.",
+         );
+      }
       const budget = config.IG_DAILY_REQUEST_BUDGET;
       const used = rt.requests_24h ?? 0;
       if (rt.global_stop === 1) {
@@ -268,6 +288,7 @@ export function collectHealth(deps: HealthDeps): HealthReport {
          budget_used_pct: budget > 0 ? Math.round((used / budget) * 100) : null,
          poll_stretch: Number(rt.poll_stretch.toFixed(3)),
          heartbeat_at_iso: iso(rt.heartbeat_at),
+         fetch_health: { ...fetchHealth, status: fetchStatus },
          last_digest_at_iso: iso(rt.last_digest_at),
          accounts_total: accounts.length,
          accounts_paused: paused.length,
@@ -275,7 +296,7 @@ export function collectHealth(deps: HealthDeps): HealthReport {
          accounts_cold_start: accounts.filter(
             (a) => a.poll_interval_ms === null,
          ).length,
-         note: "requests_24h es una ventana en memoria: se reinicia con el bot.",
+         note: "El presupuesto y la salud de las lecturas persisten entre reinicios.",
       };
    });
 

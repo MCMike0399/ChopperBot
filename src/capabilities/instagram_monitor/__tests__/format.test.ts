@@ -145,7 +145,7 @@ describe("formatStatusDigest", () => {
       expect(text).toContain("?"); // unknown cadence
       expect(text).toContain("60m"); // falls back to the default interval
       expect(text).not.toContain("NaN");
-      expect(text).toContain("sondeando con normalidad");
+      expect(text).toContain("todavía sin una lectura correcta registrada");
    });
 
    test("renders learned cadence + budget headroom", () => {
@@ -236,4 +236,24 @@ describe("formatStatusDigest", () => {
       expect(text.length).toBeLessThanOrEqual(2000);
       expect(text).toMatch(/y \d+ cuentas más/);
    });
+});
+
+test("daily digest reports failed reads even with a fresh scheduler heartbeat", () => {
+   const now = Date.parse("2026-10-18T18:00:00Z");
+   const text = formatStatusDigest({
+      runtime: runtime({
+         heartbeat_at: now,
+         fetch_health_json: JSON.stringify({
+            failures: 3,
+            lastSuccessAt: now - 3600000,
+         }),
+      }),
+      accounts: [account()],
+      dailyRequestBudget: 90,
+      defaultPollIntervalMs: HOUR,
+      nowMs: now,
+   }).join("\n");
+   expect(text).toContain("🔴 fallan las lecturas (3 seguidas)");
+   expect(text).toContain("última correcta:");
+   expect(text).not.toContain("🟢");
 });

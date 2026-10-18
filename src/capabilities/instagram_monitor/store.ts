@@ -1,3 +1,4 @@
+import { parseFetchHealth, type FetchHealthState } from "./fetch-health.js";
 import type Database from "better-sqlite3";
 import type { Migration } from "../../memory/store.js";
 
@@ -133,6 +134,8 @@ export interface RuntimeState {
     * 2026-10-04 alone, each of which used to reset `requests_24h` to 0.
     */
    request_window_json: string | null;
+   /** Persistent fetch outcomes and delivered-alert state (v11). */
+   fetch_health_json: string | null;
 }
 
 export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
@@ -364,6 +367,10 @@ export const INSTAGRAM_MONITOR_MIGRATIONS: Migration[] = [
       ALTER TABLE instagram_monitor_runtime ADD COLUMN poll_alloc_scale    REAL;
       ALTER TABLE instagram_monitor_runtime ADD COLUMN request_window_json TEXT;
     `,
+   },
+   {
+      version: 11,
+      up: `ALTER TABLE instagram_monitor_runtime ADD COLUMN fetch_health_json TEXT;`,
    },
 ];
 
@@ -1300,8 +1307,21 @@ export class InstagramMonitorStore {
             last_digest_at: null,
             poll_alloc_scale: null,
             request_window_json: null,
+            fetch_health_json: null,
          }
       );
+   }
+
+   readFetchHealth(): FetchHealthState {
+      return parseFetchHealth(this.getRuntime().fetch_health_json);
+   }
+
+   writeFetchHealth(state: FetchHealthState): void {
+      this.db
+         .prepare(
+            `UPDATE instagram_monitor_runtime SET fetch_health_json = ? WHERE id = 1`,
+         )
+         .run(JSON.stringify(state));
    }
 
    /** Whether the persistent kill-switch is engaged. */

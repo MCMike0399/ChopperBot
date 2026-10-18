@@ -1,3 +1,7 @@
+import {
+   InstagramFetchHealth,
+   type NotifyFetchHealthFn,
+} from "./fetch-health.js";
 import type { Client } from "discord.js";
 import { log } from "../../log.js";
 import {
@@ -223,6 +227,8 @@ export type NotifyAccountAutoPausedFn = (info: {
 }) => Promise<void>;
 
 export interface SchedulerDeps {
+   /** Persistent ordinary-fetch outage/recovery alerts. */
+   notifyFetchHealth?: NotifyFetchHealthFn;
    store: InstagramMonitorStore;
    fetcher: InstagramFetcher;
    client: Client;
@@ -349,6 +355,7 @@ function localDateKey(nowMs: number, tz: string): string {
 }
 
 export class InstagramMonitorScheduler {
+   private readonly fetchHealth: InstagramFetchHealth;
    private intervalHandle: NodeJS.Timeout | null = null;
    private tickInFlight = false;
    private disposed = false;
@@ -408,6 +415,10 @@ export class InstagramMonitorScheduler {
       private readonly pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
       private readonly tickMs = DEFAULT_TICK_MS,
    ) {
+      this.fetchHealth = new InstagramFetchHealth(
+         deps.store,
+         deps.notifyFetchHealth,
+      );
       this.classify = deps.classify ?? classifyPost;
       this.publish = deps.publish ?? defaultPublishPost;
       this.fetchCover = deps.fetchCover ?? defaultFetchCover;
@@ -899,6 +910,16 @@ export class InstagramMonitorScheduler {
          this.maybeSweepCadence(end);
          this.recomputeStretch(end);
          this.heartbeat(end);
+         try {
+            const notice = await this.fetchHealth.flush(end);
+            if (notice)
+               log.info(
+                  { kind: notice },
+                  "instagram_monitor.fetch_health.notified",
+               );
+         } catch (err) {
+            log.warn({ err }, "instagram_monitor.fetch_health.notify_failed");
+         }
          await this.maybePostDigest(end);
          log.debug({ ms: end - t0 }, "instagram_monitor.tick.done");
       }
@@ -985,12 +1006,26 @@ export class InstagramMonitorScheduler {
       let posts: RecentPost[];
       try {
          posts = await this.deps.fetcher.fetchRecentPosts(acc.username);
+         this.fetchHealth.recordSuccess(acc.username, Date.now());
          log.info(
             { account: acc.username, count: posts.length, ms: Date.now() - t0 },
             "instagram_monitor.fetch.ok",
          );
       } catch (err) {
          const now = Date.now();
+         this.fetchHealth.recordFailure(
+            acc.username,
+            err instanceof InstagramAuthError
+               ? "auth"
+               : err instanceof InstagramRateLimitError
+                 ? "rate"
+                 : err instanceof InstagramHtmlFeedError
+                   ? "html"
+                   : err instanceof InstagramHardAccountError
+                     ? "account"
+                     : "unexpected",
+            now,
+         );
 
          // 429 / throttle: IG is rate-limiting us. Treat as a global SOFT block —
          // halt ALL polling for an escalating cooldown, and trip the persistent

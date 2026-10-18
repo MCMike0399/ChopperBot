@@ -1,3 +1,7 @@
+import {
+   parseFetchHealth,
+   fetchHealthStatus,
+} from "../instagram_monitor/fetch-health.js";
 import type Database from "better-sqlite3";
 import { config } from "../../config.js";
 import { log } from "../../log.js";
@@ -275,6 +279,10 @@ export class ConfigInstagramAdminSource implements ToolSource {
          },
          requests_24h: r.requests_24h ?? 0,
          heartbeat_at_iso: iso(r.heartbeat_at),
+         fetch_health: {
+            ...parseFetchHealth(r.fetch_health_json),
+            status: fetchHealthStatus(parseFetchHealth(r.fetch_health_json)),
+         },
          accounts: {
             total: accounts.length,
             paused: accounts.filter((a) => a.paused === 1).length,

@@ -295,3 +295,35 @@ describe("collectHealth", () => {
       memory.close();
    });
 });
+
+test("IG fetch failures degrade overall health despite a healthy heartbeat", async () => {
+   const { memory, deps } = await healthyDeps();
+   try {
+      const store = new InstagramMonitorStore(memory.db());
+      memory
+         .db()
+         .prepare(
+            "UPDATE instagram_monitor_runtime SET heartbeat_at = ?, fetch_health_json = ? WHERE id = 1",
+         )
+         .run(
+            NOW,
+            JSON.stringify({
+               failures: 3,
+               lastAttemptAt: NOW,
+               lastSuccessAt: NOW - 3600000,
+            }),
+         );
+      const report = collectHealth(deps);
+      expect(report.status).toBe("degraded");
+      expect(
+         report.problems.some((p) =>
+            p.includes("3 lecturas fallidas seguidas"),
+         ),
+      ).toBe(true);
+      expect(report.instagram_monitor).toMatchObject({
+         fetch_health: { status: "degraded", failures: 3 },
+      });
+   } finally {
+      memory.close();
+   }
+});

@@ -1953,3 +1953,47 @@ describe("InstagramMonitorScheduler — undecided classifications", () => {
       mem.close();
    });
 });
+
+// Replays the Oct 16–18 outage: healthy ticks, different handles, failed reads.
+describe("fetch health alerts", () => {
+   test("alerts after three ordinary fetch failures across accounts and reports recovery", async () => {
+      const { store, mem } = await newStore();
+      for (const username of ["one", "two", "three", "four"]) {
+         store.upsertAccount({ username, added_by: "U" });
+      }
+      const notifyFetchHealth = vi.fn(async () => true);
+      let broken = true;
+      const sch = new InstagramMonitorScheduler({
+         store,
+         fetcher: {
+            fetchRecentPosts: async () => {
+               if (broken)
+                  throw new Error(
+                     "produced no timeline payload within 20000ms",
+                  );
+               return [];
+            },
+         },
+         client: fakeClient,
+         getBoundChannels: ONE_CHANNEL,
+         notifyFetchHealth,
+      });
+      try {
+         await sch.tickOnce();
+         await sch.tickOnce();
+         expect(notifyFetchHealth).not.toHaveBeenCalled();
+         await sch.tickOnce();
+         expect(notifyFetchHealth).toHaveBeenCalledWith(
+            expect.objectContaining({ kind: "failed" }),
+         );
+         broken = false;
+         await sch.tickOnce();
+         expect(notifyFetchHealth).toHaveBeenLastCalledWith(
+            expect.objectContaining({ kind: "recovered" }),
+         );
+      } finally {
+         await sch.dispose();
+         mem.close();
+      }
+   });
+});

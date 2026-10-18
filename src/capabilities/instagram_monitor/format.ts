@@ -1,3 +1,4 @@
+import { parseFetchHealth, fetchHealthStatus } from "./fetch-health.js";
 /**
  * Spanish-friendly date formatting for the IG monitor post cards.
  *
@@ -190,6 +191,10 @@ export function formatStatusDigest(input: StatusDigestInput): string[] {
 
    const head: string[] = ["📊 **Instagram monitor — resumen diario**"];
    head.push(`Estado: ${describeState(runtime, nowMs)}`);
+   const fetchHealth = parseFetchHealth(runtime.fetch_health_json);
+   head.push(
+      `Lecturas: ${fetchHealth.failures} fallos seguidos · última correcta: ${fetchHealth.lastSuccessAt === null ? "sin registro" : formatPostedAt(fetchHealth.lastSuccessAt)}`,
+   );
 
    const used = runtime.requests_24h ?? 0;
    if (dailyRequestBudget > 0) {
@@ -295,7 +300,15 @@ function describeState(r: RuntimeState, now: number): string {
       return `🟡 pausado — presupuesto diario, reanuda en ${formatAgeEs(budget - now)}`;
    if (auth)
       return `🟡 pausado — sesión, reanuda en ${formatAgeEs(auth - now)}`;
-   return "🟢 sondeando con normalidad";
+   const health = parseFetchHealth(r.fetch_health_json);
+   const status = fetchHealthStatus(health);
+   if (status === "degraded")
+      return `🔴 fallan las lecturas (${health.failures} seguidas)`;
+   if (status === "retrying")
+      return `🟡 lectura fallida, esperando la siguiente revisión (${health.failures})`;
+   if (status === "unknown")
+      return "⚪ todavía sin una lectura correcta registrada";
+   return "🟢 lecturas correctas";
 }
 
 /** Cadence cell from posts/day; `?` when not yet learned or absent. */

@@ -1,9 +1,13 @@
+import { type FetchHealthNotice } from "./fetch-health.js";
 import { type Client } from "discord.js";
 import type Database from "better-sqlite3";
 import { config } from "../../config.js";
 import { log } from "../../log.js";
 import { composeToolSources } from "../../tools/source.js";
-import { sendAdminAlert as sendAdminAlertShared } from "../../discord/admin-alert.js";
+import {
+   trySendAdminAlert,
+   sendAdminAlert as sendAdminAlertShared,
+} from "../../discord/admin-alert.js";
 import type {
    Capability,
    CapabilityInitDeps,
@@ -32,7 +36,11 @@ import {
 import { InstagramMonitorToolSource } from "./source.js";
 import { setIgCdnUserAgent, configureIgCdn } from "./publisher.js";
 import { renderInstagramMonitorPrompt } from "./preamble.js";
-import { formatDurationEs, formatStatusDigest } from "./format.js";
+import {
+   formatDurationEs,
+   formatPostedAt,
+   formatStatusDigest,
+} from "./format.js";
 
 /** Probability of skipping a whole scheduler tick (anti-metronome). Raised
  * 0.08 → 0.15 on 2026-08-13 after IG flagged the polling account for suspected
@@ -127,6 +135,7 @@ export class InstagramMonitorCapability implements Capability {
             }
             return out;
          },
+         notifyFetchHealth: (notice) => postFetchHealthAlert(client, notice),
          notifyAuthExpired: ({ account, reason }) =>
             postAuthExpiredAlert(client, account, reason),
          notifyCircuitBroken: (reason) =>
@@ -189,6 +198,37 @@ export class InstagramMonitorCapability implements Capability {
          this.browserFetcher = null;
       }
    }
+}
+
+/** Delivery receipt lets the scheduler retry a failed send, across restarts. */
+export async function postFetchHealthAlert(
+   client: Client,
+   notice: FetchHealthNotice,
+): Promise<boolean> {
+   const { kind, health } = notice;
+   const lastSuccess =
+      health.lastSuccessAt === null
+         ? "todavía no registrada"
+         : formatPostedAt(health.lastSuccessAt);
+   const lines =
+      kind === "recovered"
+         ? [
+              "✅ **Instagram monitor: lectura recuperada**",
+              "Una revisión de Instagram volvió a terminar correctamente.",
+              "Esto confirma la lectura; solo se comparten publicaciones nuevas que resulten relevantes.",
+           ]
+         : [
+              "⚠️ **Instagram monitor: fallan las lecturas**",
+              `${health.failures} revisiones fallidas seguidas. Última cuenta: @${health.lastAccount ?? "desconocida"}.`,
+              `Última lectura correcta: ${lastSuccess}.`,
+              "El proceso sigue activo, pero no está consiguiendo leer publicaciones. Revisa los errores de lectura y el estado del monitor.",
+              "No aumentes la frecuencia ni cambies las cookies sin comprobar la causa.",
+           ];
+   return trySendAdminAlert(
+      client,
+      lines,
+      "instagram_monitor.fetch_health.alert",
+   );
 }
 
 /**

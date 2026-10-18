@@ -23,6 +23,16 @@ export async function sendAdminAlert(
    logTag = "admin_alert",
    roleIds: readonly string[] = [],
 ): Promise<void> {
+   await trySendAdminAlert(client, lines, logTag, roleIds);
+}
+
+/** Same delivery policy, with a receipt for callers that persist retry state. */
+export async function trySendAdminAlert(
+   client: Client,
+   lines: string[],
+   logTag = "admin_alert",
+   roleIds: readonly string[] = [],
+): Promise<boolean> {
    try {
       const channel = await client.channels.fetch(CONFIGURATION_CHANNEL_ID);
       if (
@@ -34,16 +44,18 @@ export async function sendAdminAlert(
             { channel: CONFIGURATION_CHANNEL_ID },
             `${logTag}.channel_unavailable`,
          );
-         return;
+         return false;
       }
       await channel.send({
          content: lines.join("\n"),
          allowedMentions: { parse: ["users"], roles: [...roleIds] },
       });
+      return true;
    } catch (err) {
       log.warn(
          { err, channel: CONFIGURATION_CHANNEL_ID },
          `${logTag}.send_failed`,
       );
+      return false;
    }
 }
