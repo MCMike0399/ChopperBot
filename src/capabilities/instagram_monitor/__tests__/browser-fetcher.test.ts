@@ -1,6 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { EventEmitter } from "node:events";
+import { chromium } from "playwright-core";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
    BROWSER_REQUESTS_PER_POLL,
+   BrowserInstagramFetcher,
    authCookies,
    extractTimelineConnection,
    mapTimelineToRecentPosts,
@@ -254,4 +257,54 @@ describe("budget accounting", () => {
       // profile loads the daily budget was tuned for.
       expect(BROWSER_REQUESTS_PER_POLL).toBe(2);
    });
+});
+
+describe("BrowserInstagramFetcher response capture", () => {
+   afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+   });
+
+   it.each(["/api/graphql", "/graphql/query"])(
+      "fetches posts from the profile page's %s response",
+      async (path) => {
+         vi.stubEnv("IG_BROWSER_EXECUTABLE_PATH", process.execPath);
+         const page = Object.assign(new EventEmitter(), {
+            goto: vi.fn(async () => {
+               page.emit("response", {
+                  url: () => `https://www.instagram.com${path}`,
+                  json: async () => timelinePayload,
+               });
+            }),
+            evaluate: vi.fn(async () => ({
+               classes: "",
+               href: "https://www.instagram.com/example/",
+            })),
+            close: vi.fn(async () => {}),
+            url: () => "https://www.instagram.com/example/",
+         });
+         const context = {
+            addInitScript: vi.fn(async () => {}),
+            addCookies: vi.fn(async () => {}),
+            newPage: vi.fn(async () => page),
+         };
+         const browser = {
+            newContext: vi.fn(async () => context),
+            close: vi.fn(async () => {}),
+            isConnected: () => true,
+         };
+         vi.spyOn(chromium, "launch").mockResolvedValue(browser as never);
+         const fetcher = new BrowserInstagramFetcher(null, undefined, {
+            timelineTimeoutMs: 10,
+         });
+         try {
+            const posts = await fetcher.fetchRecentPosts("example");
+            expect(posts).toHaveLength(3);
+            expect(posts[0]!.igPostId).toBe("3983345283860244336");
+            expect(page.close).toHaveBeenCalledOnce();
+         } finally {
+            await fetcher.dispose();
+         }
+      },
+   );
 });

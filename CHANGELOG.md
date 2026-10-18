@@ -14,6 +14,10 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.7.5 — 2026-10-18
+
+- El monitor de Instagram vuelve a compartir publicaciones. Un cambio en Instagram había dejado las revisiones sin resultados desde el viernes por la tarde.
+
 ## 2.7.4 — 2026-10-14
 
 - Las minutas vuelven a leer bien los resultados de las encuestas de Discord: antes podían aparecer en cero aunque la gente sí hubiera votado.

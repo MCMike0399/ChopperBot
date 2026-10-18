@@ -1,18 +1,27 @@
-// One-command triage for "the monitor looks dead" — walks the exact three
+// One-command triage for "the monitor looks dead" — checks the silent
 // silent states that all present as an empty channel (see the 2026-09-10 note in
 // docs/capabilities/instagram-monitor.md):
 //
 //   1. kill-switch engaged      → nothing is ever polled
 //   2. forward-only seeding     → polls succeed, push NOTHING, forever
-//   3. cadence decay            → polling normally, next poll up to 12 h away
+//   3. fetch failures           → scheduler alive, no posts reach classification
+//   4. cadence / empty feed     → successful polls with no new relevant posts
 //
-// All three look identical from Discord. This prints which one you are in, and
+// These look identical from Discord. This prints which one you are in, and
 // the query to act on it. Read-only: it never writes to the DB or to Instagram.
 //
 // Run: npx tsx scripts/ig-monitor-status.ts
 import "dotenv/config";
 import { execFileSync } from "node:child_process";
 import Database from "better-sqlite3";
+import {
+   AUTH_PAUSE_THRESHOLD,
+   CADENCE_COLD_START_INTERVAL_MS,
+   HARD_PAUSE_THRESHOLD,
+   effectiveBaseIntervalMs,
+   nextDueAtMs,
+   type MonitoredAccount,
+} from "../src/capabilities/instagram_monitor/store.js";
 
 const db = new Database("data/chopperbot.db", { readonly: true });
 const fmt = (ms: number | null | undefined): string =>
@@ -51,20 +60,33 @@ const acct = db
    paused: number | null;
 };
 
-const soonest = db
-   .prepare(
-      `SELECT username, last_polled_at, poll_interval_ms
-         FROM instagram_monitor_accounts
-        WHERE last_polled_at IS NOT NULL AND paused = 0
-        ORDER BY (last_polled_at + poll_interval_ms) ASC LIMIT 1`,
-   )
-   .get() as
-   | { username: string; last_polled_at: number; poll_interval_ms: number }
-   | undefined;
+const scale = rt?.poll_alloc_scale ?? null;
+const pollable = (
+   db
+      .prepare("SELECT * FROM instagram_monitor_accounts")
+      .all() as MonitoredAccount[]
+).filter(
+   (a) =>
+      !a.paused &&
+      a.consecutive_auth_failures < AUTH_PAUSE_THRESHOLD &&
+      a.consecutive_hard_failures < HARD_PAUSE_THRESHOLD,
+);
+const soonest = pollable
+   .map((account) => ({
+      account,
+      due:
+         nextDueAtMs(account, CADENCE_COLD_START_INTERVAL_MS, scale) ??
+         Date.now(),
+   }))
+   .sort((a, b) => a.due - b.due)[0];
 
 // Best effort: the journal is the only place pushes are visible.
 let pushCounts = "unavailable (journalctl not readable here)";
 let recentEvents = "";
+let lastFetchSuccess: number | null = null;
+let consecutiveFetchFailures = 0;
+let journalAvailable = false;
+const thirtyMinutesAgo = Date.now() - 30 * 60_000;
 try {
    const j = execFileSync(
       "journalctl",
@@ -75,22 +97,31 @@ try {
          "-o",
          "cat",
          "--since",
-         "-30 min",
+         "-48 hours",
          "--no-pager",
       ],
       { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
    );
+   journalAvailable = true;
    const counts = new Map<string, number>();
    for (const line of j.split("\n")) {
-      // pino emits the bound fields BEFORE `msg`, so channelId precedes the
-      // message key — match the two independently rather than in one regex.
-      if (line.includes('"msg":"instagram_monitor.push"')) {
-         const m = /"channelId":"(\d+)"/.exec(line);
-         if (m) counts.set(m[1]!, (counts.get(m[1]!) ?? 0) + 1);
+      let event: { msg?: string; time?: number; channelId?: string };
+      try {
+         event = JSON.parse(line);
+      } catch {
          continue;
       }
-      const e = /"msg":"(instagram_monitor\.[a-z_.]+)"/.exec(line);
-      if (e) recentEvents = e[1]!; // last event seen in the window
+      if (event.msg === "instagram_monitor.fetch.ok") {
+         lastFetchSuccess = event.time ?? null;
+         consecutiveFetchFailures = 0;
+      } else if (event.msg === "instagram_monitor.fetch.failed") {
+         consecutiveFetchFailures++;
+      }
+      if ((event.time ?? 0) < thirtyMinutesAgo) continue;
+      if (event.msg === "instagram_monitor.push" && event.channelId) {
+         counts.set(event.channelId, (counts.get(event.channelId) ?? 0) + 1);
+      }
+      if (event.msg?.startsWith("instagram_monitor.")) recentEvents = event.msg;
    }
    pushCounts =
       counts.size === 0
@@ -120,11 +151,18 @@ console.log(
    `  accounts        : ${acct.total} total | ${acct.unseeded ?? 0} unseeded | ${acct.due_now ?? 0} due now | ${acct.paused ?? 0} paused`,
 );
 if (soonest) {
-   const due = soonest.last_polled_at + soonest.poll_interval_ms;
+   const interval = effectiveBaseIntervalMs(
+      soonest.account,
+      CADENCE_COLD_START_INTERVAL_MS,
+      scale,
+   );
    console.log(
-      `  next poll due   : ${fmt(due)} (${soonest.username}, every ${(soonest.poll_interval_ms / 3_600_000).toFixed(1)}h)`,
+      `  next poll after : ${fmt(soonest.due)} (${soonest.account.username}, base ${(interval / 3_600_000).toFixed(1)}h; jitter/quiet hours may delay it)`,
    );
 }
+console.log(
+   `  fetch health    : ${journalAvailable ? `${consecutiveFetchFailures} consecutive failures; last success ${fmt(lastFetchSuccess)} (48h journal window)` : "unknown (journal unavailable)"}`,
+);
 console.log(`  pushes (30 min) : ${pushCounts}`);
 if (recentEvents) console.log(`  last journal ev : ${recentEvents}`);
 
@@ -133,6 +171,13 @@ let verdict: string;
 if (rt?.global_stop === 1) {
    verdict =
       "STOPPED — kill-switch. Nothing is polled. Resume: config_instagram action:resume_monitor confirm:true";
+} else if (!rt?.heartbeat_at || Date.now() - rt.heartbeat_at > 10 * 60_000) {
+   verdict =
+      "SCHEDULER STALE — no heartbeat in the last 10 minutes. Check the service and journal.";
+} else if (consecutiveFetchFailures > 0) {
+   verdict =
+      `FETCH FAILING — ${consecutiveFetchFailures} consecutive failed polls since the last success in the 48h journal window. ` +
+      "The scheduler is alive but fetching is broken; check instagram_monitor.fetch.failed before changing cadence or anchors.";
 } else if (unseeded > 0) {
    verdict =
       `SEEDING — ${unseeded} account(s) have a NULL anchor. Their next poll is a silent ` +
@@ -144,11 +189,12 @@ if (rt?.global_stop === 1) {
       "up to RESUME_DRIP_GAP_MS (10 min). Then one account per ~10 min.";
 } else if (/^0 in/.test(pushCounts)) {
    verdict =
-      "POLLING, NO PUSHES — healthy logs with an empty channel usually means cadence decay: " +
-      "after a long outage intervals stretch to the 12 h ceiling, so pushes resume only on the " +
-      "next poll. Check `next poll due` above.";
+      "NO RECENT PUSHES — check fetch health and next-poll estimate above. " +
+      "A live heartbeat alone does not prove successful fetching; successful polls can also have no new relevant posts.";
 } else {
-   verdict = "HEALTHY — polling and pushing.";
+   verdict = journalAvailable
+      ? "HEALTHY — recent pushes and no subsequent fetch failures."
+      : "UNKNOWN — journal unavailable.";
 }
 console.log(`\n  VERDICT: ${verdict}\n`);
 db.close();

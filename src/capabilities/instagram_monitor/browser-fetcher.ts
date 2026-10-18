@@ -33,7 +33,7 @@ import {
  * **How it works.** We drive Chromium over CDP, load the public profile page
  * with the session cookies, and *read the response the page itself makes* —
  * `data.xdt_api__v1__feed__user_timeline_graphql_connection` off
- * `https://www.instagram.com/graphql/query`. Nothing is spoofed at the HTTP
+ * `https://www.instagram.com/api/graphql` or `/graphql/query`. Nothing is spoofed at the HTTP
  * layer: the browser produces its own TLS fingerprint, its own headers and its
  * own www-claim, which is exactly what the API fetcher could not fake. It also
  * means the HTML-warmup-then-XHR shape is genuine rather than imitated.
@@ -388,7 +388,13 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
             ReturnType<typeof extractTimelineConnection>
          >((resolve) => {
             const handler = async (res: PlaywrightResponse): Promise<void> => {
-               if (!/instagram\.com\/(graphql|api\/v1\/feed)/.test(res.url()))
+               // Profiles also deliver the same timeline via /api/graphql
+               // (observed 2026-10-18); accepting only /graphql drops those polls.
+               if (
+                  !/instagram\.com\/(graphql|api\/(graphql|v1\/feed))/.test(
+                     res.url(),
+                  )
+               )
                   return;
                try {
                   const found = extractTimelineConnection(await res.json());
