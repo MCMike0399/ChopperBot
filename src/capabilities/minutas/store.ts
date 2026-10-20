@@ -13,6 +13,10 @@ export interface MinutasSessionRow {
    channel_id: string;
    channel_name: string | null;
    title: string | null;
+   /** Optional on legacy callers; null on pre-v2.9.0 sessions. */
+   output_channel_id?: string | null;
+   agenda?: string | null;
+   max_duration_minutes?: number | null;
    started_by: string;
    started_by_tag: string | null;
    started_at: number;
@@ -75,6 +79,12 @@ export const MINUTAS_MIGRATIONS: Migration[] = [
       // The column stays so existing databases don't need a drop.
       up: `ALTER TABLE minutas_sessions ADD COLUMN transcribe_after INTEGER;`,
    },
+   {
+      version: 3,
+      up: `ALTER TABLE minutas_sessions ADD COLUMN output_channel_id TEXT;
+           ALTER TABLE minutas_sessions ADD COLUMN agenda TEXT;
+           ALTER TABLE minutas_sessions ADD COLUMN max_duration_minutes INTEGER;`,
+   },
 ];
 
 export class MinutasStore {
@@ -115,13 +125,20 @@ export class MinutasStore {
             `INSERT INTO minutas_sessions
            (id, guild_id, channel_id, channel_name, title, started_by, started_by_tag,
             started_at, ended_at, status, transcribe_after, end_reason, minio_prefix,
-            summary_message_id, participants_json, stats_json, error)
+            summary_message_id, participants_json, stats_json, error,
+            output_channel_id, agenda, max_duration_minutes)
          VALUES
            (@id, @guild_id, @channel_id, @channel_name, @title, @started_by, @started_by_tag,
             @started_at, @ended_at, @status, @transcribe_after, @end_reason, @minio_prefix,
-            @summary_message_id, @participants_json, @stats_json, @error)`,
+            @summary_message_id, @participants_json, @stats_json, @error,
+            @output_channel_id, @agenda, @max_duration_minutes)`,
          )
-         .run(row);
+         .run({
+            ...row,
+            output_channel_id: row.output_channel_id ?? null,
+            agenda: row.agenda ?? null,
+            max_duration_minutes: row.max_duration_minutes ?? null,
+         });
    }
 
    getSession(id: string): MinutasSessionRow | null {

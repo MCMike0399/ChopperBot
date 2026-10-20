@@ -18,6 +18,8 @@ import { JOIN_COMMAND, LEAVE_COMMAND } from "./constants.js";
 import { UserVisibleError, type MinutasSessions } from "./session.js";
 import type { MinutasStore } from "./store.js";
 import { allowErrorReply } from "../../discord/error-replies.js";
+import { config } from "../../config.js";
+import { resolveMinutesDestination } from "./destination.js";
 
 export function minutasCommandDefinitions(): ApplicationCommandData[] {
    return [
@@ -34,6 +36,34 @@ export function minutasCommandDefinitions(): ApplicationCommandData[] {
                type: 3, // STRING
                required: false,
                maxLength: 120,
+            },
+            {
+               name: "canal",
+               description:
+                  "Canal de texto donde publicar esta minuta; si lo omites, uso el canal habitual.",
+               type: 7, // CHANNEL
+               required: false,
+               channelTypes: [
+                  ChannelType.GuildText,
+                  ChannelType.GuildAnnouncement,
+               ],
+            },
+            {
+               name: "agenda",
+               description:
+                  "Temas previstos u orden del día para orientar la minuta (opcional).",
+               type: 3,
+               required: false,
+               maxLength: 1000,
+            },
+            {
+               name: "duracion",
+               description:
+                  "Límite de grabación en minutos; al cumplirse, cierro y preparo la minuta.",
+               type: 4, // INTEGER
+               required: false,
+               minValue: 1,
+               maxValue: config.MINUTAS_MAX_SESSION_MINUTES,
             },
          ],
       },
@@ -190,10 +220,13 @@ async function handleJoin(
    interaction: ChatInputCommandInteraction,
    deps: MinutasCommandDeps,
 ): Promise<void> {
-   if (!deps.store.getOutputChannelId()) {
+   const outputId =
+      interaction.options.getChannel("canal")?.id ??
+      deps.store.getOutputChannelId();
+   if (!outputId) {
       await interaction.reply({
          content:
-            "No tengo configurado el canal donde publicar las minutas. Un admin puede fijarlo desde la consola de configuración (`config_minutas`) o con `MINUTAS_OUTPUT_CHANNEL_ID`.",
+            "No tengo configurado el canal donde publicar las minutas. Elige uno con la opción `canal` o pide que un admin fije el canal habitual desde `config_minutas`.",
          ephemeral: true,
       });
       return;
@@ -214,6 +247,7 @@ async function handleJoin(
    }
    await interaction.deferReply();
    try {
+      await resolveMinutesDestination(interaction.guild!, outputId, member);
       const row = await deps.sessions.start({
          guild: interaction.guild!,
          channel: voice,
@@ -222,9 +256,14 @@ async function handleJoin(
             tag: member.displayName || interaction.user.tag,
          },
          title: interaction.options.getString("titulo"),
+         outputChannelId: outputId,
+         agenda: interaction.options.getString("agenda"),
+         maxDurationMinutes: interaction.options.getInteger("duracion"),
       });
       await interaction.editReply(
          `🔴 Grabando **${row.channel_name}**${row.title ? ` — _${row.title}_` : ""}. ` +
+            `Publicaré la minuta en <#${row.output_channel_id ?? outputId}>. ` +
+            `Límite de grabación: ${row.max_duration_minutes ?? config.MINUTAS_MAX_SESSION_MINUTES} min. ` +
             "Cierro con `/chopperbot-leave`, cuando el canal quede vacío o cuando termine el evento programado.",
       );
    } catch (err) {

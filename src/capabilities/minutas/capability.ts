@@ -248,6 +248,8 @@ export class MinutasCapability implements Capability {
          channelId: string;
          channelName: string;
          startedAtMs: number;
+         outputChannelId: string | null;
+         maxDurationMinutes: number;
       } | null;
       liveTranscription: ReturnType<LiveTranscriber["status"]> | null;
       recent: MinutasSessionRow[];
@@ -279,7 +281,8 @@ export class MinutasCapability implements Capability {
          );
       }
       this.beginFinalize(closed);
-      const outputId = this.store.getOutputChannelId();
+      const outputId =
+         closed.row.output_channel_id ?? this.store.getOutputChannelId();
       const dest = outputId ? `<#${outputId}>` : "el canal de minutas";
       return (
          `✅ Cerré la grabación de **${closed.row.channel_name}**. ` +

@@ -68,6 +68,9 @@ interface ActiveSession {
    startedAtMs: number;
    startedBy: { id: string; tag: string };
    title: string | null;
+   outputChannelId: string | null;
+   agenda: string | null;
+   maxDurationMinutes: number;
    connection: VoiceConnection;
    participants: Map<string, string>;
    /**
@@ -95,6 +98,9 @@ export interface SessionManifest {
    channelId: string;
    channelName: string;
    title: string | null;
+   outputChannelId?: string | null;
+   agenda?: string | null;
+   maxDurationMinutes?: number;
    startedBy: string;
    startedByTag: string | null;
    startedAt: number;
@@ -176,6 +182,8 @@ export class MinutasSessions {
       channelId: string;
       channelName: string;
       startedAtMs: number;
+      outputChannelId: string | null;
+      maxDurationMinutes: number;
    } | null {
       const s = this.active.get(guildId);
       if (!s) return null;
@@ -184,6 +192,8 @@ export class MinutasSessions {
          channelId: s.channelId,
          channelName: s.channelName,
          startedAtMs: s.startedAtMs,
+         outputChannelId: s.outputChannelId,
+         maxDurationMinutes: s.maxDurationMinutes,
       };
    }
 
@@ -204,8 +214,27 @@ export class MinutasSessions {
       channel: VoiceBasedChannel;
       startedBy: { id: string; tag: string };
       title?: string | null;
+      outputChannelId?: string | null;
+      agenda?: string | null;
+      maxDurationMinutes?: number | null;
    }): Promise<MinutasSessionRow> {
       const { guild, channel } = params;
+      const maxDurationMinutes =
+         params.maxDurationMinutes ?? config.MINUTAS_MAX_SESSION_MINUTES;
+      if (
+         !Number.isInteger(maxDurationMinutes) ||
+         maxDurationMinutes < 1 ||
+         maxDurationMinutes > config.MINUTAS_MAX_SESSION_MINUTES
+      ) {
+         throw new UserVisibleError(
+            `La duración debe ser de 1 a ${config.MINUTAS_MAX_SESSION_MINUTES} minutos.`,
+         );
+      }
+      const agenda = params.agenda?.replace(/\s+/g, " ").trim() || null;
+      if (agenda && agenda.length > 1000)
+         throw new UserVisibleError("La agenda admite hasta 1000 caracteres.");
+      const outputChannelId =
+         params.outputChannelId ?? this.deps.store.getOutputChannelId();
       if (
          this.active.has(guild.id) ||
          this.deps.store.getActiveSessionForGuild(guild.id)
@@ -259,6 +288,9 @@ export class MinutasSessions {
          startedAtMs,
          startedBy: params.startedBy,
          title,
+         outputChannelId,
+         agenda,
+         maxDurationMinutes,
          connection,
          participants: new Map([[params.startedBy.id, params.startedBy.tag]]),
          named: new Set(),
@@ -277,7 +309,7 @@ export class MinutasSessions {
       session.maxTimer = setTimeout(() => {
          log.warn({ sessionId: id }, "minutas.max_duration_reached");
          this.closeAndReport(guild.id, "duración máxima alcanzada");
-      }, config.MINUTAS_MAX_SESSION_MINUTES * 60_000);
+      }, maxDurationMinutes * 60_000);
       session.maxTimer.unref();
 
       this.active.set(guild.id, session);
@@ -289,6 +321,9 @@ export class MinutasSessions {
          channel_id: channel.id,
          channel_name: channel.name,
          title,
+         output_channel_id: outputChannelId,
+         agenda,
+         max_duration_minutes: maxDurationMinutes,
          started_by: params.startedBy.id,
          started_by_tag: params.startedBy.tag,
          started_at: session.startedAtMs,
@@ -311,6 +346,10 @@ export class MinutasSessions {
          await channel
             .send(
                `🔴 **Estoy grabando esta sesión para la minuta** — _${title}_. ` +
+                  (outputChannelId
+                     ? `La minuta se publicará en <#${outputChannelId}>. `
+                     : "") +
+                  `Límite de grabación: ${maxDurationMinutes} min. ` +
                   "Cuando terminen, alguien de la moderación corre `/chopperbot-leave` y publico el resumen. " +
                   "(Si el canal se vacía o el evento termina, cierro sola.)",
             )
@@ -731,6 +770,9 @@ export class MinutasSessions {
          channelId: session.channelId,
          channelName: session.channelName,
          title: session.title,
+         outputChannelId: session.outputChannelId,
+         agenda: session.agenda,
+         maxDurationMinutes: session.maxDurationMinutes,
          startedBy: session.startedBy.id,
          startedByTag: session.startedBy.tag,
          startedAt: session.startedAtMs,

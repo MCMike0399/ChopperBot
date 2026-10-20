@@ -14,6 +14,13 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.9.0 — 2026-10-19
+
+- Al iniciar una minuta, puedes elegir con `canal` dónde publicarla: sirve para dejar las reuniones de cada comisión en su propio canal. Si no eliges uno, se usa el canal habitual. La elección solo afecta a esa sesión y se conserva si el bot se reinicia.
+- La opción `agenda` permite indicar los temas previstos u orden del día. Ayuda a organizar la minuta sin dar por discutidos o aprobados los puntos que no aparecen en la grabación.
+- Con `duracion` puedes fijar un límite de grabación de 1 a 300 minutos. Al cumplirse, ChopperBot cierra y prepara la minuta. También puedes terminar antes con `/chopperbot-leave`.
+- El aviso de grabación muestra dónde se publicará la minuta y el límite de tiempo. Antes de empezar, ChopperBot comprueba que pueda enviar el resumen y adjuntar el acta en el canal elegido.
+
 ## 2.8.0 — 2026-10-19
 
 - Puedes elegir el título de la minuta con `/chopperbot-join titulo:Asamblea de octubre`. Si lo dejas vacío, ChopperBot usa el nombre del canal y la fecha de la grabación, con horario de Ciudad de México.

@@ -3,6 +3,7 @@ import {
    BLOCK_MAX_CHARS,
    buildMinutesSystemPrompt,
    buildMinutesUserPrompt,
+   buildFinalFromNotesPrompt,
    renderMinutesPost,
    splitTranscriptIntoBlocks,
    stripMinutesChatSection,
@@ -71,6 +72,27 @@ describe("buildMinutesSystemPrompt", () => {
       const u = buildMinutesUserPrompt("[00:02] 💬 Carla (chat): jeje", META);
       expect(u).toContain("💬 Carla (chat): jeje");
       expect(u).toMatch(/no las copies al acta/);
+   });
+
+   test("agenda remains planned context in both direct and multi-pass writing", () => {
+      const meta = {
+         ...META,
+         agenda: "Brigadas; formación; aprobar un comunicado",
+      };
+      for (const prompt of [
+         buildMinutesUserPrompt("[00:00] Ana: hola", meta),
+         buildFinalFromNotesPrompt("Notas de la sesión", meta),
+      ]) {
+         expect(prompt).toContain(meta.agenda);
+         expect(prompt).toContain("no transcripción");
+         expect(prompt).toContain(
+            "No demuestra que un tema se trató, se aprobó o se pospuso",
+         );
+         expect(prompt).toContain("no consta en la grabación");
+      }
+      expect(buildMinutesUserPrompt("Hola", META)).not.toContain(
+         "Agenda prevista",
+      );
    });
 });
 

@@ -33,6 +33,12 @@ interface FakeInteractionOpts {
    inGuild?: boolean;
    voiceChannel?: { id: string; name: string; type: ChannelType } | null;
    title?: string | null;
+   destination?: { id: string; guildId?: string; type?: ChannelType };
+   destinationMissing?: boolean;
+   callerCanPublish?: boolean;
+   botPermissions?: bigint;
+   agenda?: string;
+   duration?: number;
 }
 
 function fakeInteraction(opts: FakeInteractionOpts) {
@@ -46,8 +52,34 @@ function fakeInteraction(opts: FakeInteractionOpts) {
       inGuild: () => opts.inGuild ?? true,
       isChatInputCommand: () => true,
       guild: {
+         id: "g1",
+         channels: {
+            fetch: vi.fn(async (id: string) =>
+               opts.destinationMissing
+                  ? null
+                  : {
+                       id,
+                       guildId: opts.destination?.guildId ?? "g1",
+                       type: opts.destination?.type ?? ChannelType.GuildText,
+                       permissionsFor: (member: { id: string }) =>
+                          new PermissionsBitField(
+                             member.id === "bot"
+                                ? (opts.botPermissions ??
+                                     PermissionFlagsBits.ViewChannel |
+                                        PermissionFlagsBits.SendMessages |
+                                        PermissionFlagsBits.AttachFiles)
+                                : opts.callerCanPublish === false
+                                  ? 0n
+                                  : PermissionFlagsBits.ViewChannel |
+                                    PermissionFlagsBits.SendMessages,
+                          ),
+                    },
+            ),
+         },
          members: {
+            fetchMe: async () => ({ id: "bot" }),
             fetch: async () => ({
+               id: "u1",
                voice: { channel: opts.voiceChannel ?? null },
             }),
          },
@@ -71,7 +103,13 @@ function fakeInteraction(opts: FakeInteractionOpts) {
       ),
       options: {
          getString: (n: string) =>
-            n === "titulo" ? (opts.title ?? null) : null,
+            n === "titulo"
+               ? (opts.title ?? null)
+               : n === "agenda"
+                 ? (opts.agenda ?? null)
+                 : null,
+         getChannel: () => opts.destination ?? null,
+         getInteger: () => opts.duration ?? null,
       },
       get replied() {
          return state.replied;
@@ -95,24 +133,31 @@ function fakeInteraction(opts: FakeInteractionOpts) {
 
 function fakeDeps(store: MinutasStore, mem: SqliteMemoryStore) {
    const sessions = {
-      start: vi.fn(async () => ({
-         id: "s1",
-         guild_id: "g1",
-         channel_id: "vc1",
-         channel_name: "Ágora",
-         title: null,
-         started_by: "u1",
-         started_by_tag: "ana#0001",
-         started_at: 1,
-         ended_at: null,
-         status: "active" as const,
-         end_reason: null,
-         minio_prefix: null,
-         summary_message_id: null,
-         participants_json: "[]",
-         stats_json: null,
-         error: null,
-      })),
+      start: vi.fn(
+         async (params: {
+            outputChannelId?: string;
+            maxDurationMinutes?: number | null;
+         }) => ({
+            id: "s1",
+            guild_id: "g1",
+            channel_id: "vc1",
+            channel_name: "Ágora",
+            title: null,
+            output_channel_id: params.outputChannelId,
+            max_duration_minutes: params.maxDurationMinutes,
+            started_by: "u1",
+            started_by_tag: "ana#0001",
+            started_at: 1,
+            ended_at: null,
+            status: "active" as const,
+            end_reason: null,
+            minio_prefix: null,
+            summary_message_id: null,
+            participants_json: "[]",
+            stats_json: null,
+            error: null,
+         }),
+      ),
       getActive: vi.fn(() => null as null | { id: string }),
       end: vi.fn(async () => null),
    };
@@ -229,6 +274,60 @@ describe("minutas slash-command gate (moderation only)", () => {
 });
 
 describe("minutas slash-command flows", () => {
+   test("per-session destination works without a global default and carries all options", async () => {
+      const { mem, store } = await newDb();
+      const { handler, sessions } = fakeDeps(store, mem);
+      const { interaction, edits } = fakeInteraction({
+         command: JOIN_COMMAND,
+         isAdmin: true,
+         voiceChannel: VOICE,
+         destination: { id: "commission-output" },
+         agenda: "Reportes; brigadas",
+         duration: 45,
+      });
+      await handler(interaction);
+      expect(sessions.start).toHaveBeenCalledWith(
+         expect.objectContaining({
+            outputChannelId: "commission-output",
+            agenda: "Reportes; brigadas",
+            maxDurationMinutes: 45,
+         }),
+      );
+      expect(edits[0]).toContain("<#commission-output>");
+      expect(edits[0]).toContain("45 min");
+      expect(store.getOutputChannelId()).toBeNull();
+      mem.close();
+   });
+
+   test.each([
+      { destinationMissing: true },
+      { destination: { id: "other", guildId: "g2" } },
+      { destination: { id: "voice", type: ChannelType.GuildVoice } },
+      { destination: { id: "thread", type: ChannelType.PublicThread } },
+      { callerCanPublish: false },
+      {
+         botPermissions:
+            PermissionFlagsBits.ViewChannel | PermissionFlagsBits.SendMessages,
+      },
+   ])(
+      "invalid or inaccessible destination blocks recording: %s",
+      async (options) => {
+         const { mem, store } = await newDb();
+         store.setOutputChannelId(OUTPUT);
+         const { handler, sessions } = fakeDeps(store, mem);
+         const { interaction, edits } = fakeInteraction({
+            command: JOIN_COMMAND,
+            isAdmin: true,
+            voiceChannel: VOICE,
+            ...options,
+         });
+         await handler(interaction);
+         expect(sessions.start).not.toHaveBeenCalled();
+         expect(edits[0]).toMatch(/canal|Necesito|Necesitas/);
+         mem.close();
+      },
+   );
+
    test("join without an output channel configured fails early + ephemerally", async () => {
       const { mem, store } = await newDb();
       const { handler, sessions } = fakeDeps(store, mem);

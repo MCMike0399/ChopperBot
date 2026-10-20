@@ -1,10 +1,10 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
 import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Client } from "discord.js";
+import { ChannelType, type Client } from "discord.js";
 import { SqliteMemoryStore, NamespacedMemory } from "../../../memory/store.js";
 import {
    MINUTAS_MIGRATIONS,
@@ -13,6 +13,7 @@ import {
 } from "../store.js";
 import type { ObjectStorage } from "../../../storage/object-storage.js";
 import type { Transcriber } from "../transcriber.js";
+import { generateMinutes } from "../minutes.js";
 
 // The LLM call is mocked — everything else (ffmpeg PCM→WAV, burst manifests,
 // chat merge, draft render, MinIO upload layout, Discord post, DB lifecycle)
@@ -83,19 +84,32 @@ class FakeTranscriber implements Transcriber {
    }
 }
 
-function fakeClient(sent: Array<Record<string, unknown>>): Client {
+function fakeClient(
+   sent: Array<Record<string, unknown>>,
+   destinations: string[],
+): Client {
+   const fetch = async (id: string) => ({
+      guildId: "g1",
+      type: ChannelType.GuildText,
+      permissionsFor: () => ({ has: () => true }),
+      isSendable: () => true,
+      isVoiceBased: () => false,
+      send: async (payload: Record<string, unknown>) => {
+         destinations.push(id);
+         sent.push(payload);
+         return {
+            id: `msg-${sent.length}`,
+            url: `https://discord.com/channels/g/c/msg-${sent.length}`,
+         };
+      },
+   });
    return {
-      channels: {
+      channels: { fetch },
+      guilds: {
          fetch: async () => ({
-            isSendable: () => true,
-            isVoiceBased: () => false,
-            send: async (payload: Record<string, unknown>) => {
-               sent.push(payload);
-               return {
-                  id: `msg-${sent.length}`,
-                  url: `https://discord.com/channels/g/c/msg-${sent.length}`,
-               };
-            },
+            id: "g1",
+            channels: { fetch },
+            members: { fetchMe: async () => ({ id: "bot" }) },
          }),
       },
    } as unknown as Client;
@@ -116,15 +130,25 @@ async function newHarness() {
    const sessionsDir = await mkdtemp(join(tmpdir(), "minutas-test-"));
    const storage = new FakeStorage();
    const sent: Array<Record<string, unknown>> = [];
+   const destinations: string[] = [];
    const { finalizeSession } = await import("../pipeline.js");
    const deps = {
       store,
       storage,
       transcriber: new FakeTranscriber(),
       sessionsDir,
-      client: fakeClient(sent),
+      client: fakeClient(sent, destinations),
    };
-   return { mem, store, sessionsDir, storage, sent, finalizeSession, deps };
+   return {
+      mem,
+      store,
+      sessionsDir,
+      storage,
+      sent,
+      destinations,
+      finalizeSession,
+      deps,
+   };
 }
 
 function sessionRow(over: Partial<MinutasSessionRow> = {}): MinutasSessionRow {
@@ -333,6 +357,62 @@ describe.skipIf(!hasFfmpeg)("minutas finalize pipeline", () => {
          ).toContain("# Transcripción — 🔊 Ágora 🔊 — 16 de agosto de 2026");
       },
    );
+
+   test.each([false, true])(
+      "session destination and agenda survive default changes (missing manifest: %s)",
+      async (missingManifest) => {
+         const { store, sessionsDir, destinations, finalizeSession, deps } =
+            harness;
+         store.createSession(
+            sessionRow({
+               output_channel_id: "commission-output",
+               agenda: "Reportes; brigadas",
+               max_duration_minutes: 45,
+            }),
+         );
+         const dir = await fabricateSessionDir(sessionsDir, { withChat: true });
+         if (missingManifest) await unlink(join(dir, "session.json"));
+         store.setOutputChannelId("new-default");
+
+         await finalizeSession(deps, SESSION_ID);
+
+         expect(destinations).toEqual(["commission-output"]);
+         expect(vi.mocked(generateMinutes).mock.lastCall?.[1].agenda).toBe(
+            "Reportes; brigadas",
+         );
+         expect(store.getOutputChannelId()).toBe("new-default");
+      },
+   );
+
+   test("manifest destination is recovered for a legacy row without one", async () => {
+      const { store, sessionsDir, destinations, finalizeSession, deps } =
+         harness;
+      store.createSession(sessionRow());
+      const dir = await fabricateSessionDir(sessionsDir, { withChat: true });
+      const path = join(dir, "session.json");
+      const manifest = JSON.parse(await readFile(path, "utf8"));
+      await writeFile(
+         path,
+         JSON.stringify({ ...manifest, outputChannelId: "recovered-output" }),
+      );
+      await finalizeSession(deps, SESSION_ID);
+      expect(destinations).toEqual(["recovered-output"]);
+   });
+
+   test("a deleted destination does not reroute minutes to the global channel", async () => {
+      const { store, sessionsDir, sent, finalizeSession, deps } = harness;
+      store.createSession(sessionRow({ output_channel_id: "deleted-output" }));
+      const dir = await fabricateSessionDir(sessionsDir, { withChat: true });
+      deps.client.guilds.fetch = vi.fn(async () => ({
+         id: "g1",
+         channels: { fetch: async () => null },
+      })) as never;
+      await expect(finalizeSession(deps, SESSION_ID)).rejects.toThrow(
+         /canal de texto/,
+      );
+      expect(sent).toEqual([]);
+      expect(existsSync(join(dir, "minuta.md"))).toBe(true);
+   });
 
    test("live-transcribed bursts are consumed from the ledger — whisper only runs for the remainder", async () => {
       const { store, sessionsDir, sent, finalizeSession, deps } = harness;

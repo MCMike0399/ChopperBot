@@ -1,5 +1,6 @@
 import { AttachmentBuilder, type Client } from "discord.js";
 import { chunkBotReply } from "../../discord/chunk.js";
+import { resolveMinutesDestination } from "./destination.js";
 
 export interface PublishedMinutes {
    messageId: string;
@@ -29,17 +30,14 @@ export interface PublishedMinutes {
  */
 export async function publishMinutes(deps: {
    client: Client;
+   guildId: string;
    channelId: string;
    docText: string;
    minutesMd: string;
    fileBaseName: string;
 }): Promise<PublishedMinutes> {
-   const channel = await deps.client.channels.fetch(deps.channelId);
-   if (!channel || !channel.isSendable()) {
-      throw new Error(
-         `Minutas output channel ${deps.channelId} is not sendable`,
-      );
-   }
+   const guild = await deps.client.guilds.fetch(deps.guildId);
+   const channel = await resolveMinutesDestination(guild, deps.channelId);
    const file = new AttachmentBuilder(Buffer.from(deps.minutesMd, "utf8"), {
       name: `minuta-${deps.fileBaseName}.md`,
    });

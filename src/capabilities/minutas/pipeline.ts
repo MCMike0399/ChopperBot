@@ -160,10 +160,14 @@ export async function finalizeSession(
    // ── 5. Publish ────────────────────────────────────────────────────────────
    let publishedUrl: string | null = null;
    let summaryMessageId: string | null = null;
-   const outputChannelId = deps.store.getOutputChannelId();
+   const outputChannelId =
+      row.output_channel_id ??
+      manifest.outputChannelId ??
+      deps.store.getOutputChannelId();
    if (outputChannelId) {
       const published = await publishMinutes({
          client: deps.client,
+         guildId: row.guild_id,
          channelId: outputChannelId,
          docText: renderMinutesSummaryPost(
             publicActa.body,
@@ -254,6 +258,9 @@ async function readManifest(
          channelId: row.channel_id,
          channelName: row.channel_name ?? row.channel_id,
          title: row.title,
+         outputChannelId: row.output_channel_id,
+         agenda: row.agenda,
+         maxDurationMinutes: row.max_duration_minutes ?? undefined,
          startedBy: row.started_by,
          startedByTag: row.started_by_tag,
          startedAt: row.started_at,
@@ -477,6 +484,7 @@ function buildMeta(
          manifest.startedAt,
       ),
       channelName: manifest.channelName ?? row.channel_id,
+      agenda: row.agenda ?? manifest.agenda ?? undefined,
       dateLabel,
       durationLabel,
       participants,

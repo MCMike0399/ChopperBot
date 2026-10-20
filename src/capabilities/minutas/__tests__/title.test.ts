@@ -8,6 +8,7 @@ import { NamespacedMemory, SqliteMemoryStore } from "../../../memory/store.js";
 import { MinutasSessions } from "../session.js";
 import { MINUTAS_MIGRATIONS, MinutasStore } from "../store.js";
 import { resolveSessionTitle } from "../title.js";
+import { config } from "../../../config.js";
 
 vi.mock("@discordjs/voice", () => ({
    EndBehaviorType: {},
@@ -65,6 +66,9 @@ describe("session titles", () => {
                } as unknown as VoiceBasedChannel,
                startedBy: { id: "u1", tag: "Moderación" },
                title: input,
+               outputChannelId: "commission-output",
+               agenda: "  Reportes;   brigadas  ",
+               maxDurationMinutes: 30,
             });
             expect(row.title).toBe(expected);
             expect(store.getSession(row.id)?.title).toBe(expected);
@@ -72,12 +76,93 @@ describe("session titles", () => {
                readFileSync(join(dir, row.id, "session.json"), "utf8"),
             );
             expect(manifest.title).toBe(expected);
+            expect(manifest).toMatchObject({
+               outputChannelId: "commission-output",
+               agenda: "Reportes; brigadas",
+               maxDurationMinutes: 30,
+            });
+            expect(store.getSession(row.id)).toMatchObject({
+               output_channel_id: "commission-output",
+               agenda: "Reportes; brigadas",
+               max_duration_minutes: 30,
+            });
             expect(send.mock.calls[0]?.[0]).toContain(expected);
+            expect(send.mock.calls[0]?.[0]).toContain("<#commission-output>");
+            expect(send.mock.calls[0]?.[0]).toContain("30 min");
          } finally {
             sessions.disposeAll();
             clock.mockRestore();
             mem.close();
             rmSync(dir, { recursive: true, force: true });
+         }
+      },
+   );
+
+   test("a per-session duration automatically stops recording", async () => {
+      const mem = new SqliteMemoryStore({ path: ":memory:" });
+      const dir = mkdtempSync(join(tmpdir(), "minutas-duration-"));
+      const onClosed = vi.fn();
+      const store = new MinutasStore(mem.db());
+      const sessions = new MinutasSessions({
+         store,
+         sessionsDir: dir,
+         onClosed,
+      });
+      try {
+         await new NamespacedMemory(mem, "minutas").migrate(
+            "minutas",
+            MINUTAS_MIGRATIONS,
+         );
+         store.setOutputChannelId("default-output");
+         vi.useFakeTimers();
+         const row = await sessions.start({
+            guild: { id: "g1", members: { me: null } } as unknown as Guild,
+            channel: {
+               id: "vc1",
+               name: "Comisión",
+               isSendable: () => false,
+            } as unknown as VoiceBasedChannel,
+            startedBy: { id: "u1", tag: "Moderación" },
+            maxDurationMinutes: 1,
+         });
+         store.setOutputChannelId("new-default");
+         expect(row.output_channel_id).toBe("default-output");
+         await vi.advanceTimersByTimeAsync(59_999);
+         expect(sessions.getActive("g1")).not.toBeNull();
+         await vi.advanceTimersByTimeAsync(1);
+         expect(sessions.getActive("g1")).toBeNull();
+         expect(onClosed).toHaveBeenCalledWith(
+            expect.objectContaining({ reason: "duración máxima alcanzada" }),
+         );
+         expect(store.getSession(row.id)?.status).toBe("processing");
+      } finally {
+         sessions.disposeAll();
+         vi.useRealTimers();
+         mem.close();
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   test.each([0, -1, 1.5, config.MINUTAS_MAX_SESSION_MINUTES + 1])(
+      "invalid duration %s cannot start a recording",
+      async (duration) => {
+         const mem = new SqliteMemoryStore({ path: ":memory:" });
+         const sessions = new MinutasSessions({
+            store: new MinutasStore(mem.db()),
+            sessionsDir: "/unused",
+            onClosed: vi.fn(),
+         });
+         try {
+            await expect(
+               sessions.start({
+                  guild: { id: "g1" } as Guild,
+                  channel: {} as VoiceBasedChannel,
+                  startedBy: { id: "u1", tag: "Moderación" },
+                  maxDurationMinutes: duration,
+               }),
+            ).rejects.toThrow(/duración debe ser/);
+         } finally {
+            mem.close();
          }
       },
    );

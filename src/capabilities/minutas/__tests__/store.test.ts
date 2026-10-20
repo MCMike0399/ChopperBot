@@ -52,6 +52,37 @@ describe("MinutasStore settings", () => {
 });
 
 describe("MinutasStore sessions", () => {
+   test("v3 migration preserves existing sessions and persists per-session settings", async () => {
+      const mem = new SqliteMemoryStore({ path: ":memory:" });
+      const memory = new NamespacedMemory(mem, "minutas");
+      await memory.migrate("minutas", MINUTAS_MIGRATIONS.slice(0, 2));
+      mem.db()
+         .prepare(
+            "INSERT INTO minutas_sessions (id, guild_id, channel_id, started_by, started_at) VALUES ('legacy', 'g1', 'vc1', 'u1', 1000)",
+         )
+         .run();
+      await memory.migrate("minutas", MINUTAS_MIGRATIONS);
+      const store = new MinutasStore(mem.db());
+      expect(store.getSession("legacy")).toMatchObject({
+         status: "active",
+         output_channel_id: null,
+         agenda: null,
+         max_duration_minutes: null,
+      });
+      store.createSession(
+         row({
+            output_channel_id: "commission-output",
+            agenda: "Formación",
+            max_duration_minutes: 45,
+         }),
+      );
+      expect(store.getSession("s1")).toMatchObject({
+         output_channel_id: "commission-output",
+         agenda: "Formación",
+         max_duration_minutes: 45,
+      });
+      mem.close();
+   });
    test("create + active lookup + lifecycle updates", async () => {
       const { store, mem } = await newStore();
       store.createSession(row());
