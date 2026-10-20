@@ -302,6 +302,38 @@ describe.skipIf(!hasFfmpeg)("minutas finalize pipeline", () => {
       expect(existsSync(dir)).toBe(false);
    });
 
+   test.each([null, " \t "])(
+      "legacy title %j gets a dated channel title at publication",
+      async (title) => {
+         const { store, sessionsDir, storage, sent, finalizeSession, deps } =
+            harness;
+         store.createSession(sessionRow({ title }));
+         const dir = await fabricateSessionDir(sessionsDir, {
+            withChat: true,
+         });
+         const manifestPath = join(dir, "session.json");
+         const manifest = JSON.parse(await readFile(manifestPath, "utf8"));
+         manifest.title = title;
+         await writeFile(manifestPath, JSON.stringify(manifest));
+
+         await finalizeSession(deps, SESSION_ID);
+
+         const header = "# 📜 Minuta — 🔊 Ágora 🔊 — 16 de agosto de 2026";
+         expect(String(sent[0]?.content)).toContain(header);
+         const prefix = store.getSession(SESSION_ID)!.minio_prefix;
+         expect(
+            Buffer.from(storage.objects.get(`${prefix}minuta.md`)!).toString(
+               "utf8",
+            ),
+         ).toContain(header);
+         expect(
+            Buffer.from(
+               storage.objects.get(`${prefix}transcripcion.md`)!,
+            ).toString("utf8"),
+         ).toContain("# Transcripción — 🔊 Ágora 🔊 — 16 de agosto de 2026");
+      },
+   );
+
    test("live-transcribed bursts are consumed from the ledger — whisper only runs for the remainder", async () => {
       const { store, sessionsDir, sent, finalizeSession, deps } = harness;
       store.createSession(sessionRow());

@@ -30,6 +30,7 @@ import {
    type MinutesMeta,
 } from "./minutes.js";
 import { minioPrefixFor, type SessionManifest } from "./session.js";
+import { resolveSessionTitle } from "./title.js";
 import type { MinutasSessionRow, MinutasStore } from "./store.js";
 import { publishMinutes } from "./publisher.js";
 import { chunkBotReply } from "../../discord/chunk.js";
@@ -470,7 +471,11 @@ function buildMeta(
       )
       .map((a) => `${a.name} (también aparece como ${a.names.join(", ")})`);
    return {
-      title: row.title ?? manifest.channelName ?? "sesión de voz",
+      title: resolveSessionTitle(
+         row.title ?? manifest.title,
+         manifest.channelName ?? row.channel_name,
+         manifest.startedAt,
+      ),
       channelName: manifest.channelName ?? row.channel_id,
       dateLabel,
       durationLabel,

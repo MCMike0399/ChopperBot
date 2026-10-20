@@ -34,6 +34,7 @@ import {
    sanitizeFileFragment,
 } from "./audio.js";
 import type { MinutasSessionRow, MinutasStore } from "./store.js";
+import { resolveSessionTitle } from "./title.js";
 
 /** Errors whose message is safe to show the member who ran the command. */
 export class UserVisibleError extends Error {}
@@ -243,15 +244,21 @@ export class MinutasSessions {
          );
       }
 
+      const startedAtMs = Date.now();
+      const title = resolveSessionTitle(
+         params.title,
+         channel.name,
+         startedAtMs,
+      );
       const session: ActiveSession = {
          id,
          guild,
          channelId: channel.id,
          channelName: channel.name,
          dir,
-         startedAtMs: Date.now(),
+         startedAtMs,
          startedBy: params.startedBy,
-         title: params.title ?? null,
+         title,
          connection,
          participants: new Map([[params.startedBy.id, params.startedBy.tag]]),
          named: new Set(),
@@ -281,7 +288,7 @@ export class MinutasSessions {
          guild_id: guild.id,
          channel_id: channel.id,
          channel_name: channel.name,
-         title: params.title ?? null,
+         title,
          started_by: params.startedBy.id,
          started_by_tag: params.startedBy.tag,
          started_at: session.startedAtMs,
@@ -303,7 +310,7 @@ export class MinutasSessions {
       if (channel.isSendable()) {
          await channel
             .send(
-               `🔴 **Estoy grabando esta sesión para la minuta**${params.title ? ` — _${params.title}_` : ""}. ` +
+               `🔴 **Estoy grabando esta sesión para la minuta** — _${title}_. ` +
                   "Cuando terminen, alguien de la moderación corre `/chopperbot-leave` y publico el resumen. " +
                   "(Si el canal se vacía o el evento termina, cierro sola.)",
             )

@@ -14,6 +14,11 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.8.0 — 2026-10-19
+
+- Puedes elegir el título de la minuta con `/chopperbot-join titulo:Asamblea de octubre`. Si lo dejas vacío, ChopperBot usa el nombre del canal y la fecha de la grabación, con horario de Ciudad de México.
+- Ese mismo título aparece desde el aviso de grabación hasta la minuta final, para que sea más fácil reconocer cada sesión.
+
 ## 2.7.6 — 2026-10-18
 
 - Si tres revisiones seguidas de Instagram fallan, ChopperBot avisa en el canal de monitoreo aunque siga encendido. También avisa cuando vuelve a leer correctamente.

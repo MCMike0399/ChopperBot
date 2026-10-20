@@ -29,7 +29,8 @@ export function minutasCommandDefinitions(): ApplicationCommandData[] {
          options: [
             {
                name: "titulo",
-               description: "Título de la sesión para la minuta (opcional)",
+               description:
+                  "Título de la minuta; si lo omites, uso el nombre del canal y la fecha (CDMX).",
                type: 3, // STRING
                required: false,
                maxLength: 120,
