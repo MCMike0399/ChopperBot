@@ -1,3 +1,4 @@
+import { DISCORD_REPLY_FORMAT } from "./format.js";
 import {
    Client,
    Events,
@@ -237,8 +238,15 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                   );
 
                   return ask({
-                     system: turn.system,
-                     stableSystem: turn.stableSystem,
+                     system:
+                        turn.system +
+                        "\n\n" +
+                        DISCORD_REPLY_FORMAT.instructions,
+                     stableSystem: turn.stableSystem
+                        ? turn.stableSystem +
+                          "\n\n" +
+                          DISCORD_REPLY_FORMAT.instructions
+                        : undefined,
                      systemTail: turn.systemTail,
                      channelTranscript: context.transcript,
                      messages: turns,

@@ -217,6 +217,72 @@ describe("ask — the agent loop", () => {
       expect(handle).toHaveBeenCalledTimes(1);
    });
 
+   test("mutable workspace checks see a rewritten file while duplicate sends stay deduplicated", async () => {
+      createMock
+         .mockResolvedValueOnce(
+            toolCalls([
+               { id: "c1", name: "check_file", input: { path: "slides.pptx" } },
+            ]),
+         )
+         .mockResolvedValueOnce(
+            toolCalls([{ id: "w", name: "rewrite_file", input: {} }]),
+         )
+         .mockResolvedValueOnce(
+            toolCalls([
+               { id: "c2", name: "check_file", input: { path: "slides.pptx" } },
+            ]),
+         )
+         .mockResolvedValueOnce(
+            toolCalls([
+               { id: "s1", name: "send_file", input: { path: "slides.pptx" } },
+               { id: "s2", name: "send_file", input: { path: "slides.pptx" } },
+            ]),
+         )
+         .mockResolvedValueOnce(end("listo"));
+      let version = 1;
+      const handle = vi.fn(async (name: string) => {
+         if (name === "rewrite_file") version++;
+         return { status: "success" as const, payload: { version } };
+      });
+      const tools = {
+         tools: [
+            {
+               name: "check_file",
+               description: "check",
+               inputSchema: { type: "object" },
+               cacheable: false,
+            },
+            {
+               name: "rewrite_file",
+               description: "write",
+               inputSchema: { type: "object" },
+               cacheable: false,
+            },
+            {
+               name: "send_file",
+               description: "send",
+               inputSchema: { type: "object" },
+            },
+         ],
+         handle,
+      } as ComposedTools;
+      await ask({
+         system: "p",
+         messages: [{ role: "user", content: "corrige y envía" }],
+         tools,
+      });
+      expect(
+         handle.mock.calls.filter((c) => c[0] === "check_file"),
+      ).toHaveLength(2);
+      expect(
+         handle.mock.calls.filter((c) => c[0] === "send_file"),
+      ).toHaveLength(1);
+      expect(
+         JSON.parse(toolMsgs(3).find((m) => m.tool_call_id === "c2")!.content),
+      ).toEqual({ version: 2 });
+      expect(JSON.stringify(reqAt(0).tools)).not.toContain("cacheable");
+   });
+
    test("a malformed tool_call (missing name) yields an error tool message, handler not called", async () => {
       createMock
          .mockResolvedValueOnce(toolCalls([{ id: "bad", input: {} }])) // no name

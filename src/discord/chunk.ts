@@ -1,5 +1,7 @@
+import { DISCORD_REPLY_FORMAT } from "./format.js";
+
 const DISCORD_LIMIT = 2000;
-const FENCE_RE = /^```(\S*)/;
+type Fence = { opening: string; closing: string };
 
 /**
  * Visible footer appended to every bot chunk EXCEPT the last when a reply
@@ -23,42 +25,64 @@ export function chunkMessage(text: string, limit = DISCORD_LIMIT): string[] {
    if (text.length <= limit) return [text];
 
    const chunks: string[] = [];
-   const lines = text.split("\n");
-   let buf: string[] = [];
-   let bufLen = 0;
-   let openFence: string | null = null;
-
+   let buf = "";
+   let fence: Fence | null = null;
    const flush = (): void => {
-      if (buf.length === 0) return;
-      let chunk = buf.join("\n");
-      if (openFence !== null) chunk += "\n```";
-      chunks.push(chunk.trimEnd());
-      buf = [];
-      bufLen = 0;
-      if (openFence !== null) {
-         buf.push(openFence);
-         bufLen = openFence.length + 1;
-      }
+      if (!buf) return;
+      chunks.push(buf + (fence ? "\n" + fence.closing : ""));
+      buf = fence ? fence.opening : "";
    };
-
-   for (const line of lines) {
-      const closingReserve = openFence !== null ? 4 : 0; // "\n```"
-      const projected = bufLen + line.length + 1 + closingReserve;
-
-      if (projected > limit && buf.length > 0) flush();
-
-      const m = line.match(FENCE_RE);
-      if (m) openFence = openFence === null ? "```" + m[1] : null;
-
-      buf.push(line);
-      bufLen += line.length + 1;
+   for (const line of text.split("\n")) {
+      const mark = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+      const nextFence: Fence | null = mark
+         ? !fence
+            ? { opening: line, closing: mark[1] }
+            : mark[1][0] === fence.closing[0] &&
+                mark[1].length >= fence.closing.length &&
+                !mark[2].trim()
+              ? null
+              : fence
+         : fence;
+      const reserve = nextFence ? nextFence.closing.length + 1 : 0;
+      if (
+         line.length + reserve + (nextFence?.opening.length ?? 0) > limit &&
+         mark
+      ) {
+         // An absurdly long fence info string cannot be repeated in a Discord message.
+         // Treat it as plain text so delivery still obeys the hard limit.
+         const plain = line.replace(/`/g, "ˋ").replace(/~/g, "∼");
+         for (const part of chunkMessage(plain, limit)) {
+            if (buf) flush();
+            chunks.push(part);
+         }
+         continue;
+      }
+      if (
+         buf.length + (buf ? 1 : 0) + line.length + reserve > limit &&
+         buf &&
+         buf !== fence?.opening
+      )
+         flush();
+      let rest = line;
+      do {
+         const prefix = buf ? "\n" : "";
+         const capacity = limit - buf.length - prefix.length - reserve;
+         if (capacity < 0 || (capacity === 0 && rest.length > 0))
+            throw new Error("Chunk limit too small for the code fence");
+         let take = Math.min(rest.length, capacity);
+         if (take < rest.length && /[\uD800-\uDBFF]/.test(rest[take - 1]))
+            take--;
+         if (take === 0 && rest.length) {
+            flush();
+            continue;
+         }
+         buf += prefix + rest.slice(0, take);
+         rest = rest.slice(take);
+         if (rest) flush();
+      } while (rest);
+      fence = nextFence;
    }
-
-   if (buf.length > 0) {
-      let chunk = buf.join("\n");
-      if (openFence !== null) chunk += "\n```";
-      chunks.push(chunk.trimEnd());
-   }
+   if (buf) chunks.push(buf + (fence ? "\n" + fence.closing : ""));
 
    return chunks;
 }
@@ -87,6 +111,7 @@ export function chunkBotReply(
    limit = DISCORD_LIMIT,
    maxChunks = MAX_REPLY_CHUNKS,
 ): string[] {
+   text = DISCORD_REPLY_FORMAT.render(text);
    // First-pass: would this fit in one message?
    const dry = chunkMessage(text, limit);
    if (dry.length <= 1) return dry;
@@ -103,7 +128,8 @@ export function chunkBotReply(
    return kept.map((c, i) =>
       i < kept.length - 1
          ? c + CONTINUATION_FOOTER
-         : c.slice(0, reserved - TRUNCATION_NOTE.length) + TRUNCATION_NOTE,
+         : chunkMessage(c, reserved - TRUNCATION_NOTE.length)[0] +
+           TRUNCATION_NOTE,
    );
 }
 

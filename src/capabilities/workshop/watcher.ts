@@ -1,3 +1,4 @@
+import { checkWorkshopFile } from "./artifact-check.js";
 import {
    ActionRowBuilder,
    AttachmentBuilder,
@@ -787,6 +788,23 @@ export class WorkshopWatcher {
       caption: string | null,
    ): Promise<void> {
       try {
+         const check = await checkWorkshopFile(
+            workspace,
+            relPath,
+            this.venvDir(),
+         );
+         if (!check.ok) {
+            log.warn(
+               { channelId: message.channelId, file: relPath, check },
+               "workshop.file_check_failed",
+            );
+            await message.channel
+               .send(
+                  `⚠️ No adjunté \`${basename(relPath)}\`: no pasó la revisión del archivo. Pídeme corregirlo.`,
+               )
+               .catch(() => {});
+            return;
+         }
          const abs = workspace.absolute(relPath);
          const file = new AttachmentBuilder(abs, { name: basename(relPath) });
          if (!message.channel.isSendable()) return;

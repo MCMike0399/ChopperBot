@@ -4,6 +4,10 @@
 # READ-ONLY into the bwrap sandbox at /opt/venv, so sessions can import these
 # libraries but never modify them. Re-run to upgrade/repair; the bot degrades
 # to the system python3 (stdlib only) when the venv is missing.
+# Host packages for document conversion and spreadsheet recalculation (Debian):
+#   sudo apt-get install --no-install-recommends bubblewrap poppler-utils \
+#     libreoffice-writer libreoffice-impress libreoffice-calc fonts-dejavu-core
+# The venv alone cannot supply LibreOffice's Writer/Impress/Calc import filters.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 VENV="$ROOT/data/workshop/venv"

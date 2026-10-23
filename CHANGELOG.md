@@ -14,6 +14,13 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.10.0 — 2026-10-23
+
+- Los cuadros comparativos ahora se leen como listas claras en Discord, también desde el celular. Las tablas de tus archivos conservan su formato.
+- Tu taller cuenta con mejores guías para preparar Word, Excel, presentaciones, PDF y gráficas: documentos editables, tablas legibles, diapositivas con espacio y figuras que puedas reproducir.
+- Antes de adjuntar un archivo, ChopperBot revisa que se pueda abrir y busca problemas como documentos vacíos, referencias rotas en Excel o elementos fuera de una diapositiva. También puede recalcular una copia de las hojas de cálculo para que sus resultados aparezcan en la vista previa.
+- Al corregir un archivo, las comprobaciones vuelven a leer la versión nueva. Mejoramos las instrucciones para verificar cálculos, conservar tus correcciones y distinguir referencias comprobadas de datos pendientes de confirmar.
+
 ## 2.9.0 — 2026-10-19
 
 - Al iniciar una minuta, puedes elegir con `canal` dónde publicarla: sirve para dejar las reuniones de cada comisión en su propio canal. Si no eliges uno, se usa el canal habitual. La elección solo afecta a esa sesión y se conserva si el bot se reinicia.

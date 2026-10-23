@@ -48,6 +48,32 @@ describe("chunkMessage", () => {
 });
 
 describe("chunkBotReply", () => {
+   test("renders an LLM comparison table before delivering it to Discord", () => {
+      const text =
+         "| Pieza | Ejemplo |\n|---|---|\n| Indicador (KPI) | CAC |\n| Meta | $150 |";
+      const out = chunkBotReply(text).join("\n");
+      expect(out).not.toContain("|---|");
+      expect(out).toContain("**Pieza:** Indicador (KPI)");
+      expect(out).toContain("**Ejemplo:** CAC");
+      expect(out).toContain("$150");
+   });
+
+   test("splits long table cells and prose without exceeding Discord's hard cap", () => {
+      for (const text of [
+         "á😀".repeat(1600),
+         "| Concepto | Explicación |\n|---|---|\n| Uno | " +
+            "x".repeat(4100) +
+            " |",
+      ]) {
+         const out = chunkBotReply(text);
+         expect(out.length).toBeGreaterThan(1);
+         for (const part of out) expect(part.length).toBeLessThanOrEqual(2000);
+         expect(out.map(stripContinuationFooter).join("")).not.toMatch(
+            /[\uD800-\uDBFF]$/u,
+         );
+      }
+   });
+
    test("single-chunk reply passes through unchanged (no footer)", () => {
       expect(chunkBotReply("hello")).toEqual(["hello"]);
       const oneChunk = "a".repeat(1500);

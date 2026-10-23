@@ -1,3 +1,5 @@
+import { checkWorkshopFile } from "./artifact-check.js";
+import { WORKSHOP_SKILLS, type WorkshopSkill } from "./skills.js";
 import { log } from "../../log.js";
 import type {
    ToolHandlerResult,
@@ -109,7 +111,34 @@ export class WorkshopToolSource implements ToolSource {
    tools(): ToolSpec[] {
       return [
          {
+            name: "workshop_get_skill",
+            description:
+               "Carga la receta de calidad para crear o editar Word, Excel, PowerPoint, PDF o gráficas. Úsala antes de generar ese tipo de archivo; incluye ejemplos, verificación y límites reales.",
+            inputSchema: {
+               type: "object",
+               properties: {
+                  format: {
+                     type: "string",
+                     enum: Object.keys(WORKSHOP_SKILLS),
+                  },
+               },
+               required: ["format"],
+            },
+         },
+         {
+            name: "workshop_check_file",
+            cacheable: false,
+            description:
+               "Reabre un entregable real en el sandbox y revisa estructura, contenido vacío, errores de Excel, resultados de fórmulas guardados, límites de diapositivas y dimensiones de imágenes. Devuelve errores, advertencias y medidas; no garantiza corrección de hechos ni revisión visual. Úsala antes de entregar y corrige errores.",
+            inputSchema: {
+               type: "object",
+               properties: { path: { type: "string" } },
+               required: ["path"],
+            },
+         },
+         {
             name: "workshop_run_python",
+            cacheable: false,
             description:
                "Ejecuta código Python 3.11 en un sandbox aislado (sin red, sin acceso fuera del workspace). " +
                "El directorio de trabajo es el workspace de la sesión: los archivos que escribas ahí persisten entre ejecuciones y puedes mandarlos al chat con workshop_send_file. " +
@@ -132,6 +161,7 @@ export class WorkshopToolSource implements ToolSource {
          },
          {
             name: "workshop_write_file",
+            cacheable: false,
             description:
                "Escribe un archivo de TEXTO en el workspace de la sesión (rutas relativas; crea carpetas intermedias). Para binarios (xlsx/docx/png) genera el archivo con workshop_run_python.",
             inputSchema: {
@@ -149,6 +179,7 @@ export class WorkshopToolSource implements ToolSource {
          },
          {
             name: "workshop_read_file",
+            cacheable: false,
             description:
                "Lee un archivo de texto del workspace (recortado si es grande). Para inspeccionar cosas puntuales, no para cargar textos largos: " +
                "hay un presupuesto de contexto por vuelta, así que si necesitas trabajar un documento extenso, procésalo con workshop_run_python en vez de leerlo aquí.",
@@ -166,6 +197,7 @@ export class WorkshopToolSource implements ToolSource {
          },
          {
             name: "workshop_doc_index",
+            cacheable: false,
             description:
                "Indexa un documento largo del workspace (PDF, DOCX, TXT o MD) UNA sola vez: extrae el texto, lo divide en fragmentos con página y detecta el esquema de capítulos/secciones. " +
                "Devuelve páginas, tamaño y el esquema. El índice persiste entre mensajes (re-llamarlo con el mismo archivo es gratis). " +
@@ -184,6 +216,7 @@ export class WorkshopToolSource implements ToolSource {
          },
          {
             name: "workshop_doc_search",
+            cacheable: false,
             description:
                "Busca en un documento ya indexado (o lo indexa primero automáticamente) y devuelve SOLO los fragmentos más relevantes para la consulta, con su página. " +
                "Es la manera correcta de responder preguntas puntuales sobre un documento largo sin cargarlo entero.",
@@ -209,6 +242,7 @@ export class WorkshopToolSource implements ToolSource {
          },
          {
             name: "workshop_doc_read",
+            cacheable: false,
             description:
                "Lee un rango de páginas de un documento ya indexado (o lo indexa primero automáticamente). " +
                "Para resumir/explicar por capítulos: consulta el esquema con workshop_doc_index y lee 1–3 capítulos por vuelta con sus rangos de páginas.",
@@ -233,6 +267,7 @@ export class WorkshopToolSource implements ToolSource {
          },
          {
             name: "workshop_list_files",
+            cacheable: false,
             description:
                "Lista los archivos del workspace de la sesión (ruta, tamaño, fecha) y si cada uno YA FUE ENTREGADO al usuario. " +
                "Úsala para verificar antes de afirmar que algo fue enviado, o cuando el usuario diga que no le llegó un archivo.",
@@ -355,6 +390,38 @@ export class WorkshopToolSource implements ToolSource {
                return await this.handleDocSearch(obj);
             case "workshop_doc_read":
                return await this.handleDocRead(obj);
+            case "workshop_get_skill": {
+               const format = String(obj.format ?? "");
+               if (!Object.hasOwn(WORKSHOP_SKILLS, format))
+                  return {
+                     status: "error",
+                     payload: {
+                        error: "Formato no válido: usa docx, xlsx, pptx, pdf o plots.",
+                     },
+                  };
+               const recipe = WORKSHOP_SKILLS[format as WorkshopSkill];
+               if (!this.budgetAllows(recipe.length))
+                  return this.budgetExceededResult("la receta");
+               this.charge(recipe.length);
+               return { status: "success", payload: { format, recipe } };
+            }
+            case "workshop_check_file": {
+               const path = String(obj.path ?? "");
+               if (!this.deps.workspace.exists(path))
+                  return {
+                     status: "error",
+                     payload: { error: `No existe: ${path}` },
+                  };
+               const check = await checkWorkshopFile(
+                  this.deps.workspace,
+                  path,
+                  this.deps.venvDir,
+               );
+               return {
+                  status: check.ok ? "success" : "error",
+                  payload: check,
+               };
+            }
             case "workshop_list_files": {
                const delivered = this.deps.deliveredPaths();
                const files = this.deps.workspace.list().map((f) => {
@@ -412,11 +479,25 @@ export class WorkshopToolSource implements ToolSource {
                }
                const caption =
                   typeof obj.caption === "string" ? obj.caption : null;
+               const check = await checkWorkshopFile(
+                  this.deps.workspace,
+                  path,
+                  this.deps.venvDir,
+               );
+               if (!check.ok)
+                  return {
+                     status: "error",
+                     payload: {
+                        error: "El archivo no pasó la revisión. Corrígelo y vuelve a enviarlo.",
+                        check,
+                     },
+                  };
                this.deps.actions.queueSendFile(path, caption);
                return {
                   status: "success",
                   payload: {
                      queued: path,
+                     check,
                      bytes,
                      note: "Se adjuntará al canal junto con tu respuesta.",
                   },

@@ -390,6 +390,11 @@ async function askDeepSeek({
    // result. Only cache successes; errors get retried (the model usually fixes
    // the input on the next try).
    const toolCache = new Map<string, ToolHandlerResult>();
+   const uncachedTools = new Set(
+      tools.tools
+         .filter((tool) => tool.cacheable === false)
+         .map((tool) => tool.name),
+   );
    const openAiTools = buildOpenAiTools(tools.tools);
    let noChoicesRetried = false;
 
@@ -556,14 +561,16 @@ async function askDeepSeek({
 
          const cacheKey = `${name}:${stableStringify(parsedInput)}`;
          let result: ToolHandlerResult;
-         const cached = toolCache.get(cacheKey);
+         const cacheable = !uncachedTools.has(name);
+         const cached = cacheable ? toolCache.get(cacheKey) : undefined;
          if (cached) {
             log.info({ tool: name, cached: true }, "tool_call_cached");
             result = cached;
          } else {
             safePhase(onPhase, "tool", name);
             result = await tools.handle(name, parsedInput);
-            if (result.status === "success") toolCache.set(cacheKey, result);
+            if (cacheable && result.status === "success")
+               toolCache.set(cacheKey, result);
          }
          trace.toolCalls.push({
             name,

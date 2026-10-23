@@ -13,6 +13,10 @@ export interface ToolHandlerResult {
 export interface ToolSpec {
    name: string;
    description: string;
+   /** Default true: deduplicate successful calls for the turn. Mutable workspace
+    * operations opt out so a read/check/run sees the latest file revision.
+    * Internal only: never forwarded as part of the provider's tool schema. */
+   cacheable?: boolean;
    /** JSON Schema for the tool's input object. */
    inputSchema: Record<string, unknown>;
 }

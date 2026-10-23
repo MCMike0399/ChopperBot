@@ -52,6 +52,23 @@ afterEach(() => {
 });
 
 describe("workshop file tools", () => {
+   test("loads only a supported file recipe, charged against the turn budget", async () => {
+      const src = newSource();
+      const result = await src.handle("workshop_get_skill", { format: "xlsx" });
+      expect(result.status).toBe("success");
+      expect((result.payload as { recipe: string }).recipe).toContain(
+         "openpyxl NO calcula",
+      );
+      expect(
+         (await src.handle("workshop_get_skill", { format: "__proto__" }))
+            .status,
+      ).toBe("error");
+      let last = result;
+      for (let i = 0; i < 30; i++)
+         last = await src.handle("workshop_get_skill", { format: "xlsx" });
+      expect(last.status).toBe("error");
+   });
+
    test("write → list → read round-trip", async () => {
       const src = newSource();
       const w = await src.handle("workshop_write_file", {
