@@ -16,7 +16,7 @@ Added 2026-08-16 (v1.22.0). The Teams-style meeting minutes: a mod runs **`/chop
 - **Capture health — the guard against silent loss**: `CaptureHealth` (in `audio.ts`, unit-tested) counts consecutive bursts where `burstCapturedNothing()` holds (`packets > 0 && bytes === 0` — received audio, wrote none; distinct from a speaker who simply said nothing). At `CAPTURE_FAILURE_ALARM_AFTER` (3) it fires **once per session**: `minutas.capture_broken` at error level, a `sendAdminAlert`, **and a warning posted into the voice channel itself** so the room can act. Recording continues regardless — a false alarm must never be what stops an assembly being minuted. This exists because on 2026-08-16 the only evidence of total capture failure was warn-level log lines nobody was reading.
 - **On-disk session layout** (`data/minutas/sessions/<id>/`, id = CDMX `YYYYMMDD-HHMM-xxxx`): `session.json` (manifest: channel, starter, participants), `bursts.jsonl` (one line per burst **written when the burst OPENS** — the timeline start is what matters and must survive a crash), `chat.jsonl`, `transcripts-live.jsonl` (the live-transcription ledger, appended as batches complete), then per batch `audio/batch-NNN-<speaker>.wav` + `transcript/batch-NNN-<speaker>.json` (whisper raw), and at finalize `transcript.jsonl`, `draft.md`, `transcripcion.md`, `minuta.md`.
 - **Crash/restart resilience**: sessions row in SQLite (`minutas_sessions`: active → processing → done/failed). A row still `active`/`processing` at boot means the last process died mid-session — the `start()` sweep finalizes it from whatever the dir holds (drafts + minutes still publish). `dispose()` deliberately leaves rows `active` for that sweep.
-- **Transcription is local whisper.cpp** (`data/minutas/bin/whisper-cli` + `ggml-small.bin`, built by `scripts/setup-minutas-whisper.sh` — venv-supplied cmake, zero system installs): community audio never leaves the Pi and there's no per-minute meter. `-l es -oj`, **one whisper process at a time** (serialized queue) so a long assembly can't OOM the box, and the child is `nice`d to `WHISPER_NICE` (10) so an hour of transcription doesn't starve the Discord event loop. Transcriber missing → sessions still record; bursts stay untranscribed (logged, kept).
+- **Transcription is local whisper.cpp** (`data/minutas/bin/whisper-cli` + `ggml-small.bin`, built by `scripts/setup-minutas-whisper.sh` — venv-supplied cmake, zero system installs): by default audio is processed on the Pi and there is no per-minute meter; the optional private worker below moves transcription to an operator-owned machine. `-l es -oj`, **one whisper process at a time** (serialized queue) so a long assembly can't OOM the box, and the child is `nice`d to `WHISPER_NICE` (10) so an hour of transcription doesn't starve the Discord event loop. Transcriber missing → sessions still record; bursts stay untranscribed (logged, kept).
 - **Cost model — measured on real assembly audio (Pi 5, `small`, 2026-08-17), not estimated:**
 
    > **`wall ≈ 8.5 s per burst + 0.82 × seconds of audio`**
@@ -114,3 +114,37 @@ The published acta was read against the full transcript (948 speech lines + chat
 Proof: 1,525 tests, typecheck, format and build green; five deliberate DeepSeek replays (≈80k input tokens each). The final replay — the shipped prompt and effort through `generateMinutes` — covers the session end to end, attributes read-aloud chat correctly, lists the Friday assembly (13/0/4), the communiqué and the IMSS deferral as acuerdos and beuma's and Infestissumam's spoken commitments. Replays and drafts: `~/ChopperBot-private-assets/minutas-review-20261013/replay/`.
 
 After explicit user approval on 2026-10-14, the existing post for this session was corrected in place: the full roster restored, the summary and the attached acta replaced by the v2.7.4 replay after a transcript check (five edits: the opening warning's meaning, a pronoun, a statement wrongly listed as an acuerdo, a chat-only proposal marked as such, a read-aloud chat comment credited to its two authors). Discord readback confirmed one attachment matching the 16,354-byte corrected `minuta.md` in MinIO. The original acta, original attachment and message snapshot are preserved under the session archive's `corrections/20261014-v274/` prefix; readback checks verified the correction and the backup (`correction/correction-proof.json` in the private review folder).
+
+## Optional private compute worker (v2.11.0)
+
+Set `MINUTAS_REMOTE_URL` to a Burbuja file worker's
+`/workloads/v1/transcription/run` endpoint and `MINUTAS_REMOTE_TOKEN_FILE` to a
+mode-0600 token file. Both absent preserves the existing local transcriber.
+HTTPS is required except for loopback URLs carried by an encrypted SSH tunnel.
+The deployment's worker uses the same whisper.cpp revision and `small` model;
+model choice, executable, two CPU threads and process priority are operator
+configuration, never caller-supplied commands. The worker can use Apple Metal.
+
+Capture, native Opus decoding, resampling, per-speaker batching, Discord authority,
+local audio, the recovery ledger and MinIO archives stay on the bot host. Only
+closed WAV batches and spelling/context options cross to the private worker.
+This changes the former Pi-only audio boundary: temporary audio exists on the
+operator's worker during transcription and is removed after completion or handled
+cancellation. It does not send audio to a third-party transcription provider.
+
+Calls remain serialized. Capacity refusal and transient transport/502/503/504
+failures retry within a three-hour budget. Transcription is pure computation:
+a lost response may repeat compute, but only one validated response reaches the
+ledger. Authentication/configuration errors fail without automatically starting
+CPU-heavy fallback on the bot host. Invalid output is rejected rather than
+recorded as empty speech. The original WAV remains for normal finalize/recovery;
+a failure after the time budget still needs the existing failed-session recovery
+workflow. The raw Whisper JSON is saved beside the caller's transcript so loop
+detection and the `-mc 0` retry continue to work. Long responses use an explicitly
+extended HTTP header timeout rather than the default five-minute timeout.
+
+Verification: full local suite 1,574 passed/22 skipped, typecheck and build passed;
+real synthetic Spanish audio round-tripped from the bot host to the private
+worker with transcript output retained. No community recording or post was used.
+The receiver still handles live Opus on the Pi; this is transcription offload,
+not network-dependent live audio capture or live game migration.

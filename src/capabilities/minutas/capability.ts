@@ -33,7 +33,8 @@ import {
    type CaptureFailure,
    type ClosedSession,
 } from "./session.js";
-import { WhisperCliTranscriber } from "./transcriber.js";
+import { WhisperCliTranscriber, type Transcriber } from "./transcriber.js";
+import { RemoteTranscriber } from "./remote-transcriber.js";
 import { finalizeSession, type FinalizeDeps } from "./pipeline.js";
 import {
    buildMinutasInteractionHandler,
@@ -63,7 +64,7 @@ export class MinutasCapability implements Capability {
    private store: MinutasStore | null = null;
    private db: Database.Database | null = null;
    private storage: ObjectStorage | null = null;
-   private transcriber: WhisperCliTranscriber | null = null;
+   private transcriber: Transcriber | null = null;
    private sessions: MinutasSessions | null = null;
    private sessionsDir = "";
    private client: Client | null = null;
@@ -76,14 +77,29 @@ export class MinutasCapability implements Capability {
       this.store = new MinutasStore(this.db);
       this.store.seedOutputChannelId(config.MINUTAS_OUTPUT_CHANNEL_ID);
       this.storage = createObjectStorage();
-      this.transcriber = new WhisperCliTranscriber({
-         bin: resolve(projectRoot, config.MINUTAS_WHISPER_BIN),
-         modelPath: resolve(projectRoot, config.MINUTAS_WHISPER_MODEL_PATH),
-         language: config.MINUTAS_WHISPER_LANGUAGE,
-         threads: config.MINUTAS_WHISPER_THREADS,
-         idleThreads: config.MINUTAS_WHISPER_IDLE_THREADS,
-         isRecording: () => this.sessions?.isRecording() ?? false,
-      });
+      if (config.MINUTAS_REMOTE_URL && !config.MINUTAS_REMOTE_TOKEN_FILE)
+         throw new Error(
+            "MINUTAS_REMOTE_TOKEN_FILE is required for remote transcription",
+         );
+      this.transcriber = config.MINUTAS_REMOTE_URL
+         ? new RemoteTranscriber({
+              url: config.MINUTAS_REMOTE_URL,
+              tokenFile: resolve(
+                 projectRoot,
+                 config.MINUTAS_REMOTE_TOKEN_FILE!,
+              ),
+           })
+         : new WhisperCliTranscriber({
+              bin: resolve(projectRoot, config.MINUTAS_WHISPER_BIN),
+              modelPath: resolve(
+                 projectRoot,
+                 config.MINUTAS_WHISPER_MODEL_PATH,
+              ),
+              language: config.MINUTAS_WHISPER_LANGUAGE,
+              threads: config.MINUTAS_WHISPER_THREADS,
+              idleThreads: config.MINUTAS_WHISPER_IDLE_THREADS,
+              isRecording: () => this.sessions?.isRecording() ?? false,
+           });
       this.sessionsDir = resolve(
          projectRoot,
          config.CHOPPERBOT_DATA_DIR,

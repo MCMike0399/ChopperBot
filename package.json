@@ -1,7 +1,7 @@
 {
    "name": "chopperbot",
-   "version": "2.10.0",
-   "description": "Community Discord bot for Revolución Z — capabilities routed per channel, powered by DeepSeek V4.1 Flash.",
+   "version": "2.11.0",
+   "description": "Community Discord bot for Revoluci\u00f3n Z \u2014 capabilities routed per channel, powered by DeepSeek V4.1 Flash.",
    "private": true,
    "license": "MIT",
    "type": "module",

@@ -465,6 +465,8 @@ const ConfigSchema = z
             .optional(),
       ),
       // Local whisper.cpp binary + model (built by scripts/setup-minutas-whisper.sh).
+      MINUTAS_REMOTE_URL: z.string().url().optional(),
+      MINUTAS_REMOTE_TOKEN_FILE: z.string().min(1).optional(),
       MINUTAS_WHISPER_BIN: z
          .string()
          .min(1)

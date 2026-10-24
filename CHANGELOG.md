@@ -14,6 +14,11 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.11.0 — 2026-10-24
+
+- Las minutas pueden transcribirse en otra computadora privada del mismo sistema, dejando más recursos disponibles para que el bot siga atendiendo la comunidad.
+- Si esa computadora está ocupada o la conexión se interrumpe, el audio se conserva y la transcripción espera o vuelve a intentarse. La grabación y la revisión de permisos siguen funcionando como antes.
+
 ## 2.10.0 — 2026-10-23
 
 - Los cuadros comparativos ahora se leen como listas claras en Discord, también desde el celular. Las tablas de tus archivos conservan su formato.
