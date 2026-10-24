@@ -84,7 +84,7 @@ restart_and_check() {
    # A crash-restart changes the main PID start time.
    [[ "$(systemctl --user show -p ExecMainStartTimestampMonotonic --value "$SERVICE")" == "$started" ]] || return 1
    journalctl --user -u "$SERVICE" "_SYSTEMD_INVOCATION_ID=${invocation}" -o cat --no-pager \
-      | grep -q "$READY_MARKER"
+      | grep -F -- "$READY_MARKER" >/dev/null
 }
 
 git fetch --quiet --tags origin

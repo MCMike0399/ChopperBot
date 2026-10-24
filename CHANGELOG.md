@@ -14,6 +14,10 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.11.1 — 2026-10-24
+
+- Corregimos una comprobación de arranque que podía volver a la versión anterior aunque el bot ya estuviera conectado y funcionando.
+
 ## 2.11.0 — 2026-10-24
 
 - Las minutas pueden transcribirse en otra computadora privada del mismo sistema, dejando más recursos disponibles para que el bot siga atendiendo la comunidad.
