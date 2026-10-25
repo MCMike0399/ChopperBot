@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.13.0 — 2026-10-25
+
+- ChopperBot ya puede buscar información pública en internet y acompañar sus respuestas con enlaces a las fuentes. Puedes pedirle que busque o verifique algo desde los chats, el taller y las conversaciones de eventos.
+- En el taller también puede buscar referencias para tus tareas y documentos. Distingue los resúmenes encontrados de una lectura completa de la fuente y te dice cuando no pudo verificar algo.
+- Las búsquedas tienen límites de uso para cuidar los recursos del bot. Los saludos y la conversación casual siguen sin necesitar búsquedas.
+
 ## 2.12.1 — 2026-10-25
 
 - ChopperBot responde más breve en los chats compartidos, especialmente en las salas de voz, eventos y asambleas, para dejar espacio a la conversación.

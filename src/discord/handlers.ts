@@ -238,6 +238,7 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                   );
 
                   return ask({
+                     webSearch: true,
                      system:
                         turn.system +
                         "\n\n" +

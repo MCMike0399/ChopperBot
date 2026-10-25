@@ -81,6 +81,16 @@ How the bot _sounds_ is framework state, not per-capability taste. Three pieces:
 
 Each Capability composes one or more `ToolSource`s via `composeToolSources()` (`src/tools/source.ts`). Tool specs are **provider-neutral** (`{ name, description, inputSchema }`); the LLM client is the only place that knows how to wrap them into the OpenAI-compatible chat-completions `tools` shape. Tool name collisions across sources fail at boot — fix the duplicate, don't suppress.
 
+Since v2.13.0, interactive entry points pass `webSearch:true` to `ask()`, which
+composes the shared `WebSearchSource` with the already-gated capability bundle.
+This adds the same public-information search in routed/fallback chats, workshop
+and event-intake conversations. It appends citation/privacy/untrusted-evidence
+instructions to the full or stable system prefix, preserving per-turn tails and
+capability dispatch. Background/JSON jobs do not gain tools. Search cannot create
+an unavailable privileged tool or authorize a write. Three requests/turn and
+shared process-local attempt budgets bound cost; details and live proof are in
+[LLM: shared web search](llm.md#shared-web-search-v2130-2026-10-25).
+
 ## Persistence
 
 Single SQLite file, **one row per capability+version in `_migrations`** (see `src/memory/migrations.ts`). Each capability owns its tables by **id-prefix convention** (`calendar_events`, `instagram_monitor_accounts`, `configuration_bindings`) — the framework does not enforce this, but the `configuration` capability's admin tools rely on it for scoped inspection.

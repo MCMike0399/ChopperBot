@@ -537,6 +537,7 @@ export class WorkshopWatcher {
             "workshop.turn",
          );
          reply = await ask({
+            webSearch: true,
             system,
             messages: turns,
             tools,

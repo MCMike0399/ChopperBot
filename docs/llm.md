@@ -11,6 +11,61 @@ This replaced **two** backends in one change, and the reasons they are gone are 
 
 **Do not reintroduce a provider slot or a vision model without re-reading the [§Evidence](#evidence-the-live-probes) section below.** Every fact in this doc that sounds like a warning is there because a previous decision was made on a measurement.
 
+## Shared web search (v2.13.0, 2026-10-25)
+
+Interactive calls opt in with `AskInput.webSearch:true`: the main Discord handler
+(all routed capabilities and general-chat fallback), workshop conversations and
+both event-intake conversation paths. `ask()` composes `WebSearchSource` from
+`src/tools/web-search.ts` with the original capability dispatch before entering
+the existing loop; tool-name collisions still fail. Its shared instructions are
+appended to the full system and, when present, the stable cached prefix. Existing
+write permissions and delivery rechecks remain in the capability handlers.
+Background classifiers, automatic proposals/announcements, minutas writing and
+workshop compaction do not opt in; JSON-output calls never receive search.
+
+`web_search {query,count?}` calls the raw
+`POST https://api.deepseek.com/v1/tools/search` with the existing resolved DeepSeek
+key, independently of the configured chat base URL. No new credential, model or
+Responses API migration is required. The public query is the only text sent in
+the search request: no automatic history, `ori_question`, localization or files.
+The model is instructed to exclude private/personal information from its query;
+this is a prompt rule, not a semantic data-loss-prevention guarantee.
+
+Limits enforced in code: query 1–128 Unicode code points; 1–5 results (default 5);
+3 attempted network searches per `ask()`; shared process-local caps of 30/minute
+and 1,000/UTC day (reset on process restart); 20-second request/body timeout;
+256 KiB response cap; 200-character titles, 1,500-character summaries and
+2,048-character HTTP(S) URLs without embedded credentials. Oversized URLs are
+discarded, never truncated into invented links. `need_content:false` requests
+summaries only. No Fetch tool or Pi-side page downloader is exposed.
+
+Results carry source URLs, publication dates when supplied and retrieval time.
+Search excerpts are untrusted evidence, never instructions or authority for
+server actions. The prompt requests primary sources, dates, concise Markdown
+citations and honest uncertainty; a search summary does not establish a full-page
+read. Empty results are successful empty evidence; failed/invalid/oversized
+responses return safe errors without provider bodies/keys. No automatic retry;
+the model may try a different query within the turn budget. Successful identical
+calls reuse the existing per-turn tool cache. `web_search.completed/failed` logs
+counts/durations/status only; the existing `agent_turn` trace includes tool names
+and token totals. Search failures do not mark the model health watchdog down.
+
+Official published pricing is $0.75/1,000 successful nonempty searches, separate
+from normal chat tokens. The local 1,000/day limit is an attempt budget rather
+than a durable billing ledger. See [research and official sources](research/deepseek-web-search.md).
+
+Proof: typecheck/build/format and all **1,652 tests / 134 files** passed, including
+35 new source/loop tests for validation, Unicode, dispatch, caching, budgets,
+timeouts and provider failures. Built-code live low-effort chat and max-effort
+workshop searches cited returned official DeepSeek/UNAM pages; a greeting used
+zero search calls. Injected HTTP 503s produced an explicit unverified answer;
+injected page instructions were ignored. The verified answer was sent/read back
+in a temporary private Discord channel and the channel deleted. Service restarted
+with no active/processing minutas session, active/running, Discord ready,
+NRestarts=0. `scripts/live-web-search-smoke.ts` is a deliberate billed proof, never
+CI; `--discord` tests private delivery, and `--discord --delivery-proof <log>` can
+repeat delivery from its public proof log without more model/search calls.
+
 ## Effort tiers — a thinking mode, never a model
 
 `ask()`'s `effort` is `'low' | 'high' | 'max'`, and it selects **how hard the one model thinks**:

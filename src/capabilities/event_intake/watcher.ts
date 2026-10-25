@@ -358,6 +358,7 @@ export class EventIntakeWatcher {
          { role: "user", content: userText },
       ]);
       const reply = await ask({
+         webSearch: true,
          system,
          messages: turns,
          tools,
@@ -595,7 +596,13 @@ export class EventIntakeWatcher {
          );
          // High tier: this is the turn where a mod's approval runs the real
          // calendar_create_event tool loop.
-         reply = await ask({ system, messages: turns, tools, effort: "high" });
+         reply = await ask({
+            system,
+            messages: turns,
+            tools,
+            effort: "high",
+            webSearch: true,
+         });
          reportSpanishStyle(reply, {
             capability: EVENT_INTAKE_CAPABILITY_ID,
             channelId: message.channelId,
