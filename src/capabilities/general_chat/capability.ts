@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import type { Client, Guild } from "discord.js";
+import { ChannelType, type Client, type Guild } from "discord.js";
 import { log } from "../../log.js";
 import { composeToolSources, type ToolSource } from "../../tools/source.js";
 import { CalendarStore } from "../calendar/store.js";
@@ -118,9 +118,13 @@ export class GeneralChatCapability implements Capability {
       );
 
       const profile = guildProfileFor(ctx.guildId);
+      const channel = this.getDiscordClient().channels.cache.get(ctx.channelId);
+      const voiceChat =
+         channel?.type === ChannelType.GuildVoice ||
+         channel?.type === ChannelType.GuildStageVoice;
       if (!profile) {
          return {
-            system: renderGeneralChatPrompt(ctx.now, snapshot),
+            system: renderGeneralChatPrompt(ctx.now, snapshot, voiceChat),
             tools: composeToolSources([]),
             // Lowest tier — thinking OFF. This is the community's chat surface and
             // therefore essentially all the turn volume; it is conversational, and
@@ -427,6 +431,7 @@ export class GeneralChatCapability implements Capability {
               moderator,
               banRequest?.targetId ?? null,
               knowledge,
+              voiceChat,
            );
       const tailAt = system.indexOf("# Contexto del turno");
       return {

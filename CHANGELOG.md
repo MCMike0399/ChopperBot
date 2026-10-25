@@ -14,6 +14,11 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.12.1 — 2026-10-25
+
+- ChopperBot responde más breve en los chats compartidos, especialmente en las salas de voz, eventos y asambleas, para dejar espacio a la conversación.
+- Las respuestas de seguimiento se centran en lo nuevo y evitan repetir explicaciones. Si pides más detalle, ejemplos o un texto largo, puede seguir desarrollando la respuesta.
+
 ## 2.12.0 — 2026-10-25
 
 - Si DiveMac deja de estar disponible durante una asamblea, ChopperBot continúa la transcripción en la Pi y vuelve a DiveMac automáticamente cuando se recupera. El respaldo usa recursos limitados y puede tardar más en preparar la minuta.

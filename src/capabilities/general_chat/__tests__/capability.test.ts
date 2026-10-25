@@ -4,7 +4,12 @@
  * don't need to mock the OpenAI client or drive the agent loop.
  */
 import { describe, test, expect } from "vitest";
-import type { Client, Guild, TextChannel } from "discord.js";
+import {
+   ChannelType,
+   type Client,
+   type Guild,
+   type TextChannel,
+} from "discord.js";
 
 import { SqliteMemoryStore, NamespacedMemory } from "../../../memory/store.js";
 import { CapabilityRegistry } from "../../registry.js";
@@ -389,6 +394,43 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       expect(turn.system).toContain("**calendar**");
       h.memory.close();
    });
+});
+
+describe("GeneralChatCapability — shared-chat reply budget", () => {
+   test.each([GUILD_ID, REVZ_GUILD_ID])(
+      "uses channel type for voice/stage brevity in guild %s",
+      async (guildId) => {
+         const h = await buildHarness();
+         try {
+            const channelId = "30000000000000000000";
+            const text = await callBuildTurn(h, guildId);
+            expect(text.system).toContain("como máximo 60 palabras");
+            for (const type of [
+               ChannelType.GuildVoice,
+               ChannelType.GuildStageVoice,
+               ChannelType.GuildText,
+            ]) {
+               // Identical names: the budget must follow the Discord type,
+               // including a voice channel whose name gives no hint of voice.
+               h.channels.set(channelId, { id: channelId, name: "sala", type });
+               const turn = await callBuildTurn(h, guildId);
+               expect(turn.system).toContain(
+                  type === ChannelType.GuildText
+                     ? "como máximo 60 palabras"
+                     : "como máximo 40 palabras",
+               );
+               if (guildId === REVZ_GUILD_ID) {
+                  expect(turn.stableSystem).toBe(text.stableSystem);
+                  expect(turn.systemTail).toContain(
+                     "# Respuesta de este turno",
+                  );
+               }
+            }
+         } finally {
+            h.memory.close();
+         }
+      },
+   );
 });
 
 describe("GeneralChatCapability — effort tier", () => {
