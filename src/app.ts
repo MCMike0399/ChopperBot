@@ -204,6 +204,7 @@ export async function run(): Promise<void> {
             ),
          transcriberAvailable: () =>
             minutasCap.adminStatus(null).transcriberAvailable,
+         transcriptionStatus: () => minutasCap.adminStatus(null).transcription,
          activeSession: (guildId) => minutasCap.adminStatus(guildId).active,
       });
    }

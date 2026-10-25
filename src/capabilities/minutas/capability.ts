@@ -35,6 +35,7 @@ import {
 } from "./session.js";
 import { WhisperCliTranscriber, type Transcriber } from "./transcriber.js";
 import { RemoteTranscriber } from "./remote-transcriber.js";
+import { FailoverTranscriber } from "./failover-transcriber.js";
 import { finalizeSession, type FinalizeDeps } from "./pipeline.js";
 import {
    buildMinutasInteractionHandler,
@@ -81,14 +82,41 @@ export class MinutasCapability implements Capability {
          throw new Error(
             "MINUTAS_REMOTE_TOKEN_FILE is required for remote transcription",
          );
+      const localTranscriber = new WhisperCliTranscriber({
+         bin: resolve(projectRoot, config.MINUTAS_WHISPER_BIN),
+         modelPath: resolve(projectRoot, config.MINUTAS_WHISPER_MODEL_PATH),
+         language: config.MINUTAS_WHISPER_LANGUAGE,
+         threads: Math.min(config.MINUTAS_WHISPER_THREADS, 2),
+         idleThreads: Math.min(config.MINUTAS_WHISPER_IDLE_THREADS, 2),
+         isRecording: () => this.sessions?.isRecording() ?? false,
+      });
       this.transcriber = config.MINUTAS_REMOTE_URL
-         ? new RemoteTranscriber({
-              url: config.MINUTAS_REMOTE_URL,
-              tokenFile: resolve(
-                 projectRoot,
-                 config.MINUTAS_REMOTE_TOKEN_FILE!,
-              ),
-           })
+         ? new FailoverTranscriber(
+              new RemoteTranscriber({
+                 url: config.MINUTAS_REMOTE_URL,
+                 tokenFile: resolve(
+                    projectRoot,
+                    config.MINUTAS_REMOTE_TOKEN_FILE!,
+                 ),
+              }),
+              localTranscriber,
+              {
+                 onTransition: async (backend) => {
+                    if (!this.client) return;
+                    await sendAdminAlert(
+                       this.client,
+                       [
+                          backend === "local_fallback"
+                             ? localTranscriber.isAvailable()
+                                ? "⚠️ DiveMac no pudo transcribir. ChopperBot continuará en la Pi con recursos limitados y volverá a intentar DiveMac automáticamente. Los audios siguen guardados en la Pi."
+                                : "⚠️ DiveMac no pudo transcribir y falta el transcriptor de respaldo en la Pi. Los audios siguen guardados para recuperarlos; revisa la instalación de whisper.cpp."
+                             : "✅ DiveMac volvió a transcribir. ChopperBot vuelve a usarlo para procesar el audio; los archivos siguen guardados en la Pi.",
+                       ],
+                       "minutas.transcription",
+                    );
+                 },
+              },
+           )
          : new WhisperCliTranscriber({
               bin: resolve(projectRoot, config.MINUTAS_WHISPER_BIN),
               modelPath: resolve(
@@ -258,6 +286,7 @@ export class MinutasCapability implements Capability {
    adminStatus(guildId: string | null): {
       outputChannelId: string | null;
       transcriberAvailable: boolean;
+      transcription: ReturnType<FailoverTranscriber["status"]> | null;
       storageBackend: string;
       active: {
          id: string;
@@ -277,6 +306,10 @@ export class MinutasCapability implements Capability {
             : null,
          outputChannelId: this.store?.getOutputChannelId() ?? null,
          transcriberAvailable: this.transcriber?.isAvailable() ?? false,
+         transcription:
+            this.transcriber instanceof FailoverTranscriber
+               ? this.transcriber.status()
+               : null,
          storageBackend: this.storage?.backend ?? "disabled",
          active: guildId ? (this.sessions?.getActive(guildId) ?? null) : null,
          recent: this.store?.listRecentSessions(5) ?? [],

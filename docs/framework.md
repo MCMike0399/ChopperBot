@@ -13,6 +13,10 @@ The cross-cutting machinery every capability rides on: boot, the per-turn pipeli
 5. Construct the Discord client, register handlers/cache, then login with bounded EAI_AGAIN backoff (1/3/7/15/30 seconds). Failed clients are recreated because discord.js destroys websocket/sweeper state; non-DNS failures and exhausted retries still fail startup. Clean/crash markers are unchanged.
 6. Call each capability's optional `start()` for background work (instagram_monitor's scheduler starts here).
 
+The minutas admin hooks wired in `app.ts` also expose the transcription engine's
+process-local fallback/recovery state to `config_minutas action:status` (v2.12.0).
+See [minutas](capabilities/minutas.md) for queue ownership, Pi storage and proof.
+
 **Lazy deps gotcha:** `CapabilityInitDeps` exposes `getDiscordClient`, `getRegistry`, `getRouter`, `getUserDirectory` as **getters that throw if called during `init()`**. They are only safe to invoke at `buildTurn()` time (post-bootstrap). This is by design — capabilities that need them (configuration) capture the getters in `init()` and call them later.
 
 ## Per-turn flow (`src/discord/handlers.ts` → `src/llm/client.ts`)

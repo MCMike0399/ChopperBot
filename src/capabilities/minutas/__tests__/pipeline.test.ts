@@ -13,6 +13,7 @@ import {
 } from "../store.js";
 import type { ObjectStorage } from "../../../storage/object-storage.js";
 import type { Transcriber } from "../transcriber.js";
+import { FailoverTranscriber } from "../failover-transcriber.js";
 import { generateMinutes } from "../minutes.js";
 
 // The LLM call is mocked — everything else (ffmpeg PCM→WAV, burst manifests,
@@ -239,6 +240,49 @@ describe.skipIf(!hasFfmpeg)("minutas finalize pipeline", () => {
       harness = await newHarness();
    });
    afterEach(() => harness.mem.close());
+
+   test("remote outage completes locally with one ledger entry per burst and Pi-owned archives", async () => {
+      const { store, sessionsDir, storage, sent, finalizeSession, deps } =
+         harness;
+      store.createSession(sessionRow());
+      const dir = await fabricateSessionDir(sessionsDir, {
+         withAudio: true,
+         withChat: true,
+      });
+      const remote = {
+         isAvailable: () => true,
+         transcribe: vi.fn(async () => {
+            throw new Error("DiveMac offline");
+         }),
+      };
+      const transcriber = new FailoverTranscriber(remote, deps.transcriber);
+      const result = await finalizeSession(
+         { ...deps, transcriber },
+         SESSION_ID,
+      );
+      expect(store.getSession(SESSION_ID)?.status).toBe("done");
+      expect(sent).toHaveLength(1);
+      expect(remote.transcribe).toHaveBeenCalledTimes(1);
+      expect(deps.transcriber.calls).toHaveLength(2);
+      const ledger = Buffer.from(
+         storage.objects.get(`${result.minioPrefix}transcripts-live.jsonl`)!,
+      )
+         .toString()
+         .trim()
+         .split("\n")
+         .map((line) => JSON.parse(line) as { file: string });
+      expect(ledger).toHaveLength(2);
+      expect(new Set(ledger.map((entry) => entry.file)).size).toBe(2);
+      expect(
+         storage.objects.has(`${result.minioPrefix}audio/batch-001-Ana.wav`),
+      ).toBe(true);
+      expect(
+         storage.objects.has(
+            `${result.minioPrefix}transcript/batch-001-Ana.json`,
+         ),
+      ).toBe(true);
+      expect(existsSync(dir)).toBe(false);
+   });
 
    test("full path: PCM → WAV → draft → LLM → Discord post → MinIO layout → DB done → local cleanup", async () => {
       const { store, sessionsDir, storage, sent, finalizeSession, deps } =

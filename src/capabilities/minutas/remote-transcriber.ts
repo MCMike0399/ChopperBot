@@ -1,5 +1,5 @@
 import { createReadStream } from "node:fs";
-import { readFile, rename, stat, writeFile } from "node:fs/promises";
+import { readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { Agent, fetch, type RequestInit, type Response } from "undici";
 import type { Transcriber, TranscriptSegment } from "./transcriber.js";
@@ -9,12 +9,15 @@ export interface RemoteTranscriberOptions {
    tokenFile: string;
    timeoutMs?: number;
    retryMs?: number;
+   maxAttempts?: number;
 }
 
-/** Audio remains durable at the caller. No automatic Pi CPU fallback under load. */
+/** Stateless compute client: durable input and validated output stay on the Pi.
+ * Bounded failures let FailoverTranscriber take over rather than stall a meeting. */
 export class RemoteTranscriber implements Transcriber {
    private queue: Promise<unknown> = Promise.resolve();
    private readonly dispatcher = new Agent({
+      connect: { timeout: 5_000 },
       headersTimeout: 3 * 60 * 60 * 1000,
       bodyTimeout: 3 * 60 * 60 * 1000,
    });
@@ -63,12 +66,19 @@ export class RemoteTranscriber implements Transcriber {
       if (token.length < 32)
          throw new Error("Invalid remote transcription credential");
       const signal = AbortSignal.timeout(
-         this.options.timeoutMs ?? 3 * 60 * 60 * 1000,
+         // 16 kHz mono s16 WAV. Allow twice audio duration + startup, with a
+         // minute floor and the existing three-hour ceiling for long bursts.
+         this.options.timeoutMs ??
+            Math.min(
+               3 * 60 * 60 * 1000,
+               Math.max(60_000, Math.ceil((size / 32_000) * 2_000 + 30_000)),
+            ),
       );
+      const maxAttempts = this.options.maxAttempts ?? 2;
       const parameters: Record<string, string> = {};
       if (opts?.prompt) parameters.prompt = opts.prompt;
       if (opts?.noContext) parameters.context = "0";
-      while (true) {
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
          signal.throwIfAborted();
          const body = createReadStream(wavPath);
          let response: Response;
@@ -93,17 +103,20 @@ export class RemoteTranscriber implements Transcriber {
             signal.throwIfAborted();
             // Transcription has no external side effects. A lost response can
             // safely repeat computation; only a validated response reaches the ledger.
-            await delay(this.options.retryMs ?? 15_000, undefined, { signal });
+            if (attempt === maxAttempts) throw error;
+            await delay(this.options.retryMs ?? 1_000, undefined, { signal });
             continue;
          } finally {
             body.destroy();
          }
          if ([429, 502, 503, 504].includes(response.status)) {
             await response.body?.cancel();
-            await delay(this.options.retryMs ?? 15_000, undefined, { signal });
+            if (attempt === maxAttempts)
+               throw new Error(`Remote transcription HTTP ${response.status}`);
+            await delay(this.options.retryMs ?? 1_000, undefined, { signal });
             continue;
          }
-         // Configuration/authentication errors are not a reason to burn Pi CPU.
+         // No retry for configuration/auth errors; the caller can use local compute.
          if (!response.ok) {
             await response.body?.cancel();
             throw new Error(`Remote transcription HTTP ${response.status}`);
@@ -127,10 +140,15 @@ export class RemoteTranscriber implements Transcriber {
          const raw = Buffer.concat(chunks).toString("utf8");
          const segments = parseRemoteTranscript(JSON.parse(raw));
          const temp = `${outBase}.json.remote-tmp`;
-         await writeFile(temp, raw, { mode: 0o600 });
-         await rename(temp, `${outBase}.json`);
+         try {
+            await writeFile(temp, raw, { mode: 0o600 });
+            await rename(temp, `${outBase}.json`);
+         } finally {
+            await rm(temp, { force: true });
+         }
          return segments;
       }
+      throw new Error("Remote transcription attempts exhausted");
    }
 }
 

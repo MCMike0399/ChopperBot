@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.12.0 — 2026-10-25
+
+- Si DiveMac deja de estar disponible durante una asamblea, ChopperBot continúa la transcripción en la Pi y vuelve a DiveMac automáticamente cuando se recupera. El respaldo usa recursos limitados y puede tardar más en preparar la minuta.
+- Las grabaciones, transcripciones y archivos de las minutas permanecen en la Pi. DiveMac solo procesa el audio y elimina sus archivos temporales al terminar.
+- La moderación recibe un aviso al activarse el respaldo y otro cuando DiveMac vuelve a transcribir.
+
 ## 2.11.1 — 2026-10-24
 
 - Corregimos una comprobación de arranque que podía volver a la versión anterior aunque el bot ya estuviera conectado y funcionando.

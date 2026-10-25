@@ -115,7 +115,7 @@ Proof: 1,525 tests, typecheck, format and build green; five deliberate DeepSeek 
 
 After explicit user approval on 2026-10-14, the existing post for this session was corrected in place: the full roster restored, the summary and the attached acta replaced by the v2.7.4 replay after a transcript check (five edits: the opening warning's meaning, a pronoun, a statement wrongly listed as an acuerdo, a chat-only proposal marked as such, a read-aloud chat comment credited to its two authors). Discord readback confirmed one attachment matching the 16,354-byte corrected `minuta.md` in MinIO. The original acta, original attachment and message snapshot are preserved under the session archive's `corrections/20261014-v274/` prefix; readback checks verified the correction and the backup (`correction/correction-proof.json` in the private review folder).
 
-## Optional private compute worker (v2.11.0)
+## Private compute worker and automatic Pi fallback (v2.12.0)
 
 Set `MINUTAS_REMOTE_URL` to a Burbuja file worker's
 `/workloads/v1/transcription/run` endpoint and `MINUTAS_REMOTE_TOKEN_FILE` to a
@@ -125,26 +125,69 @@ The deployment's worker uses the same whisper.cpp revision and `small` model;
 model choice, executable, two CPU threads and process priority are operator
 configuration, never caller-supplied commands. The worker can use Apple Metal.
 
-Capture, native Opus decoding, resampling, per-speaker batching, Discord authority,
-local audio, the recovery ledger and MinIO archives stay on the bot host. Only
+The Pi owns all durable storage: source audio, SQLite session state, the recovery
+ledger, raw transcripts, drafts and MinIO archives. Capture, native Opus decoding,
+resampling, per-speaker batching and Discord authority also stay there. Only
 closed WAV batches and spelling/context options cross to the private worker.
 This changes the former Pi-only audio boundary: temporary audio exists on the
 operator's worker during transcription and is removed after completion or handled
 cancellation. It does not send audio to a third-party transcription provider.
 
-Calls remain serialized. Capacity refusal and transient transport/502/503/504
-failures retry within a three-hour budget. Transcription is pure computation:
-a lost response may repeat compute, but only one validated response reaches the
-ledger. Authentication/configuration errors fail without automatically starting
-CPU-heavy fallback on the bot host. Invalid output is rejected rather than
-recorded as empty speech. The original WAV remains for normal finalize/recovery;
-a failure after the time budget still needs the existing failed-session recovery
-workflow. The raw Whisper JSON is saved beside the caller's transcript so loop
-detection and the `-mc 0` retry continue to work. Long responses use an explicitly
-extended HTTP header timeout rather than the default five-minute timeout.
+Temporary worker files are acceptable (owner confirmed 2026-10-25); they are
+working copies, never the archive or recovery source. The existing worker removes
+its job directory on handled success, failure and cancellation. An abrupt worker
+or host crash can leave scratch files for operator cleanup. No Pi archive path,
+session ledger or MinIO credentials are sent to DiveMac, and losing its scratch
+directory cannot lose a recording. The worker source/configuration is owned by
+the kernel/private cluster deployment; this release changes the bot client only.
 
-Verification: full local suite 1,574 passed/22 skipped, typecheck and build passed;
-real synthetic Spanish audio round-tripped from the bot host to the private
-worker with transcript output retained. No community recording or post was used.
-The receiver still handles live Opus on the Pi; this is transcription offload,
-not network-dependent live audio capture or live game migration.
+`FailoverTranscriber` owns one queue across both engines. Each batch prefers
+DiveMac. Transport errors and HTTP 429/502/503/504 get at most two attempts,
+one second apart; connection establishment is limited to five seconds per
+attempt. The whole remote job (including upload and response body) has a deadline
+of twice the WAV duration plus 30 seconds, with a 60-second floor and a three-hour
+ceiling. Thus a connected but stalled worker cannot hold the queue indefinitely.
+Other HTTP failures, missing/invalid credentials, truncated/malformed output and
+deadline expiry also activate local fallback; invalid output is never ledgered
+as silence. A healthy long job retains a duration-aware budget.
+
+The same Pi WAV and spelling/`noContext` options go to local whisper.cpp after a
+remote failure. Fallback uses **at most two threads, including after recording
+ends**, respects a configured lower width, and retains nice +10 priority. There
+is only one bot transcription call in progress, so queued speakers cannot spawn
+parallel Pi processes. This is intentionally slower emergency compute. The
+standalone local-only mode keeps its existing live/idle thread settings.
+
+After a failure, later batches use Pi compute for five minutes. The next batch
+after that cooldown probes DiveMac by doing real work: success restores remote
+compute; failure renews the cooldown. No idle polling or restart is required.
+The config channel gets one outage notice and one successful-recovery notice,
+with no repeated outage notices during failed probes; alert delivery does not
+block transcription. Logs are `minutas.transcription_local_fallback` and
+`minutas.transcription_remote_recovered`. `config_minutas action:status` adds
+`transcription.{backend,localAvailable,remoteRetryAt}` (epoch milliseconds).
+This is process-local selection state, reset on restart; remote mode is not a
+health claim before the first successful batch.
+
+Only a validated completed result reaches the Pi ledger. A lost response may
+repeat remote compute, but cannot append an extra batch entry. If local whisper
+is missing or also fails, the call fails with source audio preserved for normal
+finalize/recovery. Raw Whisper JSON stays alongside the transcript, preserving
+loop detection and the `-mc 0` retry for either engine. The remote temporary
+output is atomically renamed on the Pi and removed if the write fails.
+
+Verification (2026-10-25): all **1,615 tests** passed, plus typecheck, format and
+build. Regression tests cover transport/HTTP failures, stalled headers/body,
+invalid output, cooldown/recovery, queue serialization, missing/failing local
+compute, non-blocking alerts, production capability wiring/two-thread limits,
+console state, and complete finalize → publication → Pi archive with one ledger
+entry per burst. A built-code synthetic Spanish probe used the real DiveMac
+worker, injected a 503 outage through a private probe proxy, ran real two-thread
+Pi whisper, then restored DiveMac: approximately 7.8 s / 33.0 s / 9.4 s, two speech
+segments each and exactly three ledger entries. Seven WAV/transcript/ledger
+artifacts round-tripped byte-for-byte through Pi loopback MinIO; probe objects
+and temporary files were removed. Recovery clock was advanced only in the probe;
+production cooldown remains five minutes. No real meeting, community test post,
+worker/tunnel disruption, or transcript-quality audit was used for verification.
+The idle Pi service restarted active/running with zero crash restarts, Discord
+ready, minutas initialized with transcription available and MinIO selected.

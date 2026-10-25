@@ -6,6 +6,7 @@ import type {
    ToolSpec,
 } from "../../tools/source.js";
 import { MinutasStore } from "../minutas/store.js";
+import type { FailoverTranscriber } from "../minutas/failover-transcriber.js";
 
 export interface ConfigMinutasAdminDeps {
    db: Database.Database;
@@ -16,6 +17,9 @@ export interface ConfigMinutasAdminDeps {
    minutas: {
       endActiveSession: (guildId: string) => Promise<string>;
       transcriberAvailable: () => boolean;
+      transcriptionStatus?: () => ReturnType<
+         FailoverTranscriber["status"]
+      > | null;
       activeSession: (guildId: string) => {
          id: string;
          channelId: string;
@@ -102,6 +106,8 @@ export class ConfigMinutasAdminSource implements ToolSource {
                      output_channel_id: this.store.getOutputChannelId(),
                      transcriber_available:
                         this.deps.minutas?.transcriberAvailable() ?? null,
+                     transcription:
+                        this.deps.minutas?.transcriptionStatus?.() ?? null,
                      active_session: active,
                      recent,
                   },

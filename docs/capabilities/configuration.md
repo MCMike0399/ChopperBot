@@ -17,6 +17,17 @@ Lives in the single hardcoded `CHOPPERBOT_CONFIG_CHANNEL_ID`. It composes the co
 - **Verify:** `npx vitest run src/capabilities/configuration` (incl. `health.test.ts` — triage behavior + the broken-subsystem degradation), the read-only `npx tsx scripts/verify-config-health.ts [--json]` (builds the report against the LIVE DB; also a shell-side triage tool for when Discord itself is the broken thing), and the live `LOG_LEVEL=warn npx tsx scripts/config-health-smoke.ts` (drives the real model: asserts ONE `health` call, no per-capability chaining, a human summary instead of a JSON dump, and that "¿con qué modelo piensa?" names the **single** multimodal brain — one model for text **and** images — and never the retired Sonnet/Claude). **Known gap:** that script's Scene 3 still carries a `check(/nova/i.test(reply))` for "named Nova for images" and a banner printing `+ Nova (imágenes)` — leftovers from the two-backend era. The model is now _prompted_ not to name Nova (the configuration preamble says so outright), so that check is expected to fail until `scripts/config-health-smoke.ts` itself is updated; it is a script defect, not a bot behavior.
 - **Test gotcha:** `dotenv` loads the real `.env` into the vitest process, so any assertion about an _unset_ optional env var (e.g. `CALENDAR_OUTPUT_CHANNEL_ID`) must stub `config.<KEY>` and restore it — otherwise the test passes or fails depending on the host's `.env`.
 
+## Minutas compute status — v2.12.0
+
+`config_minutas action:status` also reports `transcription` for remote-enabled
+minutas: `backend` (`remote` or `local_fallback`), `localAvailable` and
+`remoteRetryAt` (epoch milliseconds, null outside fallback). Selection state is
+process-local and does not assert remote health before a successful batch.
+Fallback/recovery also notify this config channel without blocking transcription.
+Local-only deployments return null for this block. Verified through the actual
+capability/admin hook with an injected remote outage; see [minutas](minutas.md)
+for the real two-engine and Pi archive proof.
+
 ## Separate authority settings — v2.3.1
 
 The console requires **moderation**, independently of event approval. Gestión alone receives zero console tools. `config_eventintake set_mod_roles` remains an alias for `set_event_roles` (event/calendar authority); `set_moderation_roles` changes console/IG/review/sanction/recording authority separately. Both accept names/IDs and empty resets defaults. The effective events list always includes moderation roles; event settings never grant moderation. `status` and `config_system health` expose both effective tiers and their configured/default source under `authority`.
