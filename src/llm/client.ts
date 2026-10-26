@@ -3,7 +3,12 @@ import { config, textBackend } from "../config.js";
 import { log } from "../log.js";
 import { Semaphore } from "./gate.js";
 import { isContentFilterRejection, llmHealth } from "./health.js";
-import { WEB_SEARCH_INSTRUCTIONS, withWebSearch } from "../tools/web-search.js";
+import {
+   WEB_SEARCH_INSTRUCTIONS,
+   WEB_SEARCH_TURN_FOCUS,
+   requestsWebSearch,
+   withWebSearch,
+} from "../tools/web-search.js";
 import type { Turn } from "../discord/history.js";
 import {
    type ComposedTools,
@@ -88,6 +93,9 @@ export interface AskInput {
    system: string;
    /** Interactive turns only; background/JSON jobs never receive web tools. */
    webSearch?: boolean;
+   /** Current trigger only, without ambient/history text. Explicit external
+    * search requests require a fresh first lookup rather than a remembered one. */
+   webSearchRequestText?: string;
    stableSystem?: string;
    systemTail?: string;
    channelTranscript?: string;
@@ -220,6 +228,11 @@ export async function ask(input: AskInput): Promise<string> {
          stableSystem: input.stableSystem
             ? `${input.stableSystem}\n\n${WEB_SEARCH_INSTRUCTIONS}`
             : undefined,
+         systemTail: requestsWebSearch(input.webSearchRequestText)
+            ? [input.systemTail, WEB_SEARCH_TURN_FOCUS]
+                 .filter(Boolean)
+                 .join("\n\n")
+            : input.systemTail,
          tools: withWebSearch(input.tools),
       };
    }
@@ -337,6 +350,8 @@ type OpenAiContentPart =
  */
 async function askDeepSeek({
    system,
+   webSearch,
+   webSearchRequestText,
    stableSystem,
    systemTail,
    channelTranscript,
@@ -409,6 +424,8 @@ async function askDeepSeek({
          .map((tool) => tool.name),
    );
    const openAiTools = buildOpenAiTools(tools.tools);
+   const requireSearch =
+      webSearch && !responseFormat && requestsWebSearch(webSearchRequestText);
    let noChoicesRetried = false;
 
    for (let i = 0; i < config.MAX_TOOL_ITERATIONS; i++) {
@@ -435,7 +452,18 @@ async function askDeepSeek({
                      ...(responseFormat
                         ? { response_format: { type: responseFormat } }
                         : {}),
-                     ...thinking,
+                     // DeepSeek rejects named tool_choice with thinking on.
+                     // Only the initial query-generation call is non-thinking;
+                     // subsequent reasoning/actions retain the declared tier.
+                     ...(requireSearch && i === 0
+                        ? {
+                             thinking: { type: "disabled" },
+                             tool_choice: {
+                                type: "function",
+                                function: { name: "web_search" },
+                             },
+                          }
+                        : thinking),
                   } as never),
                ),
             trace,
@@ -492,7 +520,11 @@ async function askDeepSeek({
             typeof assistantMsg.content === "string"
                ? assistantMsg.content
                : null,
-         ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
+         // The forced non-thinking query has no reasoning, but DeepSeek still
+         // requires the empty field when the next call resumes thinking.
+         ...(reasoningContent || (requireSearch && i === 0 && tier !== "low")
+            ? { reasoning_content: reasoningContent ?? "" }
+            : {}),
          ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
       });
 

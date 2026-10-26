@@ -91,6 +91,15 @@ an unavailable privileged tool or authorize a write. Three requests/turn and
 shared process-local attempt budgets bound cost; details and live proof are in
 [LLM: shared web search](llm.md#shared-web-search-v2130-2026-10-25).
 
+v2.13.1 adds `webSearchRequestText` from the current trigger only. Narrow explicit
+public-search commands require a first `web_search` call and receive a short
+factual-lookup focus in the trusted per-turn tail; ambient/history text cannot
+activate that requirement. Query generation is non-thinking because the provider
+rejects named choice in thinking mode; subsequent calls restore the declared tier
+and preserve the empty reasoning echo required by that transition. Source results
+carry index-coverage limits, not proof that an entity does not exist.
+[Contract and live proof](llm.md#inconclusive-lookups-and-fresh-requests-v2131).
+
 ## Persistence
 
 Single SQLite file, **one row per capability+version in `_migrations`** (see `src/memory/migrations.ts`). Each capability owns its tables by **id-prefix convention** (`calendar_events`, `instagram_monitor_accounts`, `configuration_bindings`) — the framework does not enforce this, but the `configuration` capability's admin tools rely on it for scoped inspection.

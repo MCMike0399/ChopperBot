@@ -237,6 +237,23 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
       h.memory.close();
    });
 
+   test("the stable community prompt separates verified principles, faction labels and chat opinions", async () => {
+      const h = await buildHarness();
+      try {
+         const turn = await callBuildTurn(h, REVZ_GUILD_ID);
+         expect(turn.stableSystem).toContain(
+            "no definen una corriente exclusiva",
+         );
+         expect(turn.stableSystem).toContain(
+            "No conviertas críticas o bromas anteriores en atributos comprobados",
+         );
+         expect(turn.stableSystem).toContain("miembro del servidor");
+         expect(turn.stableSystem).toContain("figura pública externa");
+      } finally {
+         h.memory.close();
+      }
+   });
+
    test("RevZ prompt says events are open and tickets are not the event door (live 2026-08-25)", async () => {
       // A member asked "donde reservo we" and the bot sent them to #ticket for a
       // "pase". The primer + prompt had told it tickets were how you propose

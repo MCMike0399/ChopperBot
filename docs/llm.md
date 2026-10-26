@@ -66,6 +66,53 @@ NRestarts=0. `scripts/live-web-search-smoke.ts` is a deliberate billed proof, ne
 CI; `--discord` tests private delivery, and `--discord --delivery-proof <log>` can
 repeat delivery from its public proof log without more model/search calls.
 
+### Inconclusive lookups and fresh requests (v2.13.1)
+
+The first live general-channel exchange returned successful searches but wrongly
+turned unrelated names into claims that a creator/collective had no public
+presence. The source now returns the normalized query and explicit coverage:
+`{kind:"public_web_index", direct_platform_access:false, absence_conclusive:false}`.
+Empty results and homonyms cannot establish nonexistence. Instructions distinguish
+web-index searches from direct Instagram/internal-platform access, keep full
+entity names, separate profile/chat knowledge from web evidence, avoid repeated
+requests for a link the member declined, and request relevant exact-page citations
+rather than substituted homepages. They discourage lists of unrelated results,
+political dismissals and speculation about why an entity is absent. These are
+model instructions, not a deterministic entity-resolution or citation filter;
+the upstream index can still miss public accounts.
+
+Interactive entry points pass `webSearchRequestText` separately from ambient
+context/history. `requestsWebSearch()` recognizes a narrow direct command at the
+start, such as `busca en internet`, `busca en la web` or `búscalo en Instagram`.
+For these requests only, the initial completion uses named `tool_choice` to
+require `web_search`; later calls resume automatic selection. A prior assistant
+reply saying it searched does not satisfy the request. Questions about capability,
+quoted/discussed instructions and internal calendar/history lookups are not forced;
+other public questions retain automatic tool selection. JSON/background callers
+remain excluded. A short factual-lookup focus also joins the trusted per-turn tail:
+the full-context replay showed that stable-prefix guidance alone could be diluted
+by long historical chat, even when the short replay behaved better.
+
+DeepSeek [does not allow named tool choice with thinking enabled](https://api-docs.deepseek.com/api/create-chat-completion/).
+The forced query-generation completion therefore disables thinking; subsequent
+completions restore the requested low/high/max mode. Its assistant echo includes
+an empty `reasoning_content` when returning to thinking, even though the query
+step generated no reasoning. A real max-effort probe caught the missing-field 400;
+the regression and corrected live max-effort search passed. No model switch,
+unrestricted downloader, platform login or additional credential was added.
+
+Verification: 11 new regressions (coverage through actual tool messages, current
+request versus history/internal lookups, tier restoration/empty reasoning echo,
+late lookup focus, and community prompt grounding), **1,663 tests / 134 files**,
+typecheck/build and format passed. Reduced real-context replays covered both
+lookups and the unsupported faction claim. An actual `buildTurn`/reply-chain/
+rolling-context replay used more than 142k transcript characters and made fresh
+bounded searches; answers scoped uncertainty to the current search and separated
+index access from Instagram access. Exact article links replaced guessed homepages.
+The collective answer can still discuss related movements before stating that the
+requested identity was unverified; prose relevance remains a prompt-level limit.
+Raw member transcripts and replay harnesses stayed in private temporary files.
+
 ## Effort tiers — a thinking mode, never a model
 
 `ask()`'s `effort` is `'low' | 'high' | 'max'`, and it selects **how hard the one model thinks**:

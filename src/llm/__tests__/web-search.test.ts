@@ -40,6 +40,124 @@ const call = (id: string, query: string) => ({
 beforeEach(() => createMock.mockReset());
 afterEach(() => vi.unstubAllGlobals());
 
+test.each(["low", "high", "max"] as const)(
+   "explicit current web request requires one fresh search at %s effort",
+   async (effort) => {
+      vi.stubGlobal(
+         "fetch",
+         vi.fn(async () => new Response('{"results":[]}')),
+      );
+      createMock
+         .mockResolvedValueOnce(
+            call("fresh", '"Nora sin filtro" site:instagram.com'),
+         )
+         .mockResolvedValueOnce(reply("No pude verificarlo."));
+      await ask({
+         ...input(),
+         effort,
+         webSearch: true,
+         webSearchRequestText:
+            "búscalo en Instagram, no voy a compartir el enlace",
+         messages: [
+            { role: "user", content: "Busca a Nora sin filtro" },
+            { role: "assistant", content: "Ya lo busqué y no encontré nada." },
+            { role: "user", content: "búscalo en Instagram" },
+         ],
+      });
+      expect(createMock.mock.calls[0][0].tool_choice).toEqual({
+         type: "function",
+         function: { name: "web_search" },
+      });
+      expect(createMock.mock.calls[0][0].messages.at(-1).content).toContain(
+         "Verificación web de esta solicitud",
+      );
+      expect(createMock.mock.calls[0][0].thinking).toEqual({
+         type: "disabled",
+      });
+      expect(createMock.mock.calls[1][0].tool_choice).toBeUndefined();
+      if (effort !== "low") {
+         const queryTurn = createMock.mock.calls[1][0].messages.find(
+            (message: any) =>
+               message.role === "assistant" && message.tool_calls,
+         );
+         expect(queryTurn.reasoning_content).toBe("");
+      }
+      expect(createMock.mock.calls[1][0].thinking).toEqual(
+         effort === "low"
+            ? { type: "disabled" }
+            : { type: "enabled", reasoning_effort: effort },
+      );
+   },
+);
+
+test.each([
+   "busca en el historial quién habló de Instagram",
+   "¿puedes buscar en internet?",
+   "dijeron: busca en internet",
+   "hola",
+   "busca el evento en el calendario",
+])(
+   "does not force web search from quoted/discussed requests or internal lookups: %s",
+   async (requestText) => {
+      createMock.mockResolvedValueOnce(reply("Respuesta"));
+      await ask({
+         ...input(),
+         webSearch: true,
+         webSearchRequestText: requestText,
+         channelTranscript: "busca en internet una cuenta",
+         messages: [
+            {
+               role: "user",
+               content: "busca en internet aparece en el historial",
+            },
+         ],
+      });
+      expect(createMock.mock.calls[0][0].tool_choice).toBeUndefined();
+   },
+);
+
+test.each([
+   { results: [] },
+   {
+      results: [
+         {
+            title: "An unrelated actor",
+            url: "https://example.org/another-person",
+            summary:
+               "An actor with a similar first name, not the requested creator.",
+         },
+      ],
+   },
+])(
+   "inconclusive account lookup carries index coverage limits into the actual model tool reply (%j)",
+   async ({ results }) => {
+      vi.stubGlobal(
+         "fetch",
+         vi.fn(async () => new Response(JSON.stringify({ results }))),
+      );
+      createMock
+         .mockResolvedValueOnce(
+            call("lookup", '"Nora sin filtro" site:instagram.com'),
+         )
+         .mockResolvedValueOnce(
+            reply("No pude verificar la cuenta con esta búsqueda web."),
+         );
+      await ask({ ...input(), webSearch: true });
+      const message = createMock.mock.calls[1][0].messages.find(
+         (m: any) => m.role === "tool",
+      );
+      expect(JSON.parse(message.content)).toMatchObject({
+         query: '"Nora sin filtro" site:instagram.com',
+         coverage: {
+            kind: "public_web_index",
+            direct_platform_access: false,
+            absence_conclusive: false,
+         },
+         results,
+      });
+   },
+);
+
 test("adds search and safety/citation instructions to the actual cached system prefix", async () => {
    const fetch = vi.fn(
       async () =>

@@ -29,6 +29,13 @@ Proof (2026-10-04, v2.6.0): raised history/compaction budgets with bounded pagin
 
 ## School/work deliverables and Discord rendering (v2.10.0)
 
+v2.13.1 forwards only the current member message as `webSearchRequestText` so
+explicit public-search commands start a fresh lookup; uploaded files, summaries
+and history do not trigger that requirement. The initial query step disables
+thinking to support named tool choice, then the existing max tier resumes with
+the required reasoning echo. A real max-effort search passed this transition.
+Index coverage remains limited: [shared lookup contract](../llm.md#inconclusive-lookups-and-fresh-requests-v2131).
+
 The goal is to help a member understand their task and leave with something usable: a short explanation, an editable document or spreadsheet, a presentation, or a reproducible analysis. The prompt adapts to the member's stated level, carries corrections forward, asks only for missing facts that change the result, and separates data from assumptions. Since v2.13.0, interactive workshop turns receive the shared `web_search` tool for public research and cited references; Python remains in its no-network sandbox. Search returns bounded summaries, not full-page reads. Remembered references are not consulted sources; do not invent bibliographic details, fresh figures or Spanish-language publications. Private files/conversations must not become search queries. Limits, pricing and proof are in [shared web search](../llm.md#shared-web-search-v2130-2026-10-25). A built-code max-effort turn used the actual workshop prompt to research biodiversity on official UNAM pages and cited a returned source; the full suite and private Discord delivery/readback passed.
 
 `skills.ts` holds five curated recipes loaded with `workshop_get_skill {format}` before generation. They share the turn's 45k payload budget, rather than all expanding the base prompt:

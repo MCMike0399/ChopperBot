@@ -538,6 +538,7 @@ export class WorkshopWatcher {
          );
          reply = await ask({
             webSearch: true,
+            webSearchRequestText: text,
             system,
             messages: turns,
             tools,

@@ -12,6 +12,12 @@ verified source/loop/outage behavior are documented in
 [shared web search](../llm.md#shared-web-search-v2130-2026-10-25); the full 1,652-test
 suite, including the existing event/flyer permission and mutation tests, passed.
 
+v2.13.1 forwards the current human request separately as `webSearchRequestText`
+in both ticket and Agitprop conversations. Only a direct public-search command
+requires a fresh first lookup; form fields and ticket history cannot trigger it.
+The high tier resumes after query generation; calendar/flyer authorization is
+unchanged. See the [shared lookup correction](../llm.md#inconclusive-lookups-and-fresh-requests-v2131).
+
 - **Passive, NOT routed — like file_scanner (the second exception to one-capability-per-channel).** Registered in `app.ts` but never in the routing table; `start()` attaches its own `client.on(Events.MessageCreate, …)` listener over a watched **category** set. `init()` needs no secret so it **never throws** (unlike file_scanner) — with no category configured it just idles. **Boot order matters:** it's placed AFTER `CalendarCapability` in `app.ts`'s `candidates` because it reuses the calendar's tables via `new CalendarStore(memory.db())` (which the calendar's migrations create).
 - **No double-reply with the main handler.** The main mention handler would otherwise answer a mention in a ticket (routing miss → `general_chat`). Fix: a generic `claimedChannel?: (message) => boolean` on `HandlerDeps` (`handlers.ts`); the `MessageCreate` handler early-returns when it's true. `app.ts` wires it to the event_intake instance's own **`isClaimedChannel(message)`** (same 10 s watched-set cache the listener uses — one source of truth) and only when `registry.has('event_intake')`. Category resolution is `resolveCategoryId(channel)`: `channel.parentId` for a text channel, `channel.parent?.parentId` for a thread/forum post. The persisted routing table is left untouched (chosen over category-aware routing to avoid dead ephemeral channel ids + a `resolve()` signature change).
 - **Two disjoint triggers** (`watcher.ts`, wrapped so it never throws into the gateway): the **ticket-bot form** (author = `EVENT_INTAKE_TICKET_BOT_ID`, default Ticket Tool `557628352828014614`) → one auto-proposal; a **human @-mentioning / replying to the bot** → the agent loop. The listener uses a NARROW bot filter (allow the ticket bot for form detection, ignore the bot's own posts, ignore other bots, handle humans) — it must NOT blanket-skip bots like file_scanner does, since the form IS bot-authored.

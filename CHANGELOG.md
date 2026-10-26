@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.13.1 — 2026-10-25
+
+- Mejoramos las búsquedas para distinguir personas y colectivos con nombres parecidos, separar lo encontrado en internet de las opiniones del chat y conservar los enlaces de las fuentes concretas.
+- Peticiones como «busca en internet» o «búscalo en Instagram» arrancan con una búsqueda nueva. ChopperBot aclara que consulta páginas públicas indexadas: no entra directamente a Instagram, y no encontrar una cuenta no demuestra que no exista.
+- Al hablar de la comunidad, se guía por sus principios sin atribuirle una corriente política que no esté establecida.
+
 ## 2.13.0 — 2026-10-25
 
 - ChopperBot ya puede buscar información pública en internet y acompañar sus respuestas con enlaces a las fuentes. Puedes pedirle que busque o verifique algo desde los chats, el taller y las conversaciones de eventos.

@@ -359,6 +359,7 @@ export class EventIntakeWatcher {
       ]);
       const reply = await ask({
          webSearch: true,
+         webSearchRequestText: userText,
          system,
          messages: turns,
          tools,
@@ -602,6 +603,7 @@ export class EventIntakeWatcher {
             tools,
             effort: "high",
             webSearch: true,
+            webSearchRequestText: userText,
          });
          reportSpanishStyle(reply, {
             capability: EVENT_INTAKE_CAPABILITY_ID,
