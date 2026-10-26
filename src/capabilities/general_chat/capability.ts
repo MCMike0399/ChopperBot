@@ -420,6 +420,7 @@ export class GeneralChatCapability implements Capability {
               actionRequest
                  ? `${actionToolName(actionRequest)} para el ID ${actionRequest.targetId}`
                  : null,
+              ctx,
            )
          : renderAssistantPrompt(
               profile,
@@ -432,6 +433,7 @@ export class GeneralChatCapability implements Capability {
               banRequest?.targetId ?? null,
               knowledge,
               voiceChat,
+              ctx,
            );
       const tailAt = system.indexOf("# Contexto del turno");
       return {

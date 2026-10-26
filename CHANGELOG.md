@@ -14,6 +14,13 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.13.2 — 2026-10-25
+
+- ChopperBot ya ubica mejor su propia casa: la aplicación corre en una Raspberry Pi de la comunidad y conversa mediante DeepSeek. También explica que el mensaje y parte del contexto se procesan fuera de Discord; el código abierto no significa que todo ocurra en la Pi.
+- Actualizamos su guía con los Estatutos: la Asamblea Popular decide, los primeros tres puntos están protegidos y ChopperBot acompaña sin sustituir a la asamblea ni a moderación.
+- El contexto distingue mejor quién dijo cada cosa y a qué mensaje se responde. Reforzamos la separación entre bromas, frases inventadas y hechos, y las protecciones ante intentos de cambiar sus reglas desde el chat.
+- Conserva su cotorreo y las respuestas breves para dejar espacio a la comunidad.
+
 ## 2.13.1 — 2026-10-25
 
 - Mejoramos las búsquedas para distinguir personas y colectivos con nombres parecidos, separar lo encontrado en internet de las opiniones del chat y conservar los enlaces de las fuentes concretas.

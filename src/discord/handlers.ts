@@ -164,7 +164,10 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                      return "";
                   }
 
-                  const history = await buildHistory(client, message);
+                  const history = await buildHistory(client, message, {
+                     attributeAuthors:
+                        capability.id === GENERAL_CHAT_CAPABILITY_ID,
+                  });
                   const attachments = await resolveAttachments(message);
                   const imageRefs = listImageAttachments(message);
                   const context = await gatherTurnContext(
@@ -228,6 +231,8 @@ export function registerHandlers(client: Client, deps: HandlerDeps): void {
                      {
                         capability: capability.id,
                         channelId: message.channelId,
+                        messageId: message.id,
+                        replyMessageId: message.reference?.messageId ?? null,
                         user: message.author.tag,
                         len: userText.length,
                         historyTurns: history.length,
@@ -424,9 +429,13 @@ export async function gatherTurnContext(
          log.info(
             {
                channelId: message.channelId,
+               messageId: message.id,
                messages: recent.messages.length,
                chars: block?.length ?? 0,
                complete: recent.complete,
+               truncated: recent.truncated,
+               oldestMessageId: recent.messages[0]?.id ?? null,
+               newestMessageId: recent.messages.at(-1)?.id ?? null,
                estimatedTokens: Math.ceil((block?.length ?? 0) / 3),
                tokenBudget,
             },
