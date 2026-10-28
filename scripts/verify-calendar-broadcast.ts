@@ -126,6 +126,7 @@ async function main(): Promise<void> {
       undefined,
       {
          broadcaster: createBroadcaster({ client, guildId }),
+         announcementRequestText: instruction ?? undefined,
          writeAnnouncement: (system) =>
             ask({
                system,

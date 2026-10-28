@@ -138,7 +138,7 @@ beforeEach(async () => {
   postResult = (channelId) => ({ ok: true, messageId: `msg-${channelId.slice(-1)}` });
   writeMock.mockReset();
   writeMock.mockResolvedValue(
-    'Bandaaaa, este miércoles 19 a las 8:00 PM tenemos Círculo de poemas propios. Desempolven sus libretas, lxs tqm 💚',
+    'Bandaaaa, este miércoles 19 a las 8:00 PM tenemos Círculo de poemas propios. Caiganle, lxs tqm 💚',
   );
 });
 

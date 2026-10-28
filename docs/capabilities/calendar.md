@@ -84,6 +84,68 @@ fixture (requires `--date`); `--clarify` expects no mutations. `--request "…"`
 overrides the current instruction; `--now <ISO>` freezes model/store time.
 Token usage is in `agent_turn`; proof effects and cleanup are explicit in output.
 
+## Announcement coordination and factual copy — v2.14.1 (2026-10-28)
+
+The first real flyer test exposed a cross-path duplicate: requested post
+`1565040885882949683` at 10:33:44 CDMX was followed by automatic post
+`1565041021874606187` at 10:34:16, both pinging Usuarix for calendar #51. They
+were separate writer runs, not REST retries: requested posts used
+`calendar_broadcast_deliveries`, while the scheduler checked only
+`calendar_announcements`. The requested copy also added a bring-a-story/poem
+instruction absent from the flyer and moderator request.
+
+Both paths now use the existing v12 delivery reservation (no schema migration).
+The key remains event + occurrence + destination, across draft tokens/processes.
+The daily path reserves before its writer awaits the model, uses a distinct
+attempt token, and renews ownership before sending. A writer that lost ownership
+cannot send stale text. Known successful deliveries to the configured daily
+channel on the occurrence's CDMX day atomically fulfill the daily ledger too.
+Old same-day requested receipts are recognized; old daily receipts also suppress
+an immediate requested copy. Other destinations and prior-day advance notices
+do not fulfill the next day's announcement. A new explicit requested post after
+the existing ten-minute window and an operator's `ignoreLedger` repost remain
+available; a still-unconfirmed recent send is not bypassed by a repost.
+
+The ten-minute reservation remains bounded protection for ambiguous network
+outcomes, not an unlimited exactly-once guarantee. Confirmed receipts persist;
+known pre-send failures release their reservation. Existing Discord nonce and
+accepted-message repair behavior remain in place. Suppression logs
+`calendar.announce.duplicate_suppressed` or
+`calendar.broadcast.duplicate_suppressed`; a stale writer reports
+`delivery_reservation_lost` rather than claiming delivery.
+
+Both writer prompts distinguish warm invitations from event facts. The shared
+`announcement-copy.ts` guard rejects unsupported bring/prepare-material
+instructions, personal poem/story contributions and explicit open-participation
+formats. Evidence is calendar title/description and, for requested posts, the
+**actual current moderator request**, passed separately from a model-authored
+`instruction`. A model-authored instruction and style examples cannot authorize
+new audience requirements. Explicit moderator/material instructions still work.
+The writer gets one correction attempt; persistent unsafe requested copy returns
+`unsupported_participation` without parking/posting it, while the daily writer
+uses its existing factual fallback. Guard logs are
+`calendar.broadcast.unsupported_participation` and
+`calendar.announce.unsupported_participation`. This is a bounded Spanish phrase
+guard, not a general semantic fact checker; wording outside its patterns still
+depends on prompt adherence.
+
+Proof: **1,715 tests / 138 files**, typecheck/build/format passed. The original
+two integration regressions failed before the fix (two sends; invented
+instruction published) and passed afterward. Coverage includes both posting
+orders, in-flight sends and model waits, expired/lost reservations, restart-style
+new instances, legacy receipts, distinct destinations, next-day notices, explicit
+reposts, ambiguous failures, dry runs, corrected/rejected copy and genuine
+moderator instructions. Built-code real vision/Discord replay created a scratch
+event with cover and PNG/ICS, published one private announcement per destination
+with a real RSVP link, and ran fresh daily jobs twice: **zero extra posts**.
+The real generated copy added no bring-a-story/poem requirement. Production DB
+was read-only; private channels/room/event were removed. The first isolated
+replay asked for announcement destinations, so the completed proof explicitly
+named anuncios and general. `scripts/live-calendar-banner-smoke.ts <image> --announce
+--discord --request "crea el evento y anúncialo en anuncios y general"` reproduces
+this deliberately billed check; all physical announcement targets are remapped
+to private destinations with role pings disabled.
+
 ## Existing calendar behavior
 
 - **Writing is mod-only, in code (added 2026-08-13).** The prompt always said "cualquier moderadorx de este canal", but nothing checked — the real guarantee was "whoever can post in the channel", and an event created here is _published_ state (month PDF, ICS, the Discord events list, the next morning's announcement to the whole server). `buildTurn` calls `isEventTurn()` and independently checks current write consent (see docs/framework.md); a caller without event authority or a current write request gets the **read-only slice** (`calendar_list_upcoming` / `calendar_search_events` / `calendar_get_event`, no publisher, no Discord-event syncer, attachments not offered as banners) plus a short "solo consulta" prompt, and `allowWrite:false` re-refuses at the point of effect. Fails closed. Asking what's coming up stays open to everyone in the channel.

@@ -54,6 +54,8 @@ import {
 } from './broadcast.js';
 import type { CalendarBroadcaster } from './broadcast-channels.js';
 import { normalizeTitle } from './match.js';
+import { resolveAnnounceSettings } from './announce-settings.js';
+import { unsupportedParticipation } from './announcement-copy.js';
 
 /**
  * Tools for the **global** server calendar. Every moderator in the bound input
@@ -130,6 +132,8 @@ export interface CalendarToolSourceOptions {
    * fallback would be worse than saying "no puedo ahora".
    */
   writeAnnouncement?: AnnouncementWriter;
+  /** Actual current moderator text, independent of a model-authored instruction. */
+  announcementRequestText?: string;
   /**
    * Mention tokens an on-demand announcement is ALLOWED to use — the
    * announce-mentions setting. A mod can ask for a ping, but only for roles the
@@ -1115,19 +1119,25 @@ export class CalendarToolSource implements ToolSource {
     };
 
     const instruction = asOptionalString(obj.instruction);
-    let body: string;
+    let body = '';
+    let copyRejected = false;
     try {
-      body = (
-        await writer(
-          renderBroadcastPrompt({
+      const prompt = renderBroadcastPrompt({
             target,
             nowMs: this.nowMs,
             instruction,
+            moderatorRequest: this.options.announcementRequestText,
             channelNames: resolved.map((c) => c.name),
             timing: timing.kind === 'today' ? 'today' : 'advance',
-          }),
-        )
-      ).trim();
+          });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        body = (await writer(prompt + (attempt ? '\nCorrige el intento: elimina instrucciones al público sobre materiales, preparación o aportes que los datos no pidan. Conserva solo la invitación, actividad, fecha, hora y sala comprobadas.' : ''))).trim();
+        const unsupported = unsupportedParticipation(body, [occurrence.title, publicEventDescription(occurrence.description) ?? '', this.options.announcementRequestText ?? '']);
+        copyRejected = unsupported.length > 0;
+        if (!copyRejected) break;
+        log.warn({ eventId, attempt, unsupported }, 'calendar.broadcast.unsupported_participation');
+        body = '';
+      }
     } catch (err) {
       log.warn({ err, eventId }, 'calendar.broadcast.write_failed');
       return {
@@ -1135,6 +1145,10 @@ export class CalendarToolSource implements ToolSource {
         payload: { error: 'No pude redactar el anuncio en este momento. Vuelve a pedírmelo en un momento.' },
       };
     }
+    if (copyRejected) return { status: 'error', payload: {
+      error: 'El borrador añadió instrucciones al público que no están en los datos del evento. No publiqué nada; indica los detalles reales antes de volver a redactar.',
+      reason: 'unsupported_participation',
+    } };
     if (body.length < 20) {
       // No template fallback: a mod asks for this precisely because they want it
       // phrased a certain way, and an empty/stub community post is much worse
@@ -1350,7 +1364,8 @@ export class CalendarToolSource implements ToolSource {
         token: reservation.token,
       });
       if (res.ok) {
-        this.store.finishBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, reservation.token, res.messageId);
+        this.store.finishBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, reservation.token, res.messageId,
+          { channelId: resolveAnnounceSettings(this.store).channelId, discordEventId: draft.discordEventId, nowMs: this.nowMs });
         posted.push({ channel_id: target.id, message_id: res.messageId });
       }
       else {

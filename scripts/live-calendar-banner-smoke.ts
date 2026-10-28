@@ -3,6 +3,7 @@
 // proof channel/room/event, never touches the public board or announcements.
 // Usage: npx tsx scripts/live-calendar-banner-smoke.ts IMAGE --title terror
 //   --date 2026-10-28 --room lectura [--series] [--clarify] [--discord]
+// --announce --discord also replays create + announce, then runs the daily job.
 import "dotenv/config";
 import assert from "node:assert/strict";
 import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
@@ -26,8 +27,15 @@ const { CalendarToolSource } =
    await import("../dist/capabilities/calendar/source.js");
 const { OutputChannelPublisher } =
    await import("../dist/capabilities/calendar/publisher.js");
-const { createEventSyncer } =
+const { createEventSyncer, fetchScheduledEvent } =
    await import("../dist/capabilities/calendar/discord-events.js");
+const { createBroadcaster } =
+   await import("../dist/capabilities/calendar/broadcast-channels.js");
+const { CalendarAnnouncer } =
+   await import("../dist/capabilities/calendar/announcer.js");
+const { composeToolSources } = await import("../dist/tools/source.js");
+const { unsupportedParticipation } =
+   await import("../dist/capabilities/calendar/announcement-copy.js");
 const { ImageAttachable, sniffImageFormat } =
    await import("../dist/attachments/attachable.js");
 const { ask } = await import("../dist/llm/client.js");
@@ -48,6 +56,7 @@ const client = new Client({
    allowedMentions: { parse: [] },
 });
 let proofText: any, proofVoice: any;
+let proofAnnouncement: any, proofGeneral: any;
 let proofGuild: any;
 const createdEvents = new Set<string>();
 const artifactDir = mkdtempSync(join(tmpdir(), "calendar-banner-proof-"));
@@ -87,6 +96,31 @@ try {
       ],
       reason: "Temporary isolated calendar banner verification",
    });
+   if (flag("announce")) {
+      assert(
+         flag("discord"),
+         "--announce requires --discord for a real isolated linked event",
+      );
+      const options = {
+         type: ChannelType.GuildText as const,
+         permissionOverwrites: proofText.permissionOverwrites.cache.map(
+            (o: any) => ({
+               id: o.id,
+               type: o.type,
+               allow: o.allow.bitfield,
+               deny: o.deny.bitfield,
+            }),
+         ),
+      };
+      proofAnnouncement = await guild.channels.create({
+         ...options,
+         name: "calendar-announcement-proof",
+      });
+      proofGeneral = await guild.channels.create({
+         ...options,
+         name: "calendar-general-proof",
+      });
+   }
    if (flag("discord"))
       proofVoice = await guild.channels.create({
          name: "Calendar Banner Proof Room",
@@ -117,6 +151,12 @@ try {
    });
    const store = new CalendarStore(memory.db());
    for (const row of new CalendarStore(live).listAll()) {
+      if (
+         flag("announce") &&
+         flag("title") &&
+         normalizeTitle(row.title).includes(normalizeTitle(value("title")))
+      )
+         continue;
       const { id, created_at, updated_at, discord_event_id, ...fields } = row;
       store.create({ ...fields, created_by: "proof-fixture" });
    }
@@ -133,7 +173,7 @@ try {
    }
    // Publishers built by the REAL capability can only post into the proof channel.
    store.setOutputChannelId(proofText.id);
-   store.setAnnounceChannelId(null);
+   store.setAnnounceChannelId(proofAnnouncement?.id ?? null);
    const before = store.listAll().length;
    const requestText = flag("request")
       ? value("request")
@@ -212,6 +252,44 @@ try {
       projectRoot: process.cwd(),
       getOutputChannelId: () => proofText.id,
    });
+   const realBroadcaster = createBroadcaster({ client, guildId: guild.id });
+   const proofBroadcaster = proofAnnouncement
+      ? {
+           resolve: async (queries: string[]) =>
+              (await realBroadcaster.resolve(queries)).map((r: any) => {
+                 if (r.reason !== "ok") return r;
+                 const name = normalizeTitle(r.match.name);
+                 const channel =
+                    name.includes("anuncios") ||
+                    r.match.id === proofAnnouncement.id
+                       ? proofAnnouncement
+                       : name.includes("general") ||
+                           r.match.id === proofGeneral.id
+                         ? proofGeneral
+                         : null;
+                 assert(
+                    channel,
+                    `Unexpected proof announcement destination ${r.match.name}`,
+                 );
+                 return {
+                    ...r,
+                    match: { id: channel.id, name: channel.name, kind: "text" },
+                 };
+              }),
+           post: async (input: any) => {
+              assert(
+                 [proofAnnouncement.id, proofGeneral.id].includes(
+                    input.target.id,
+                 ),
+                 "Never publish to a community channel",
+              );
+              return realBroadcaster.post({
+                 ...input,
+                 mentions: { roleIds: [], everyone: false },
+              });
+           },
+        }
+      : undefined;
    const source = new CalendarToolSource(
       store,
       "proof-operator",
@@ -221,11 +299,35 @@ try {
          syncer: safeSyncer,
          allowedImageUrls: [imageUrl],
          guildId: guild.id,
+         getDiscordEvent: (id: string) =>
+            fetchScheduledEvent(client, guild.id, id),
+         ...(proofBroadcaster
+            ? {
+                 broadcaster: proofBroadcaster,
+                 writeAnnouncement: (system: string) =>
+                    ask({
+                       system,
+                       messages: [
+                          { role: "user", content: "Escribe el anuncio." },
+                       ],
+                       tools: composeToolSources([]),
+                       effort: "high",
+                    }),
+                 announcementRequestText: requestText,
+                 allowedMentionTokens: [],
+                 sourceChannelId: proofText.id,
+              }
+            : {}),
       },
    );
    const tools = {
       tools: bundle.tools.tools.filter(
-         (t: any) => !/announcement|publish|delete/.test(t.name),
+         (t: any) =>
+            !(
+               flag("announce")
+                  ? /publish|delete/
+                  : /announcement|publish|delete/
+            ).test(t.name),
       ),
       async handle(name: string, input: any) {
          const result = await source.handle(name, input);
@@ -381,6 +483,67 @@ try {
             "BEGIN:VEVENT",
          ),
       );
+      if (proofAnnouncement) {
+         const posts = async (channel: any) =>
+            [
+               ...(
+                  await channel.messages.fetch({ limit: 100, cache: false })
+               ).values(),
+            ] as any[];
+         const initial = await posts(proofAnnouncement);
+         assert.equal(
+            initial.length,
+            1,
+            "The requested announcement must post exactly once",
+         );
+         assert(
+            initial[0].content.includes(
+               store.get(selectedId)!.discord_event_id!,
+            ),
+            "Announcement must include the real RSVP link",
+         );
+         assert.equal(
+            unsupportedParticipation(initial[0].content, [
+               occurrence.title,
+               occurrence.description ?? "",
+               requestText,
+            ]).length,
+            0,
+         );
+         // Keep only the proof event before driving the real background job:
+         // other fixture rows must never cause nudges to an operator channel.
+         memory
+            .db()
+            .prepare("DELETE FROM calendar_events WHERE id <> ?")
+            .run(selectedId);
+         const daily = () =>
+            new CalendarAnnouncer({
+               client,
+               store,
+               getAnnounceChannelId: () => proofAnnouncement.id,
+               getAnnounceMentions: () => [],
+               getModRoles: () => [],
+               getManagementChannelId: () => null,
+               getAnnounceHour: () => 0,
+               now: () => now.getTime(),
+            });
+         await daily().run();
+         await daily().run();
+         assert.equal(
+            (await posts(proofAnnouncement)).length,
+            1,
+            "No second automatic announcement/ping",
+         );
+         console.log(
+            JSON.stringify({
+               phase: "announcement-coordination",
+               requestedPosts: 1,
+               automaticExtraPosts: 0,
+               generalPosts: (await posts(proofGeneral)).length,
+               content: initial[0].content,
+            }),
+         );
+      }
    }
    console.log(
       JSON.stringify({
@@ -392,6 +555,10 @@ try {
 } finally {
    for (const id of createdEvents) await proofGuild.scheduledEvents.delete(id);
    if (proofVoice) await proofVoice.delete("Calendar banner proof cleanup");
+   if (proofAnnouncement)
+      await proofAnnouncement.delete("Calendar announcement proof cleanup");
+   if (proofGeneral)
+      await proofGeneral.delete("Calendar announcement proof cleanup");
    if (proofText) await proofText.delete("Calendar banner proof cleanup");
    await client.destroy();
    memory.close();

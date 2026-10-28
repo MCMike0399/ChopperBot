@@ -217,6 +217,7 @@ export class CalendarCapability implements Capability {
       ...(isMod && broadcaster
         ? {
             broadcaster,
+            announcementRequestText: ctx.requestText,
             writeAnnouncement: (system: string) =>
               ask({
                 system,

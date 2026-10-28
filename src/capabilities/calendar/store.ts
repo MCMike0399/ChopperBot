@@ -1,6 +1,8 @@
 import type Database from 'better-sqlite3';
 import type { Migration } from '../../memory/store.js';
 import type { BroadcastChannel } from './broadcast.js';
+import { announceKey } from './announce.js';
+import { localDateKey } from './time.js';
 import {
   expandOccurrences,
   type ExpandedOccurrence,
@@ -807,6 +809,7 @@ export class CalendarStore {
     channelId: string;
     messageId: string | null;
     discordEventId: string | null;
+    announcedAt?: number;
   }): void {
     this.db
       .prepare(
@@ -815,6 +818,7 @@ export class CalendarStore {
             discord_event_id, announced_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(announce_key) DO UPDATE SET
+           channel_id       = excluded.channel_id,
            message_id       = excluded.message_id,
            discord_event_id = excluded.discord_event_id,
            announced_at     = excluded.announced_at`,
@@ -826,7 +830,7 @@ export class CalendarStore {
         input.channelId,
         input.messageId,
         input.discordEventId,
-        Date.now(),
+        input.announcedAt ?? Date.now(),
       );
   }
 
@@ -915,13 +919,28 @@ export class CalendarStore {
   /** Across draft tokens/restarts: one occurrence/destination attempt per 10min.
    * Reserve before POST; an unconfirmed result is never blindly replayed.
    */
-  reserveBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, now: number):
+  reserveBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, now: number,
+    options: { automatic?: boolean; repost?: boolean } = {}):
     { reserved: boolean; token: string; messageId: string | null; outcome: string } {
     return this.db.transaction(() => {
+      // Automatic and requested posts share this reservation, including while
+      // either writer/send is awaiting the network. Legacy daily receipts count too.
+      const daily = this.db.prepare(`SELECT message_id, announced_at FROM calendar_announcements
+        WHERE announce_key = ? AND channel_id = ?`).get(announceKey(eventId, occurrenceStartAt), channelId) as
+        { message_id: string | null; announced_at: number } | undefined;
+      if (daily && !options.repost && (options.automatic || now - daily.announced_at < 10 * 60_000))
+        return { reserved: false, token: 'daily', messageId: daily.message_id, outcome: 'posted' };
       const row = this.db.prepare(`SELECT * FROM calendar_broadcast_deliveries
         WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ?`)
         .get(eventId, occurrenceStartAt, channelId) as { token: string; reserved_at: number; message_id: string | null; outcome: string } | undefined;
-      if (row && now - row.reserved_at < 10 * 60_000)
+      if (row && !options.repost && options.automatic && row.outcome === 'posted' &&
+        localDateKey(row.reserved_at) === localDateKey(occurrenceStartAt)) {
+        this.recordAnnouncement({ announceKey: announceKey(eventId, occurrenceStartAt), eventId, occurrenceStartAt,
+          channelId, messageId: row.message_id, discordEventId: this.get(eventId)?.discord_event_id ?? null,
+          announcedAt: row.reserved_at });
+        return { reserved: false, token: row.token, messageId: row.message_id, outcome: row.outcome };
+      }
+      if (row && now - row.reserved_at < 10 * 60_000 && (!options.repost || row.outcome !== 'posted'))
         return { reserved: false, token: row.token, messageId: row.message_id, outcome: row.outcome };
       this.db.prepare(`INSERT INTO calendar_broadcast_deliveries VALUES (?, ?, ?, ?, ?, NULL, 'unconfirmed')
         ON CONFLICT(event_id, occurrence_start_at, channel_id) DO UPDATE SET
@@ -944,10 +963,23 @@ export class CalendarStore {
       .run(eventId, occurrenceStartAt, channelId, token);
   }
 
-  finishBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, messageId: string): void {
-    this.db.prepare(`UPDATE calendar_broadcast_deliveries SET message_id = ?, outcome = 'posted'
-      WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND token = ?`)
-      .run(messageId, eventId, occurrenceStartAt, channelId, token);
+  renewBroadcastReservation(eventId: number, occurrenceStartAt: number, channelId: string, token: string, nowMs: number): boolean {
+    return this.db.prepare(`UPDATE calendar_broadcast_deliveries SET reserved_at = ?
+      WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND token = ? AND outcome = 'unconfirmed'`)
+      .run(nowMs, eventId, occurrenceStartAt, channelId, token).changes > 0;
+  }
+
+  finishBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, messageId: string,
+    daily?: { channelId: string | null; discordEventId: string | null; nowMs: number }): void {
+    this.db.transaction(() => {
+      const updated = this.db.prepare(`UPDATE calendar_broadcast_deliveries SET message_id = ?, outcome = 'posted'
+        WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND token = ?`)
+        .run(messageId, eventId, occurrenceStartAt, channelId, token);
+      if (updated.changes && daily?.channelId === channelId && localDateKey(daily.nowMs) === localDateKey(occurrenceStartAt)) {
+        this.recordAnnouncement({ announceKey: announceKey(eventId, occurrenceStartAt), eventId, occurrenceStartAt,
+          channelId, messageId, discordEventId: daily.discordEventId, announcedAt: daily.nowMs });
+      }
+    })();
   }
 
   /** Newest unposted draft for this source channel — the "sí, publícalo" fallback. */

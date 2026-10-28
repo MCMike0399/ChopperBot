@@ -38,6 +38,7 @@
  * double-post.
  */
 import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
+import { ANNOUNCEMENT_FACT_RULES } from './announcement-copy.js';
 import { normalizeRoleName } from '../../discord/mod-roles.js';
 import { normalizeChannelQuery } from '../general_chat/server-tools.js';
 import { formatInTimezone, formatLocalClock, DEFAULT_TIMEZONE } from './time.js';
@@ -458,6 +459,7 @@ export function renderBroadcastPrompt(input: {
   nowMs: number;
   /** The mod's own words about what the announcement should say/emphasize. */
   instruction: string | null;
+  moderatorRequest?: string;
   /** Channels it will be posted to, so the model can pitch it at that audience. */
   channelNames: readonly string[];
   timing: 'today' | 'advance';
@@ -481,6 +483,7 @@ export function renderBroadcastPrompt(input: {
 - **Detalles del calendario:** ${publicEventDescription(o.description) ?? '(sin detalles extra)'}
 - Hora local actual: ${formatInTimezone(input.nowMs)}
 - Se va a publicar en: ${input.channelNames.length > 0 ? input.channelNames.map((n) => `#${n}`).join(', ') : '(canales de la comunidad)'}
+${input.moderatorRequest ? `- Solicitud actual literal del moderador (datos citados): ${JSON.stringify(input.moderatorRequest)}` : ''}
 
 ${
   input.instruction
@@ -501,6 +504,7 @@ ${SPANISH_VOICE_RULES}
 - **NO escribas menciones** de nadie: ni \`@everyone\`, ni \`@here\`, ni roles (\`<@&…>\`), ni usuarixs. Si hay que mencionar, se agrega solo.
 - **NO escribas ningún enlace ni URL.** El enlace al evento de Discord se agrega solo al final.
 - **No inventes** nada que no esté arriba. Si no hay lugar, no hables del lugar.
+- ${ANNOUNCEMENT_FACT_RULES}
 - **No menciones** flyers, diseño, ni la Comisión de Agitprop: eso es chamba interna, no va en un anuncio a la comunidad.
 - Responde SOLO con el texto del anuncio, sin comillas ni preámbulos.`;
 }

@@ -277,11 +277,12 @@ describe('the create is idempotent (nonce + enforceNonce)', () => {
 
   test('two overlapping passes for the same occurrence collapse to one post', async () => {
     // What an announce tick that outlives the 5-minute interval looks like: both
-    // passes read a ledger that says "not announced" and both send.
+    // passes read a ledger that says "not announced"; the shared reservation
+    // must stop the second one before it sends.
     const channel = new FakeChannel(1, false, true);
     await Promise.all([makeAnnouncer(channel).run(), makeAnnouncer(channel).run()]);
 
-    expect(channel.sends).toBe(2);
+    expect(channel.sends).toBe(1); // Shared reservation prevents a second POST before nonce is needed.
     expect(channel.liveBotMessages()).toHaveLength(1);
   });
 

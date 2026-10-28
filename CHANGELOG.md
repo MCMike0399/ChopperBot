@@ -14,6 +14,11 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.14.1 — 2026-10-28
+
+- **Un solo aviso por evento.** Si el equipo anuncia una actividad del día en anuncios, ChopperBot ya lo reconoce y evita mandar enseguida otro aviso automático con un segundo ping. Los avisos anticipados siguen teniendo su recordatorio el día del evento.
+- Reforzamos los anuncios para que no añadan tareas ni materiales que llevar cuando el cartel o el equipo no los pidieron. Se conserva la invitación cálida y los detalles confirmados de la actividad.
+
 ## 2.14.0 — 2026-10-28
 
 - **Del cartel al evento.** En chat-gestión, adjunta el cartel y dile **"@ChopperBot crea este evento"**: lee el título, la fecha y la hora, registra la actividad en el calendario y crea su evento de Discord con el cartel de portada, sin pedirte los mismos datos otra vez.

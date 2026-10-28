@@ -8,6 +8,7 @@
  * announcing twice — are unit-testable.
  */
 import { SPANISH_VOICE_RULES } from '../../lang/voice.js';
+import { ANNOUNCEMENT_FACT_RULES } from './announcement-copy.js';
 import { localParts } from './grid.js';
 import { formatInTimezone, formatLocalClock, DEFAULT_TIMEZONE } from './time.js';
 import type { MatchCandidate, MatchableDiscordEvent, MatchableOccurrence } from './match.js';
@@ -341,6 +342,7 @@ ${SPANISH_VOICE_RULES}
 - **NO escribas menciones** de nadie: ni \`@everyone\`, ni \`@here\`, ni roles (\`<@&…>\`), ni usuarixs. La mención se agrega sola.
 - **NO escribas ningún enlace ni URL.** El enlace al evento de Discord se agrega solo al final.
 - **No inventes** nada que no esté arriba: ni ponentes, ni lugar, ni temario. Si no hay lugar, simplemente no hables del lugar.
+- ${ANNOUNCEMENT_FACT_RULES}
 - Si los "detalles del calendario" nombran a un ponente, sí puedes nombrarlo en texto (sin @).
 - **No menciones** flyers, diseño, ni la Comisión de Agitprop: eso es chamba interna, no va en un anuncio a la comunidad.
 - Responde SOLO con el texto del anuncio, sin comillas ni preámbulos.`;

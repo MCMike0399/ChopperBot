@@ -22,7 +22,9 @@
  * never the heads-up itself.
  */
 import { PermissionFlagsBits, type Client } from 'discord.js';
+import { randomUUID } from 'node:crypto';
 import { log } from '../../log.js';
+import { unsupportedParticipation } from './announcement-copy.js';
 import { ask } from '../../llm/client.js';
 import { composeToolSources } from '../../tools/source.js';
 import {
@@ -431,10 +433,6 @@ export class CalendarAnnouncer {
     opts: RunOptions,
   ): Promise<AnnouncementResult> {
     const occ = target.occurrence;
-    const body = await this.writeAnnouncement(target, nowMs);
-    const mentions = renderAnnounceMentions(this.deps.getAnnounceMentions());
-    const text = prefixMentions(appendEventLink(body, target.discordEventUrl), mentions.text);
-
     const result: AnnouncementResult = {
       eventId: occ.id,
       title: occ.title,
@@ -442,17 +440,38 @@ export class CalendarAnnouncer {
       link: target.link ?? (target.discordEvent ? 'stored' : 'none'),
       discordEventId: target.discordEvent?.id ?? null,
       discordEventUrl: target.discordEventUrl,
-      text,
+      text: '',
       imageUrl: target.discordEvent?.imageUrl ?? null,
       posted: false,
       messageId: null,
     };
+    const nonce = announceNonce(occ.id, occ.startAtMs, opts.ignoreLedger ? nowMs : undefined);
+    const reservationToken = randomUUID();
+    if (!opts.dryRun) {
+      const reservation = this.deps.store.reserveBroadcast(occ.id, occ.startAtMs, channelId, reservationToken, nowMs,
+        { automatic: true, repost: opts.ignoreLedger });
+      if (!reservation.reserved) {
+        result.messageId = reservation.messageId;
+        if (!reservation.messageId) result.error = 'previous_delivery_unconfirmed_no_retry';
+        log.info({ eventId: occ.id, channelId, outcome: reservation.outcome }, 'calendar.announce.duplicate_suppressed');
+        return result;
+      }
+    }
+    const body = await this.writeAnnouncement(target, nowMs);
+    const mentions = renderAnnounceMentions(this.deps.getAnnounceMentions());
+    const text = prefixMentions(appendEventLink(body, target.discordEventUrl), mentions.text);
+    result.text = text;
     if (opts.dryRun) return result;
+    // A stalled model may outlive the reservation window. Another caller can
+    // have delivered while it waited; a stale writer must not send afterward.
+    if (!this.deps.store.renewBroadcastReservation(occ.id, occ.startAtMs, channelId, reservationToken, this.now())) {
+      result.error = 'delivery_reservation_lost';
+      return result;
+    }
 
     // A deliberate repost is a *new* message on purpose, so it must not be
     // deduplicated against this morning's — everything else shares the
     // occurrence's stable key.
-    const nonce = announceNonce(occ.id, occ.startAtMs, opts.ignoreLedger ? nowMs : undefined);
     const sent = await this.sendExactlyOnce(channel, channelId, {
       content: text,
       allowedMentions: {
@@ -472,14 +491,8 @@ export class CalendarAnnouncer {
 
     result.posted = true;
     result.messageId = sent.messageId;
-    this.deps.store.recordAnnouncement({
-      announceKey: announceKey(occ.id, occ.startAtMs),
-      eventId: occ.id,
-      occurrenceStartAt: occ.startAtMs,
-      channelId,
-      messageId: sent.messageId,
-      discordEventId: target.discordEvent?.id ?? null,
-    });
+    this.deps.store.finishBroadcast(occ.id, occ.startAtMs, channelId, reservationToken, sent.messageId,
+      { channelId, discordEventId: target.discordEvent?.id ?? null, nowMs });
     log.info(
       {
         eventId: occ.id,
@@ -635,12 +648,14 @@ export class CalendarAnnouncer {
         }
         // A speaker the brief never named must not reach the whole server
         // (live 2026-09-21: "Yeti" in the brief, "Andrés" in the post).
+        const unsupported = unsupportedParticipation(written, [target.occurrence.title, target.occurrence.description ?? '']);
         const invented = inventedNames(written, [system]);
-        if (invented.length === 0) return written;
-        log.warn({ eventId: target.occurrence.id, attempt, invented, text: written }, 'calendar.announce.invented_names');
+        if (invented.length === 0 && unsupported.length === 0) return written;
+        if (unsupported.length) log.warn({ eventId: target.occurrence.id, attempt, unsupported }, 'calendar.announce.unsupported_participation');
+        if (invented.length) log.warn({ eventId: target.occurrence.id, attempt, invented, text: written }, 'calendar.announce.invented_names');
         ask_ =
           `Escribe el anuncio de hoy. En tu intento anterior escribiste ${invented.map((n) => `"${n}"`).join(', ')}, ` +
-          'que NO aparece en los datos del evento. Nombra solo a quien aparece en "Detalles del calendario"; si no hay nadie, no nombres a nadie.';
+          'que NO aparece en los datos del evento. Nombra solo a quien aparece en "Detalles del calendario"; si no hay nadie, no nombres a nadie. No agregues materiales, tareas ni participación del público que los datos no pidan.';
       } catch (err) {
         log.warn({ err, eventId: target.occurrence.id }, 'calendar.announce.model_failed');
         break;
