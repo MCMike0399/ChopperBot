@@ -4,6 +4,88 @@
 
 Rewritten 2026-06-21 from per-user to a single **global** server calendar. Mods talk to it in the bound **input** channel; rendered month PDFs + a master ICS are published to a separate **output** channel.
 
+## Create from a flyer — v2.14.0 (2026-10-28)
+
+In the calendar input channel, event staff can attach a flyer and address the bot
+with **"@ChopperBot crea este evento"** (or reply to a flyer and ask it to create
+the event). An image-only message addressed to the bot also enters this flow.
+The existing DeepSeek V4.1 Flash turn reads the image directly: no second model,
+OCR service, new credential or schema migration. A creation request now covers
+**calendar entry + Discord scheduled event + attached flyer as cover** in the
+same turn. A request to read a flyer, change only the cover, or create only a
+calendar entry keeps that narrower scope. The normal mention/reply trigger and
+events-tier authorization remain in place; an unaddressed upload does not run.
+
+For authorized image turns only, `banner-context.ts` fetches current guild roles,
+caller/bot membership, channels and scheduled events. The quoted JSON directory
+contains at most 40 voice/stage rooms and 30 scheduled events, filtered to rooms
+both caller and bot can view. Lookup failures are explicit rather than presented
+as an empty verified directory (`calendar.banner_context.unavailable`). The
+model searches calendar activity names for historical venue examples and checks
+the date before writing. Explicit moderator/cartel location wins; otherwise it
+can infer a real room from activity/history/current events and says which it
+used. A reading circle is not automatically poetry or a study circle. Unknown
+locations or equally supported choices need clarification. This directory reads
+no other channel's message history; historical announcements were inspected for
+implementation evidence, not added as a new runtime transcript source.
+
+The prompt asks only for unreadable/missing required data or genuine conflicts.
+A missing year can use the current local year when the date/weekday agree and
+the event is still ahead; a conflicting weekday or past date must be clarified,
+not silently moved to another year. It does not invent speakers, prices, links,
+end times or recurrence. Existing series use `calendar_set_session_theme` for
+that occurrence, rather than a duplicate series. Another topic at the same hour
+does not establish an old title or authorize deletion. These extraction,
+date/room inference and intent decisions are **model instructions**, not a
+deterministic OCR/date validator; moderators can correct the inferred room.
+
+Additional code guarantees:
+
+- `calendar_create_event` reuses an existing occurrence with the same normalized
+  title and exact start, including across turns, without a second row or publish.
+  Semantic/title variants still rely on the pre-write search; this is not a
+  universal duplicate detector.
+- Before an unlinked Discord create, the syncer checks existing scheduled events.
+  One title-similarity match of at least 0.85 within five minutes is adopted;
+  multiple such matches or a failed list read refuse creation. Unrelated
+  same-time events are not matches. A linked event still keeps its RSVP URL.
+- Discord create/refresh use the effective next occurrence's title, description
+  and location, including theme overrides, rather than the unthemed master.
+- Failed cover edits return `image_set:false`. Attachment URL allowlisting,
+  Discord-CDN fetch restrictions and existing write gates remain enforced.
+
+Evidence: read-only inspection of the live calendar, server rooms/events and
+announcement/club/management history found prior image requests
+`1554216782754222141` and `1552862692136714370` creating only the calendar entry
+then asking another question for Discord; `1564389033679921303` already showed
+the desired complete flow when more instructions were supplied. No member
+transcripts or banner assets are committed.
+
+Proof: **1,684 tests / 136 files**, typecheck/build/format passed. Built-code live
+vision on the supplied terror-reading flyer extracted **2026-10-28, 20:00 CDMX**
+(`2026-10-29T02:00:00Z`), inferred the existing Sala de Lectura and created one
+scratch calendar row. The real publisher sent October PNG + ICS to a temporary
+private channel; fresh Discord readbacks downloaded both, and the PNG was
+visually checked. The real syncer created a private-room scheduled event with
+the cover, and repeated sync retained one event. A second live replay themed a
+seeded weekly reading session with zero added rows. An older Juan Rulfo flyer
+with "miércoles 17 de diciembre" asked about the 2026 weekday conflict and made
+zero writes. Proof channels/rooms/events were removed; production SQLite was
+opened read-only, with all proof writes in memory. The service restarted
+active/running, Discord ready, NRestarts=0, with actual October/ICS publication
+and no removed board cards; no minutas session was active/processing.
+
+Reproduce deliberately (billed, never CI): build, then
+`npx tsx scripts/live-calendar-banner-smoke.ts <image> --title <fragment> --date YYYY-MM-DD --time HH:MM --room <fragment>`.
+`--discord` also verifies a real isolated event/cover and downloaded artifacts;
+it routes the physical event to a temporary private room while checking the
+model's original inferred location separately. `--series` seeds a weekly reading
+fixture (requires `--date`); `--clarify` expects no mutations. `--request "…"`
+overrides the current instruction; `--now <ISO>` freezes model/store time.
+Token usage is in `agent_turn`; proof effects and cleanup are explicit in output.
+
+## Existing calendar behavior
+
 - **Writing is mod-only, in code (added 2026-08-13).** The prompt always said "cualquier moderadorx de este canal", but nothing checked — the real guarantee was "whoever can post in the channel", and an event created here is _published_ state (month PDF, ICS, the Discord events list, the next morning's announcement to the whole server). `buildTurn` calls `isEventTurn()` and independently checks current write consent (see docs/framework.md); a caller without event authority or a current write request gets the **read-only slice** (`calendar_list_upcoming` / `calendar_search_events` / `calendar_get_event`, no publisher, no Discord-event syncer, attachments not offered as banners) plus a short "solo consulta" prompt, and `allowWrite:false` re-refuses at the point of effect. Fails closed. Asking what's coming up stays open to everyone in the channel.
 - **`when` on list/search payloads (added 2026-08-25).** Each occurrence includes `local_date` (CDMX YYYY-MM-DD) and `when` (`hoy`/`mañana`/`después`) so "¿qué hay mañana?" does not depend on the model subtracting UTC-6 from `start_at_iso` (an 8pm CDMX event is the next UTC date). Live miss: general_chat at 11:14 CDMX on Tue 25 answered "mañana (martes 25)" because its prompt only injected the UTC timestamp (17:14 the same day) and Cooperativas' ISO is `2026-08-26T02:00:00Z`. Values are Spanish (not `today`/`tomorrow`) so the payload does not prime Spanglish — live the same evening, "Estoy emoción-ed". `renderTemporalAwareness` now also names hoy/mañana/ayer by local date (not just the weekday) and is used by general_chat, not only calendar/event_intake. Covered by `__tests__/time.test.ts` plus the list_upcoming payload case in `calendar.test.ts`.
 - **`discord_event_url` on list/search/get (added 2026-08-25).** When a row has `discord_event_id` and the tool source knows the guild, the payload also carries `https://discord.com/events/<guild>/<id>` so general_chat can answer "dónde reservo / cómo me apunto" with the real RSVP link instead of inventing a ticket. Omitted when there is no link (tests without `guildId`, unlinked rows). Covered by the list_upcoming case in `calendar.test.ts`.

@@ -45,4 +45,14 @@ unchanged. See the [shared lookup correction](../llm.md#inconclusive-lookups-and
 
 ## Event authority preserved — v2.3.1
 
+Shared calendar sync hardening (v2.14.0): ticket approval also uses the new
+pre-create scheduled-event check. A clear title/time match adopts the existing
+RSVP event; multiple close matches or an unavailable list return an explicit
+failure instead of creating another. Session overrides supply their effective
+title/description/room, and failed cover edits no longer report success. The
+ticket authorization/flyer flow is unchanged. The full 1,684-test suite includes
+the approval/banner regressions with a realistic empty event-list response;
+live isolated calendar/Discord cover and publication proof is recorded in
+[calendar](calendar.md#create-from-a-flyer--v2140-2026-10-28).
+
 Approval/MOD_TOOLS, staff flyer operations and ticket role pings use **events**: effective moderation plus configured/default event roles (Gestión remains included by default). Agitprop authorization stays flyer-only. The watcher rejects bot approvers. Settings migration v3 adds separate `moderation_roles_json` for console/review/sanctions; legacy `mod_roles_json` remains event approval. `set_mod_roles` is compatible with `set_event_roles`, and `set_moderation_roles` is separate. Empty means defaults, never everyone. Pings and approval share the same effective event list, including custom moderation roles. Full proof: framework.md.

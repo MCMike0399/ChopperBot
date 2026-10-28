@@ -53,6 +53,7 @@ import {
   type NamedBroadcastRole,
 } from './broadcast.js';
 import type { CalendarBroadcaster } from './broadcast-channels.js';
+import { normalizeTitle } from './match.js';
 
 /**
  * Tools for the **global** server calendar. Every moderator in the bound input
@@ -590,6 +591,17 @@ export class CalendarToolSource implements ToolSource {
     // "repite 1 vez" is a one-off, not a degenerate one-occurrence series.
     if (range.collapsedToOneOff) rule = null;
     const shiftedEnd = endMs !== null ? endMs + (anchorMs - startMs) : null;
+
+    // The model's per-turn cache cannot protect a repeated flyer in a later turn.
+    // Refuse an exact same-session create before any publication or write.
+    const duplicate = this.store.listOccurrences(anchorMs, anchorMs + 1)
+      .find((e) => e.start_at === anchorMs && normalizeTitle(e.title) === normalizeTitle(title));
+    if (duplicate) {
+      return { status: 'success', payload: {
+        event: serialize(duplicate, this.nowMs, this.options.guildId), already_exists: true,
+        message: 'Esa sesión ya está en el calendario. Reutiliza este id para la portada/evento de Discord; no crees otra fila ni cambies la serie.',
+      } };
+    }
 
     const created = this.store.create({
       created_by: this.callerUserId,

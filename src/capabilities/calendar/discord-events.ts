@@ -39,6 +39,7 @@ import {
   type Guild,
   type GuildScheduledEvent,
 } from 'discord.js';
+import { titleSimilarity } from './match.js';
 import { log } from '../../log.js';
 import { publicEventDescription } from './announce.js';
 
@@ -479,7 +480,7 @@ export interface EventSyncerDeps {
   /** Read the row + persist the resulting link. */
   store: {
     get(id: number): CalendarEventLike | null;
-    listUpcoming(fromMs: number, limit: number): Array<{ id: number; start_at: number; end_at: number | null }>;
+    listUpcoming(fromMs: number, limit: number): Array<{ id: number; start_at: number; end_at: number | null; title?: string; description?: string | null; location?: string | null }>;
     setDiscordEventId(id: number, discordEventId: string | null): void;
   };
   now?: () => number;
@@ -509,11 +510,13 @@ function nextOccurrenceOf(
   row: CalendarEventLike,
   nowMs: number,
   store: EventSyncerDeps['store'],
-): { startAtMs: number; endAtMs: number | null } | null {
-  if (row.start_at > nowMs) return { startAtMs: row.start_at, endAtMs: row.end_at };
-  if (row.recurrence_freq === null) return null;
+): { startAtMs: number; endAtMs: number | null; title: string; description: string | null; location: string | null } | null {
+  if (row.recurrence_freq === null) return row.start_at > nowMs
+    ? { startAtMs: row.start_at, endAtMs: row.end_at, title: row.title, description: row.description, location: row.location } : null;
   const next = store.listUpcoming(nowMs, 60).find((o) => o.id === row.id);
-  return next ? { startAtMs: next.start_at, endAtMs: next.end_at } : null;
+  return next ? { startAtMs: next.start_at, endAtMs: next.end_at, title: next.title ?? row.title,
+    description: next.description === undefined ? row.description : next.description,
+    location: next.location === undefined ? row.location : next.location } : null;
 }
 
 /**
@@ -545,6 +548,23 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
     return me?.permissions.has(PermissionFlagsBits.ManageEvents) ?? false;
   }
 
+  async function reuseExisting(existing: DiscordScheduledEvent, image: FetchedImage | null, eventId: number): Promise<SyncOutcome> {
+    const guild = await deps.client.guilds.fetch(deps.guildId).catch(() => null);
+    let imageSet = false;
+    if (image && guild) {
+      try {
+        await guild.scheduledEvents.edit(existing.id, { image: toImageDataUri(image) });
+        imageSet = true;
+      } catch (err) {
+        log.warn({ err, eventId, discordEventId: existing.id }, 'calendar.discord_events.image_edit_failed');
+      }
+    }
+    return { ok: true, discordEventId: existing.id, url: existing.url, created: false,
+      startAtLocal: fmt(existing.startAtMs), imageSet,
+      venue: guild ? await describeLinkedVenue(guild, existing)
+        : { kind: existing.channelId ? 'voice' : 'external', name: existing.location ?? 'sala del evento' } };
+  }
+
   return {
     async sync(eventId, opts = {}): Promise<SyncOutcome> {
       const row = deps.store.get(eventId);
@@ -555,26 +575,7 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
       if (row.discord_event_id) {
         const existing = await fetchScheduledEvent(deps.client, deps.guildId, row.discord_event_id);
         if (existing) {
-          const guild = await deps.client.guilds.fetch(deps.guildId).catch(() => null);
-          // Already linked: the only thing left to do is set/replace the banner.
-          if (image && guild) {
-            await guild.scheduledEvents
-              .edit(existing.id, { image: toImageDataUri(image) })
-              .catch((err) =>
-                log.warn({ err, eventId, discordEventId: existing.id }, 'calendar.discord_events.image_edit_failed'),
-              );
-          }
-          return {
-            ok: true,
-            discordEventId: existing.id,
-            url: existing.url,
-            created: false,
-            startAtLocal: fmt(existing.startAtMs),
-            imageSet: image != null,
-            venue: guild
-              ? await describeLinkedVenue(guild, existing)
-              : { kind: existing.channelId ? 'voice' : 'external', name: existing.location ?? 'sala del evento' },
-          };
+          return reuseExisting(existing, image, eventId);
         }
         deps.store.setDiscordEventId(eventId, null); // stale link — the admin deleted it
       }
@@ -592,12 +593,24 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
         };
       }
 
+      // Mods also create events by hand. A second RSVP list loses their signups.
+      // Only adopt a clear same-time/title match; never use time alone.
+      const scheduled = await fetchScheduledEvents(deps.client, deps.guildId);
+      if (scheduled === null) return { ok: false, reason: 'error', message: 'No pude revisar los eventos de Discord existentes; no creé otro para evitar duplicados. Intenta de nuevo.' };
+      const matches = scheduled.filter((e) => Math.abs(e.startAtMs - next.startAtMs) <= 5 * 60_000 && titleSimilarity(next.title, e.name) >= 0.85);
+      if (matches.length > 1) return { ok: false, reason: 'error', message: 'Hay varios eventos de Discord con ese título y horario. Pide al equipo que resuelva el duplicado antes de sincronizar.' };
+      if (matches.length === 1) {
+        deps.store.setDiscordEventId(eventId, matches[0]!.id);
+        log.info({ eventId, discordEventId: matches[0]!.id }, 'calendar.discord_events.existing_adopted');
+        return reuseExisting(matches[0]!, image, eventId);
+      }
+
       const outcome = await createScheduledEvent(deps.client, deps.guildId, {
-        title: row.title,
-        description: row.description,
+        title: next.title,
+        description: next.description,
         startAtMs: next.startAtMs,
         endAtMs: next.endAtMs,
-        location: row.location,
+        location: next.location,
         image,
       });
       if (!outcome.ok) {
@@ -643,9 +656,9 @@ export function createEventSyncer(deps: EventSyncerDeps): DiscordEventSyncer {
       const next = nextOccurrenceOf(row, now(), deps.store);
       if (!next) return { ok: true, action: 'no_future', url: existing.url };
 
-      const venueChannel = await resolveVenue(guild, row.location, row.title);
-      const name = row.title.slice(0, 100);
-      const description = publicEventDescription(row.description)?.slice(0, 1000) ?? null;
+      const venueChannel = await resolveVenue(guild, next.location, next.title);
+      const name = next.title.slice(0, 100);
+      const description = publicEventDescription(next.description)?.slice(0, 1000) ?? null;
       const endAtMs = next.endAtMs ?? (venueChannel ?? existing.channelId ? null : next.startAtMs + DEFAULT_EVENT_DURATION_MS);
 
       const changed: string[] = [];

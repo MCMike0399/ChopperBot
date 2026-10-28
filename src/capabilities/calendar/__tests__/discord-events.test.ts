@@ -209,6 +209,46 @@ function makeSyncer(client: unknown, store: ReturnType<typeof makeStore>, fetchI
 afterEach(() => vi.clearAllMocks());
 
 describe('sync — create', () => {
+  test('adopts a manually created same-time event and sets the cover without a second RSVP list', async () => {
+    const existing = { id: 'MANUAL', name: 'Club de poesía: Rosario Castellanos', description: null,
+      scheduledStartTimestamp: START, scheduledEndTimestamp: null, channelId: 'POESIA', location: null, image: null };
+    const { client, calls } = makeClient({ events: [existing] });
+    const store = makeStore([row()]);
+    const result = await makeSyncer(client, store).sync(1, { imageUrl: 'https://cdn.discordapp.com/banner.png' });
+    expect(result).toMatchObject({ ok: true, created: false, discordEventId: 'MANUAL', imageSet: true });
+    expect(store.get(1)?.discord_event_id).toBe('MANUAL');
+    expect(calls.create).toHaveLength(0);
+    expect(calls.edit).toHaveLength(1);
+  });
+
+  test('ambiguous identical Discord candidates refuse instead of creating or adopting at random', async () => {
+    const existing = { name: row().title, description: null, scheduledStartTimestamp: START,
+      scheduledEndTimestamp: null, channelId: null, location: 'RevZ', image: null };
+    const { client, calls } = makeClient({ events: [{ ...existing, id: 'A' }, { ...existing, id: 'B' }] });
+    const store = makeStore([row()]);
+    expect(await makeSyncer(client, store).sync(1)).toMatchObject({ ok: false, reason: 'error' });
+    expect(calls.create).toHaveLength(0);
+    expect(store.get(1)?.discord_event_id).toBeNull();
+  });
+
+  test('failed cover edits are reported truthfully', async () => {
+    const existing = { id: 'LINKED', name: row().title, description: null, scheduledStartTimestamp: START,
+      scheduledEndTimestamp: null, channelId: null, location: 'RevZ', image: null };
+    const { client } = makeClient({ events: [existing] });
+    const guild = await client.guilds.fetch();
+    (guild.scheduledEvents as { edit: unknown }).edit = async () => { throw new Error('missing permission'); };
+    const result = await makeSyncer(client, makeStore([row({ discord_event_id: 'LINKED' })])).sync(1, { imageUrl: 'https://cdn.discordapp.com/banner.png' });
+    expect(result).toMatchObject({ ok: true, created: false, imageSet: false });
+  });
+
+  test('a themed occurrence supplies its title, description and room to Discord', async () => {
+    const { client, calls } = makeClient({ venues: [{ id: 'READ', name: 'Sala de Lectura', type: ChannelType.GuildVoice }] });
+    const store = makeStore([row({ title: 'Círculo de lectura', recurrence_freq: 'weekly' })]);
+    store.listUpcoming = () => [{ id: 1, start_at: START, end_at: null, title: 'Círculo de lectura: Historias de terror', description: 'Sesión especial', location: 'Sala de Lectura' }];
+    expect(await makeSyncer(client, store).sync(1)).toMatchObject({ ok: true });
+    expect(calls.create[0]).toMatchObject({ name: 'Círculo de lectura: Historias de terror', description: 'Sesión especial', channel: 'READ' });
+  });
+
   test('infers the venue from the event title when there is no location', async () => {
     const { client, calls } = makeClient({
       venues: [

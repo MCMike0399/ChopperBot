@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.14.0 — 2026-10-28
+
+- **Del cartel al evento.** En chat-gestión, adjunta el cartel y dile **"@ChopperBot crea este evento"**: lee el título, la fecha y la hora, registra la actividad en el calendario y crea su evento de Discord con el cartel de portada, sin pedirte los mismos datos otra vez.
+- Si el cartel solo dice "Discord RevZ", busca una sala con el contexto del servidor y te dice cuál eligió. Si falta un dato esencial o las fechas no cuadran, te pregunta antes de guardarlo.
+- Revisa las actividades existentes para reutilizar sesiones y evitar duplicados. Si el cartel anuncia el tema de un club semanal, actualiza esa sesión sin cambiar las demás.
+
 ## 2.13.2 — 2026-10-25
 
 - ChopperBot ya ubica mejor su propia casa: la aplicación corre en una Raspberry Pi de la comunidad y conversa mediante DeepSeek. También explica que el mensaje y parte del contexto se procesan fuera de Discord; el código abierto no significa que todo ocurra en la Pi.

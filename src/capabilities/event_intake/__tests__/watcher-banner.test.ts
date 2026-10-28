@@ -49,6 +49,7 @@ function makeClientWithGuild() {
       },
       channels: { fetch: async () => new Map() }, // no venues → external event
       scheduledEvents: {
+         fetch: async () => new Map(), // duplicate check: no existing RSVP event
          create: async (payload: Record<string, unknown>) => {
             created.push(payload);
             return {
