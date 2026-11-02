@@ -342,43 +342,58 @@ describe("live access gates", () => {
    });
 
    test("ambient context is gathered on replies and opted-out capabilities avoid it", async () => {
-      const h = accessHarness();
-      const trigger = {
-         id: "100000000000000003",
-         createdTimestamp: NOW,
-         guildId: "guild",
-         channelId: CID,
-         author: { id: "caller" },
-         reference: { messageId: "100000000000000002" },
-         channel: h.channel,
-      };
-      h.fetchMessages.mockImplementation(async (args?: unknown) =>
-         typeof args === "string"
-            ? (null as never)
-            : new Map([
-                 [
-                    "100000000000000001",
-                    {
-                       id: "100000000000000001",
-                       content: "lo acordamos ayer",
-                       createdTimestamp: NOW - 86_400_000,
-                       author: { id: "caller", username: "prueba", bot: false },
-                       attachments: new Map(),
-                       mentions: { users: new Map() },
-                    },
-                 ],
-              ]),
-      );
-      const result = await gatherTurnContext(h.client, trigger as never, true);
-      expect(result.blocks.join("\n")).toContain("lo acordamos ayer");
-      h.fetchMessages.mockClear();
-      const optedOut = await gatherTurnContext(
-         h.client,
-         { ...trigger, reference: null } as never,
-         false,
-      );
-      expect(optedOut.blocks).toEqual([]);
-      expect(h.fetchMessages).not.toHaveBeenCalled();
+      // The cache also prunes against wall time; keep October's fixture inside
+      // the retention window regardless of the day the suite is run.
+      const clock = vi.spyOn(Date, "now").mockReturnValue(NOW);
+      try {
+         const h = accessHarness();
+         const trigger = {
+            id: "100000000000000003",
+            createdTimestamp: NOW,
+            guildId: "guild",
+            channelId: CID,
+            author: { id: "caller" },
+            reference: { messageId: "100000000000000002" },
+            channel: h.channel,
+         };
+         h.fetchMessages.mockImplementation(async (args?: unknown) =>
+            typeof args === "string"
+               ? (null as never)
+               : new Map([
+                    [
+                       "100000000000000001",
+                       {
+                          id: "100000000000000001",
+                          content: "lo acordamos ayer",
+                          createdTimestamp: NOW - 86_400_000,
+                          author: {
+                             id: "caller",
+                             username: "prueba",
+                             bot: false,
+                          },
+                          attachments: new Map(),
+                          mentions: { users: new Map() },
+                       },
+                    ],
+                 ]),
+         );
+         const result = await gatherTurnContext(
+            h.client,
+            trigger as never,
+            true,
+         );
+         expect(result.blocks.join("\n")).toContain("lo acordamos ayer");
+         h.fetchMessages.mockClear();
+         const optedOut = await gatherTurnContext(
+            h.client,
+            { ...trigger, reference: null } as never,
+            false,
+         );
+         expect(optedOut.blocks).toEqual([]);
+         expect(h.fetchMessages).not.toHaveBeenCalled();
+      } finally {
+         clock.mockRestore();
+      }
    });
 });
 

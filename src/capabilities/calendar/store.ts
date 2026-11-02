@@ -371,6 +371,10 @@ export const CALENDAR_MIGRATIONS: Migration[] = [
       );
     `,
   },
+  {
+    version: 13,
+    up: `ALTER TABLE calendar_announcement_drafts ADD COLUMN repost INTEGER NOT NULL DEFAULT 0;`,
+  },
 ];
 
 interface OverrideRow {
@@ -872,14 +876,15 @@ export class CalendarStore {
      * a freshly parked draft ends up looking expired.
      */
     createdAt: number;
+    repost?: boolean;
   }): void {
     this.db
       .prepare(
         `INSERT INTO calendar_announcement_drafts
            (token, event_id, occurrence_start_at, targets_json, content, thread_title,
             role_ids_json, everyone, image_url, discord_event_id, requested_by,
-            source_channel_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            source_channel_id, created_at, repost)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(token) DO UPDATE SET
            event_id            = excluded.event_id,
            occurrence_start_at = excluded.occurrence_start_at,
@@ -890,7 +895,8 @@ export class CalendarStore {
            everyone            = excluded.everyone,
            image_url           = excluded.image_url,
            discord_event_id    = excluded.discord_event_id,
-           created_at          = excluded.created_at`,
+           created_at          = excluded.created_at,
+           repost              = excluded.repost`,
       )
       .run(
         input.token,
@@ -906,6 +912,7 @@ export class CalendarStore {
         input.requestedBy,
         input.sourceChannelId,
         input.createdAt,
+        input.repost ? 1 : 0,
       );
   }
 
@@ -921,7 +928,7 @@ export class CalendarStore {
    */
   reserveBroadcast(eventId: number, occurrenceStartAt: number, channelId: string, token: string, now: number,
     options: { automatic?: boolean; repost?: boolean } = {}):
-    { reserved: boolean; token: string; messageId: string | null; outcome: string } {
+    { reserved: boolean; token: string; messageId: string | null; outcome: string; retryAfterMs?: number } {
     return this.db.transaction(() => {
       // Automatic and requested posts share this reservation, including while
       // either writer/send is awaiting the network. Legacy daily receipts count too.
@@ -938,10 +945,10 @@ export class CalendarStore {
         this.recordAnnouncement({ announceKey: announceKey(eventId, occurrenceStartAt), eventId, occurrenceStartAt,
           channelId, messageId: row.message_id, discordEventId: this.get(eventId)?.discord_event_id ?? null,
           announcedAt: row.reserved_at });
-        return { reserved: false, token: row.token, messageId: row.message_id, outcome: row.outcome };
+        return { reserved: false, token: row.token, messageId: row.message_id, outcome: row.outcome, retryAfterMs: row.reserved_at + 10 * 60_000 };
       }
       if (row && now - row.reserved_at < 10 * 60_000 && (!options.repost || row.outcome !== 'posted'))
-        return { reserved: false, token: row.token, messageId: row.message_id, outcome: row.outcome };
+        return { reserved: false, token: row.token, messageId: row.message_id, outcome: row.outcome, retryAfterMs: row.reserved_at + 10 * 60_000 };
       this.db.prepare(`INSERT INTO calendar_broadcast_deliveries VALUES (?, ?, ?, ?, ?, NULL, 'unconfirmed')
         ON CONFLICT(event_id, occurrence_start_at, channel_id) DO UPDATE SET
         token = excluded.token, reserved_at = excluded.reserved_at, message_id = NULL, outcome = 'unconfirmed'`)
@@ -961,6 +968,24 @@ export class CalendarStore {
     this.db.prepare(`DELETE FROM calendar_broadcast_deliveries
       WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND token = ? AND message_id IS NULL`)
       .run(eventId, occurrenceStartAt, channelId, token);
+  }
+
+  /** Replace only the receipt just inspected, never a newer send/lease that
+   * appeared while Discord was being checked. Both ledgers must agree. */
+  forgetBroadcastReceipt(eventId: number, occurrenceStartAt: number, channelId: string, messageId: string): boolean {
+    return this.db.transaction(() => {
+      const row = this.db.prepare(`SELECT message_id FROM calendar_broadcast_deliveries
+        WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ?`)
+        .get(eventId, occurrenceStartAt, channelId) as { message_id: string | null } | undefined;
+      const daily = this.db.prepare(`SELECT message_id FROM calendar_announcements WHERE announce_key = ? AND channel_id = ?`)
+        .get(announceKey(eventId, occurrenceStartAt), channelId) as { message_id: string | null } | undefined;
+      if ((!row && !daily) || (row && row.message_id !== messageId) || (daily && daily.message_id !== messageId)) return false;
+      this.db.prepare(`DELETE FROM calendar_broadcast_deliveries WHERE event_id = ? AND occurrence_start_at = ? AND channel_id = ? AND message_id = ?`)
+        .run(eventId, occurrenceStartAt, channelId, messageId);
+      this.db.prepare(`DELETE FROM calendar_announcements WHERE announce_key = ? AND channel_id = ? AND message_id = ?`)
+        .run(announceKey(eventId, occurrenceStartAt), channelId, messageId);
+      return true;
+    })();
   }
 
   renewBroadcastReservation(eventId: number, occurrenceStartAt: number, channelId: string, token: string, nowMs: number): boolean {
@@ -988,7 +1013,7 @@ export class CalendarStore {
       .prepare(
         `SELECT * FROM calendar_announcement_drafts
          WHERE source_channel_id = ? AND posted_at IS NULL
-         ORDER BY created_at DESC LIMIT 1`,
+         ORDER BY created_at DESC, rowid DESC LIMIT 1`,
       )
       .get(sourceChannelId) as AnnouncementDraftRow | undefined;
     return row ? toDraft(row) : null;
@@ -1010,6 +1035,16 @@ export class CalendarStore {
       .run(Date.now(), JSON.stringify([...messageIds]), token);
     return info.changes > 0;
   }
+
+  /** Finish the claimed attempt. Only failed destinations remain retryable;
+   * successful channels must never be replayed during a partial retry. */
+  finishAnnouncementDraft(token: string, messageIds: readonly string[], retryTargets: readonly BroadcastChannel[]): void {
+    this.db.prepare(`UPDATE calendar_announcement_drafts SET posted_message_ids_json = ?,
+      posted_at = CASE WHEN ? THEN NULL ELSE posted_at END,
+      targets_json = CASE WHEN ? THEN ? ELSE targets_json END WHERE token = ?`)
+      .run(JSON.stringify([...messageIds]), retryTargets.length > 0 ? 1 : 0,
+        retryTargets.length > 0 ? 1 : 0, JSON.stringify(retryTargets), token);
+  }
 }
 
 /** A drafted on-demand announcement, as stored. */
@@ -1029,6 +1064,7 @@ export interface AnnouncementDraft {
   createdAt: number;
   postedAt: number | null;
   postedMessageIds: string[];
+  repost: boolean;
 }
 
 interface AnnouncementDraftRow {
@@ -1047,6 +1083,7 @@ interface AnnouncementDraftRow {
   created_at: number;
   posted_at: number | null;
   posted_message_ids_json: string | null;
+  repost: number;
 }
 
 function parseStringArray(raw: string | null): string[] {
@@ -1105,6 +1142,7 @@ function toDraft(r: AnnouncementDraftRow): AnnouncementDraft {
     createdAt: r.created_at,
     postedAt: r.posted_at,
     postedMessageIds: parseStringArray(r.posted_message_ids_json),
+    repost: r.repost !== 0,
   };
 }
 

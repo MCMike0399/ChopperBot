@@ -23,12 +23,15 @@ let client: any;
 let channel: any;
 let beforeSend: (() => Promise<void>) | undefined;
 let writer: ReturnType<typeof vi.fn>;
+let deletedReceipts: Set<string>;
+let nextMessageId: number;
 
 function source(now = clock, requestText = 'anuncia el evento') {
   return new CalendarToolSource(store, 'moderator', now, undefined, {
     broadcaster: {
       resolve: async () => [{ query: 'anuncios', reason: 'ok', match: { id: CHANNEL, name: 'anuncios', kind: 'text' }, candidates: [] }],
       post: async ({ content }) => { const m = await channel.send({ content }); return { ok: true, messageId: m.id }; },
+      ...{ checkReceipt: async (_target: unknown, messageId: string) => deletedReceipts.has(messageId) ? 'deleted' as const : 'present' as const },
     },
     writeAnnouncement: writer,
     announcementRequestText: requestText,
@@ -52,12 +55,14 @@ beforeEach(async () => {
   store.setDiscordEventId(id, 'EVENT');
   clock = NOW;
   sent = [];
+  deletedReceipts = new Set();
+  nextMessageId = 100;
   beforeSend = undefined;
   channel = { guildId: 'GUILD', isTextBased: () => true,
     messages: { fetch: async ({ after, limit }: { after?: string; limit?: number }) => new Map(sent.filter(m => !after || BigInt(m.id) > BigInt(after)).slice(-(limit ?? 100)).map(m => [m.id, m])) },
     send: async ({ content }: { content: string }) => {
       if (beforeSend) { const hook = beforeSend; beforeSend = undefined; await hook(); }
-      const m = { id: String(100 + sent.length), content, author: { id: 'BOT' }, delete: async () => {} };
+      const m = { id: String(nextMessageId++), content, author: { id: 'BOT' }, delete: async () => {} };
       sent.push(m); return m;
     } };
   client = { user: { id: 'BOT' }, channels: { fetch: async () => channel }, guilds: { fetch: async () => ({ roles: { cache: new Map(), fetch: async () => new Map() } }) } };
@@ -69,6 +74,52 @@ beforeEach(async () => {
 afterEach(() => memory.close());
 
 describe('manual and daily announcement coordination', () => {
+  test('a deleted announcement can be previewed and confirmed again immediately, without a later automatic duplicate', async () => {
+    await manual();
+    deletedReceipts.add(sent[0]!.id);
+    sent.length = 0; // Moderator deleted the original Discord message.
+    clock += 60_000;
+    const preview = await source().handle('calendar_draft_announcement', { event_id: id, channels: ['anuncios'] });
+    expect(sent).toHaveLength(0);
+    const result = await source().handle('calendar_send_announcement', { token: (preview.payload as any).token });
+    expect(result.status).toBe('success');
+    expect(sent).toHaveLength(1);
+    await announcer().run();
+    expect(sent).toHaveLength(1);
+  });
+  test('an explicit repost works immediately and survives preview/confirmation across source instances', async () => {
+    await manual();
+    const preview = await source().handle('calendar_draft_announcement', { event_id: id, channels: ['anuncios'], repost: true });
+    const result = await source().handle('calendar_send_announcement', { token: (preview.payload as any).token });
+    expect(result.status).toBe('success');
+    expect(sent).toHaveLength(2);
+    await announcer().run();
+    expect(sent).toHaveLength(2);
+  });
+  test('repeated repost drafts in one model turn cannot create repeated pings', async () => {
+    await manual();
+    const tools = source();
+    for (const instruction of ['primero', 'segundo', 'tercero'])
+      await tools.handle('calendar_draft_announcement', { event_id: id, channels: ['anuncios'], instruction, publish_now: true, repost: true });
+    expect(sent).toHaveLength(2);
+  });
+  test('even an explicit repost cannot bypass an unconfirmed delivery', async () => {
+    channel.send = async () => { throw new Error('ambiguous timeout'); };
+    await manual();
+    channel.send = vi.fn();
+    await source().handle('calendar_draft_announcement', { event_id: id, channels: ['anuncios'], publish_now: true, repost: true });
+    expect(channel.send).not.toHaveBeenCalled();
+  });
+  test('a known pre-send failure keeps the approved draft retryable after permissions are fixed', async () => {
+    const tools = source();
+    (tools as any).options.broadcaster.post = async () => ({ ok: false, error: 'channel_not_sendable' });
+    const first = await tools.handle('calendar_draft_announcement', { event_id: id, channels: ['anuncios'], publish_now: true });
+    const token = (first.payload as any).token;
+    const retry = await source().handle('calendar_send_announcement', { token });
+    expect(retry.status).toBe('success');
+    expect(sent).toHaveLength(1);
+    expect(store.getAnnouncementDraft(token)?.postedMessageIds).toEqual([sent[0]!.id]);
+  });
   test('a manual same-day announcement prevents the next automatic ping', async () => {
     expect((await manual()).status).toBe('success');
     clock += 32_000;
@@ -80,6 +131,24 @@ describe('manual and daily announcement coordination', () => {
     clock += 32_000;
     const result = await manual();
     expect(result.payload).toMatchObject({ already_posted: true });
+    expect(result.payload).toMatchObject({ posted: false });
+    expect(sent).toHaveLength(1);
+  });
+  test('simultaneous deleted-receipt checks cannot both acquire a replacement lease', async () => {
+    await manual();
+    deletedReceipts.add(sent[0]!.id);
+    sent.length = 0;
+    const results = await Promise.all([manual(), manual()]);
+    expect(results.some(r => r.status === 'success')).toBe(true);
+    expect(sent).toHaveLength(1);
+  });
+  test('a legacy daily receipt can also recover after deletion', async () => {
+    store.recordAnnouncement({ announceKey: announceKey(id, START), eventId: id, occurrenceStartAt: START,
+      channelId: CHANNEL, messageId: 'LEGACY_DELETED', discordEventId: 'EVENT', announcedAt: clock });
+    deletedReceipts.add('LEGACY_DELETED');
+    await manual();
+    expect(sent).toHaveLength(1);
+    await announcer().run();
     expect(sent).toHaveLength(1);
   });
   test('a same-day receipt persists beyond the ten-minute manual repeat window and a new announcer instance', async () => {

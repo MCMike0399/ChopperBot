@@ -53,6 +53,8 @@ export interface CandidateChannel extends BroadcastChannel {
 
 /** Resolving mod words → channels, and posting to them. Faked in tests. */
 export interface CalendarBroadcaster {
+  /** Fresh exact receipt lookup. Only a Discord Unknown Message/Channel proves deletion. */
+  checkReceipt?(target: BroadcastChannel, messageId: string): Promise<'present' | 'deleted' | 'unknown'>;
   /**
    * Resolve each channel the mod named. Order and arity mirror the input, so
    * the caller can report per-query outcomes ("no encontré «foro poesia»").
@@ -73,7 +75,9 @@ export interface CalendarBroadcaster {
     threadTitle: string | null;
     /** Draft token — the idempotency key's stable half. */
     token: string;
-  }): Promise<{ ok: true; messageId: string } | { ok: false; error: string }>;
+    /** An intentional new forum post, even if its title already exists. */
+    repost?: boolean;
+  }): Promise<{ ok: true; messageId: string } | { ok: false; error: string; retrySafe?: boolean }>;
 }
 
 export interface BroadcasterDeps {
@@ -112,6 +116,21 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
   }
 
   return {
+    async checkReceipt(target, messageId) {
+      try {
+        const channel = await client.channels.fetch(target.kind === 'forum' ? messageId : target.id, { force: true });
+        if (!channel || !('guildId' in channel) || channel.guildId !== guildId) return 'unknown';
+        if (target.kind === 'forum') return 'parentId' in channel && channel.parentId === target.id ? 'present' : 'unknown';
+        if (!channel.isTextBased() || !('messages' in channel)) return 'unknown';
+        await channel.messages.fetch({ message: messageId, cache: false, force: true });
+        return 'present';
+      } catch (err) {
+        const code = (err as { code?: unknown }).code;
+        if (code === 10008 || code === 10003) return 'deleted';
+        log.warn({ err, channelId: target.id, messageId }, 'calendar.broadcast.receipt_check_failed');
+        return 'unknown';
+      }
+    },
     async resolve(queries): Promise<ChannelResolution[]> {
       const guild = await client.guilds.fetch(guildId).catch(() => null);
       if (!guild) {
@@ -121,7 +140,7 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
       return queries.map((query) => resolveOne(all, query));
     },
 
-    async post({ target, content, mentions, threadTitle, token }) {
+    async post({ target, content, mentions, threadTitle, token, repost }) {
       const allowedMentions = {
         // Explicit, like the daily announcement: @everyone can only fire
         // when it was actually resolved, and an invented role id can't ping.
@@ -134,7 +153,7 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
         if (!channel) return { ok: false, error: 'channel_not_found' };
 
         if (target.kind === 'forum') {
-          return await postForum({ channel, content, allowedMentions, threadTitle, target });
+          return await postForum({ channel, content, allowedMentions, threadTitle, target, repost, botId: client.user?.id ?? '' });
         }
 
         if (!channel.isTextBased() || !('send' in channel)) {
@@ -150,7 +169,8 @@ export function createBroadcaster({ client, guildId }: BroadcasterDeps): Calenda
       } catch (err) {
         const error = err instanceof Error ? err.message : String(err);
         log.warn({ err, channelId: target.id, kind: target.kind }, 'calendar.broadcast.post_failed');
-        return { ok: false, error };
+        const status = (err as { status?: number }).status;
+        return { ok: false, error, retrySafe: status !== undefined && [400, 401, 403, 404].includes(status) };
       }
     },
   };
@@ -209,6 +229,8 @@ async function postForum(input: {
   allowedMentions: { parse: string[]; roles: string[] };
   threadTitle: string | null;
   target: BroadcastChannel;
+  repost?: boolean;
+  botId: string;
 }): Promise<{ ok: true; messageId: string } | { ok: false; error: string }> {
   const { channel, content, allowedMentions, threadTitle, target } = input;
   const forum = channel as {
@@ -220,7 +242,7 @@ async function postForum(input: {
           allowedMentions: { parse: string[]; roles: string[] };
         };
       }): Promise<{ id: string }>;
-      fetchActive?(): Promise<{ threads: Map<string, { id: string; name: string }> }>;
+      fetchActive?(): Promise<{ threads: Map<string, { id: string; name: string; ownerId?: string | null }> }>;
     };
   };
   if (!forum.threads) return { ok: false, error: 'forum_not_postable' };
@@ -228,9 +250,9 @@ async function postForum(input: {
   const name = (threadTitle ?? '').trim();
   if (!name) return { ok: false, error: 'forum_needs_title' };
 
-  const active = await forum.threads.fetchActive?.().catch(() => null);
+  const active = input.repost ? null : await forum.threads.fetchActive?.().catch(() => null);
   const existing = active
-    ? [...active.threads.values()].find((t) => t.name === name)
+    ? [...active.threads.values()].find((t) => t.name === name && input.botId && t.ownerId === input.botId)
     : undefined;
   if (existing) {
     log.info({ channelId: target.id, threadId: existing.id }, 'calendar.broadcast.forum_post_exists');

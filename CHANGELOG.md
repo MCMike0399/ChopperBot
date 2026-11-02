@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.14.2 — 2026-11-02
+
+- **Ya puedes corregir y volver a publicar un anuncio.** Si el equipo pide «anúncialo otra vez», ChopperBot puede hacerlo al momento. Si borraste el anuncio anterior, comprueba que ya no existe y permite enviarlo de nuevo, también después de revisar el borrador y decir «va».
+- Si un envío falla, conserva el texto aprobado y permite reintentar solo en los canales pendientes. Los canales donde ya llegó no reciben otra copia por ese reintento.
+- Los avisos automáticos siguen evitando repetir anuncios. ChopperBot distingue mejor entre un envío nuevo, un aviso que ya existía y un intento que no pudo confirmar, sin sugerir borrar registros ni prometer reintentos por su cuenta.
+
 ## 2.14.1 — 2026-10-28
 
 - **Un solo aviso por evento.** Si el equipo anuncia una actividad del día en anuncios, ChopperBot ya lo reconoce y evita mandar enseguida otro aviso automático con un segundo ping. Los avisos anticipados siguen teniendo su recordatorio el día del evento.

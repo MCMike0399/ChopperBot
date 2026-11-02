@@ -146,6 +146,83 @@ named anuncios and general. `scripts/live-calendar-banner-smoke.ts <image> --ann
 this deliberately billed check; all physical announcement targets are remapped
 to private destinations with role pings disabled.
 
+## Deleted receipts, intentional reposts and recovery audit — v2.14.2 (2026-11-02)
+
+Live trigger `1566927221913030696` created calendar #52 and sent receipt
+`1566927342134235237`. The moderator requested revised copy, deleted the first
+post, previewed a new draft and confirmed «va» (`1566928227967180872`), then
+retried (`1566928590925205525`). Journal suppression kept returning that old
+receipt; fresh Discord REST returned **404 / 10008 Unknown Message**. The guard
+checked only SQLite, and no tool exposed the store's intentional-repost option.
+The moderator ultimately posted the corrected announcement manually; that human
+post and the production receipt were left untouched during this repair.
+
+- **Deleted receipt recovery:** requested sends check a blocked confirmed receipt
+  with fresh channel/message REST reads, bypassing caches. Only Unknown Message
+  / Unknown Channel proves deletion; permission/network errors remain unknown.
+  Forums check their recorded thread, including archived threads. Only the exact
+  inspected receipt is removed from both ledgers, transactionally; a newer
+  receipt or in-flight reservation cannot be erased by a stale lookup. Sending
+  immediately acquires the shared reservation again and fulfills the daily
+  ledger on success. Automatic jobs do not repost merely because a human deleted
+  an announcement; deletion recovery requires a requested send.
+- **Intentional repost:** `calendar_draft_announcement.repost:true` allows an
+  explicit moderator request to publish again immediately, even if the old post
+  exists. Migration **v13** adds a default-false draft column, so this intent
+  survives preview → «va» across turns/restarts. It creates a new post; it does
+  not edit/delete the old one. One source permits only one replacement attempt
+  per occurrence/destination/user turn, protecting against differing model
+  drafts. The model chooses the flag from the moderator's request; events-tier
+  authority, destination limits and mention allowlists still apply in code.
+  Unconfirmed deliveries cannot be forced by this flag. Forums allow the new
+  intentional thread; ordinary title adoption only considers bot-owned posts.
+- **Failure/partial retry:** a claimed draft is finalized with its actual message
+  IDs. Failed destinations alone are reopened, keeping the exact approved text
+  and original expiry; successful destinations cannot be replayed in that retry.
+  Known pre-send failures and definitive Discord 400/401/403/404 rejections
+  release the reservation. Ambiguous timeout/5xx outcomes retain the bounded
+  ten-minute reservation and expose `retry_after_iso`; they are not proof that
+  nothing arrived. Fully consumed tokens stay single-use. Supplied tokens and
+  fallback lookup are scoped to the current source channel; equal-time pending
+  drafts choose the newest inserted row.
+- **Truthful outcomes:** all-suppressed deliveries return `posted:false` with the
+  existing IDs, rather than a new-send success. Logs separate `sent` / `deduped`
+  / `failed`; receipt replacement logs `calendar.broadcast.receipt_replaced`.
+  Tool results and prompt guidance forbid imaginary registry deletion,
+  unspecified waiting periods, extra confirmation loops and autonomous retries.
+  These prose instructions do not guarantee every model reply's wording.
+
+Audit coverage included manual/daily coordination, legacy receipts, concurrent
+receipt checks, explicit repost loops, ambiguous failures, definitive permission
+rejections, forum title guards, partial sends, token ownership and expiry. The
+remaining ten-minute ambiguity guard, nonce/accepted-message repair and calendar
+write authority are deliberate protections. Crash after a token claim can still
+leave an incomplete attempt; do not treat an empty receipt list as success or
+blindly replay it. Ordinary cross-token repeat protection is bounded, not an
+unlimited exactly-once guarantee.
+
+Proof: **1,738 tests / 139 files**, typecheck/build/format passed. The original
+preview/deletion/confirmation regression failed with zero sends before the fix
+and passed afterward. Built-code `scripts/live-calendar-delivery-smoke.ts`
+verified real private Discord sends/readbacks: deleted receipt recovery with
+byte-identical preview text, immediate repost across source instances, persisted
+receipt IDs, repeated confirmation refusal, partial retry only to the failed
+channel, and fresh daily jobs producing zero extra posts. The final deliberately
+billed high-effort DeepSeek replay used the production calendar prompt, real
+announcement writer and broadcaster; it selected repost and delivered exactly
+one private message, replying «salió otra vez … sin ping». Five proof messages
+remained across two temporary private channels before cleanup; both channels
+were removed. Zero public proof messages, role pings or production calendar DB
+writes. Forum recovery/repost and failure status injection were mocked tests.
+The live service restarted active/Discord-ready with v13 applied and zero crash
+restarts; November/ICS publication was observed after startup.
+
+Reproduce deliberately after build: `npx tsx scripts/live-calendar-delivery-smoke.ts`
+(before 23:30 CDMX). It creates/deletes private proof channels, uses scratch
+SQLite and makes billed model calls; never run from CI. The full suite also
+exposed an unrelated October conversation fixture aging out of retention; that
+test now pins wall time, without changing production retention.
+
 ## Existing calendar behavior
 
 - **Writing is mod-only, in code (added 2026-08-13).** The prompt always said "cualquier moderadorx de este canal", but nothing checked — the real guarantee was "whoever can post in the channel", and an event created here is _published_ state (month PDF, ICS, the Discord events list, the next morning's announcement to the whole server). `buildTurn` calls `isEventTurn()` and independently checks current write consent (see docs/framework.md); a caller without event authority or a current write request gets the **read-only slice** (`calendar_list_upcoming` / `calendar_search_events` / `calendar_get_event`, no publisher, no Discord-event syncer, attachments not offered as banners) plus a short "solo consulta" prompt, and `allowWrite:false` re-refuses at the point of effect. Fails closed. Asking what's coming up stays open to everyone in the channel.
@@ -196,7 +273,7 @@ to private destinations with role pings disabled.
 - **On-demand announcements — "anúncialo en eventos, general y foro poesía"** (added 2026-08-18, v1.24.0; `broadcast.ts` = pure policy, `broadcast-channels.ts` = the Discord half, two mod tools, migrations **v9→v10**; one-shot publish + Usuarix default v1.28.0). A mod can now tell the bot to publish an event's announcement **now**, in the channels they name. **"Anúncialo / publícalo" is the confirmation** (`publish_now: true` posts in the same `calendar_draft_announcement` call). A later "sí" / "sip" / "QUE SI" spends `calendar_send_announcement` and **must not re-draft**. The preview-then-yes path is only when they asked to _see_ the text first ("redáctame", "¿cómo quedaría?"). Live miss 2026-08-31 (Darko, _"anuncia el evento de hoy en general"_ → draft + "¿lo publico así?" → "si" drafted again → they had to yell QUE SI): send used to refuse a garbage token with no `tool_call` log, so the model drafted a second time. A missing/garbage token now falls back to the newest pending draft of **this** channel.
    - **Image + announce: why the tool bundle never leaves the request (incident 2026-09-03, v1.28.2; structurally impossible since the v4.1 migration 2026-09-14).** Live: a mod attached a flyer, pasted the Cabaret synopsis, and said _"Re haz el anuncio de la pelicula de hoy"_. Because an image was attached and images were then routed to a separate images-only model, `ask()` handed the **entire calendar tool bundle** to Nova Lite. Nova looped `calendar_draft_announcement` (`publish_now: true`) ten times — three real publishes to general + eventos, seven cache hits — then the Converse forcing pass 400'd (`toolConfig` omitted while history still had toolUse/toolResult) and the mod got "No pude generar una respuesta". The v1.28.2 mitigation was to transcribe with Nova and let the **text brain** run the calendar tools. **The current code needs no such split:** `deepseek-flash` is natively multimodal, so the image rides the _same_ request as the system prompt, the history and the tool bundle (see [docs/llm.md](../llm.md)), and the model that reads the flyer is the model that decides what to do with it — "anúncialo con este flyer" is one DeepSeek call. The old failure cannot recur structurally, because there is no longer a second, weaker vision model for a whole tool bundle to land on. The forcing-pass 400 is gone with Converse too: the one remaining forcing pass re-sends without `tools` on the OpenAI-compatible path, which needs no block flattening.
    - **Why:** live, in the calendar channel, a mod asked _"ayúdame a publicar un anuncio que diga bandaaaa, mañana a las 8pm tendremos Círculo de poemas propios"_. The bot found the event, confirmed its Discord event, and explained that the automatic 10:00 AM post covers it — a correct answer to that question. The follow-up, _"así está perfecto solo anúncialo tanto en eventos como en general y foro poesía"_, it structurally could not do: the announcer knows exactly ONE channel (`CALENDAR_ANNOUNCE_CHANNEL_ID`) and only fires on the day of, on its own schedule. The prompt now says in as many words that **the automatic announcement is never an answer to "publica esto"**.
-   - **Two tools, because a post to the community cannot be undone** (deleting it does not retract its notification — the 2026-08-11 lesson above). `calendar_draft_announcement` writes the text, resolves the channels and parks a `token`; with `publish_now: true` it then posts in the same call. Without that flag it **posts nothing** and the model shows the text; `calendar_send_announcement` spends the token and posts **the stored text, byte-identical** — never a regenerated one. Single-use is SQLite's (`UPDATE … WHERE posted_at IS NULL`), and migration v12 adds a persistent event/occurrence/destination reservation across different tokens for ten minutes, so repeated model drafts cannot double-ping; the token is burned _before_ the fan-out, making a crash mid-send under-deliver rather than double-post. Drafts expire in 30 min (`DRAFT_TTL_MS`) so "sí" tomorrow can't resurrect yesterday's _"mañana a las 8pm"_.
+   - **Two tools, because a post to the community cannot be undone** (deleting it does not retract its notification — the 2026-08-11 lesson above). `calendar_draft_announcement` writes the text, resolves the channels and parks a `token`; with `publish_now: true` it then posts in the same call. Without that flag it **posts nothing** and the model shows the text; `calendar_send_announcement` spends the token and posts **the stored text, byte-identical** — never a regenerated one. Single-use starts with SQLite's atomic claim (`UPDATE … WHERE posted_at IS NULL`), and migration v12 adds a persistent event/occurrence/destination reservation across different tokens for ten minutes. Since v2.14.2, finalization stores actual receipts and reopens only failed destinations; migration v13 persists an explicit intentional-repost flag. A crash after claim still under-delivers rather than blindly replaying a potentially accepted send. Drafts expire in 30 min (`DRAFT_TTL_MS`) so "sí" tomorrow can't resurrect yesterday's _"mañana a las 8pm"_.
    - **Channel resolution answers the mod's actual problem.** Ids, `<#id>` and plain words all work, matched through this guild's emoji/pipe decoration and accents ("general" → `💬│general`, "foro poesia" → `💬│foro-poesía`). Unresolvable queries are **never dropped silently or guessed**: `ambiguous` ("foro" naming two), `not_sendable` (exists, bot can't write) and `unknown` are distinct because they need opposite answers from the mod, and each carries the sentence the model should say. Fan-out is capped at `MAX_BROADCAST_CHANNELS` (5) — a governor on blast radius, not performance.
    - **Forums are targets too, and post as posts** (the live miss: the first verify run answered _"no encontré ningún canal con ese nombre"_ for `foro poesia`, because a forum takes no loose messages and so was excluded from the candidate list entirely). `BroadcastChannel.kind` carries `text`/`forum` from resolution all the way into the stored draft — re-deriving it at send time could disagree with the preview — and a forum target is posted as a **new forum post** whose title is deterministic (`forumPostTitle`: event title + date, cut on a word inside Discord's 100-char cap). Thread creation has no `nonce`, so exactly-once there is approximated by looking for an active post with that exact title before creating.
    - **Mentions on a community-only post (general / anuncios) default to the 10:00 list — live: Usuarix `1436225305898389604`, never `@everyone`** (v1.28.0; names since v1.24.1). Same role the morning `#anuncios` post already pings; it is already in `calendar_settings.announce_mentions_json` / `set_announce_mentions`. Darko's 2026-08-31 extra post to general went out silent (`mentions:0`) while the 10:01 anuncios post had pinged Usuarix. `resolveAnnouncementMentions`: empty `mentions` + every target is general/anuncios → that allowlist, **with the `everyone` token stripped** so an extra post cannot escalate to `@everyone` even if that token is allowed for the morning run; a foro/eventos target, or a mixed fan-out (general + foro), stays silent unless they asked; `"nadie"` / `"sin ping"` opts out. A ping they _do_ ask for is still only honoured for roles inside `set_announce_mentions`. Administrator on the bot is **not** the gate: Discord would let an admin ping anyone; the setting is. The earlier live miss (2026-08-18, _"perfecto usa el rol usuarix"_ → the bot invented "ese rol no está en la lista") was two holes, neither of them Discord: (1) the prompt never listed which roles ARE allowed, so the model passed `mentions: []` and then fabricated the refusal; (2) `resolveBroadcastMentions` treated any non-snowflake as junk, so even `"usuarix"` would have been refused. Names still resolve through the same fold as mod-role matching (`normalizeRoleName`), the prompt lists the allowed roles by name+id, and the draft payload carries `mentions: [{id, name}]`. The model is still forbidden from _writing_ mentions in the body (`stripModelMentions`); `allowedMentions` gates `@everyone` but does not stop it _rendering_.
@@ -226,6 +303,6 @@ Calendar opts into the rolling ambient transcript (v2.6.0), with the same fresh 
 
 Proof (2026-10-04): 1,426 tests/typecheck/build green; live management-channel drive read 62 messages / 34,583 chars, used list_upcoming + get_event, 30,125 aggregate input / 481 output (313 reasoning), 49.7% cache hit. No write tools or effects; actual calendar publication worked after restart without Administrator.
 
-Broadcast reliability (v2.6.1): the read-only September 3 journal/DB replay identifies event #12, occurrence 1788487200000: three different publish_now tokens produced two accepted posts each roughly 13 seconds apart; seven later calls were tool-cache hits. Audit deletes matched the bot’s copies. calendar_broadcast_deliveries (migration v12) reserves each event/occurrence/channel before POST, independently from draft text/token. A recent known message is returned as already posted; no second send or ping occurs, and the model is told the replacement text was not applied. Unconfirmed attempts remain explicit and are not replayed inside the ten-minute window. A new occurrence/channel or later authorized request can reserve separately. This deliberately suppresses an immediate correction rather than silently posting or claiming it replaced the old text.
+Broadcast reliability (v2.6.1): the read-only September 3 journal/DB replay identifies event #12, occurrence 1788487200000: three different publish_now tokens produced two accepted posts each roughly 13 seconds apart; seven later calls were tool-cache hits. Audit deletes matched the bot’s copies. calendar_broadcast_deliveries (migration v12) reserves each event/occurrence/channel before POST, independently from draft text/token. A recent known message is returned as already posted; no second send or ping occurs, and the model is told the replacement text was not applied. Unconfirmed attempts remain explicit and are not replayed inside the ten-minute window. A new occurrence/channel or later authorized request can reserve separately. The original v2.6.1 implementation deliberately suppressed immediate corrections. v2.14.2 above adds deleted-receipt recovery and explicit intentional reposts while retaining the guard for ordinary retries.
 
 Text broadcasts retain nonce/enforceNonce and now share the announcer’s repair principle: capture the pre-send boundary, keep the earliest identical new bot copy, delete only newer duplicates, and adopt an accepted message after a lost response. Old/other-author messages are untouched; cleanup failures are logged. Forums retain their active-title guard. Mocked effect proofs cover different draft tokens, multiple destinations, persisted reservations, unconfirmed sends and duplicate/orphan repair. The live v12 ledger exists (zero proof deliveries); 1,435 tests/typecheck/build and actual restart publication passed. No new broadcast, delete or ping was sent for proof.

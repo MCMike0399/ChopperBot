@@ -160,6 +160,7 @@ export interface CalendarToolSourceOptions {
 export class CalendarToolSource implements ToolSource {
   readonly name = 'calendar';
   private readonly options: CalendarToolSourceOptions;
+  private readonly broadcastAttempts = new Set<string>();
 
   constructor(
     private readonly store: CalendarStore,
@@ -475,6 +476,10 @@ export class CalendarToolSource implements ToolSource {
               type: 'boolean',
               description:
                 'true when they already asked to announce/publish — posts this draft immediately. Omit/false only when they asked to see the text first.',
+            },
+            repost: {
+              type: 'boolean',
+              description: 'true ONLY when the moderator explicitly asks to publish again or replace a previous announcement. Allows an intentional new copy immediately; never bypasses an unconfirmed send. Stored with the preview for later confirmation. Deleted receipts are checked automatically without this flag.',
             },
           },
           required: ['event_id', 'channels'],
@@ -1181,6 +1186,7 @@ export class CalendarToolSource implements ToolSource {
       requestedBy: this.callerUserId,
       sourceChannelId: this.options.sourceChannelId ?? 'unknown',
       createdAt: this.nowMs,
+      repost: obj.repost === true,
     });
     log.info(
       {
@@ -1219,6 +1225,7 @@ export class CalendarToolSource implements ToolSource {
       pings_everyone: mentions.everyone,
       has_event_link: target.discordEventUrl !== null,
       attaches_flyer: false,
+      repost: obj.repost === true,
     };
 
     if (obj.publish_now === true) {
@@ -1233,20 +1240,19 @@ export class CalendarToolSource implements ToolSource {
           payload: {
             ...preview,
             ...(sent.payload as Record<string, unknown>),
-            posted: true,
             next_step:
-              'Ya se publicó. Confirma en una línea nombrando los canales. NO pidas otro sí.',
+              'Usa posted, channels, deduped_channel_ids y note para informar lo que ocurrió. NO pidas otro sí ni afirmes cambios en canales omitidos.',
           },
         };
       }
       return {
-        status: 'success',
+        status: 'error',
         payload: {
           ...preview,
           posted: false,
           send_error: sent.payload,
           next_step:
-            'Redacté el anuncio pero no pude publicarlo. Muestra el texto y, si dicen que sí, llama calendar_send_announcement con el token.',
+            'No se publicó. Explica send_error y su recuperación concreta; el token conserva solo destinos fallidos. No inventes que puedes borrar registros, no sugieras borrar mensajes ni esperar sin un plazo indicado.',
         },
       };
     }
@@ -1278,7 +1284,8 @@ export class CalendarToolSource implements ToolSource {
       };
     }
     const token = asOptionalString(obj.token);
-    const fromToken = token ? this.store.getAnnouncementDraft(token) : null;
+    const candidate = token ? this.store.getAnnouncementDraft(token) : null;
+    const fromToken = candidate && candidate.sourceChannelId === (this.options.sourceChannelId ?? 'unknown') ? candidate : null;
     // Live 2026-08-31: Darko said "si" and the model passed a token that
     // wasn't the parked draft (or drafted again). A missing/garbage token
     // with a pending draft in THIS channel is a yes, not a new composition.
@@ -1299,8 +1306,8 @@ export class CalendarToolSource implements ToolSource {
       return {
         status: 'error',
         payload: {
-          error: 'Ese anuncio ya se publicó — no lo voy a publicar dos veces.',
-          already_posted: true,
+          error: draft.postedMessageIds.length ? 'Ese borrador ya se envió; usa un nuevo borrador con repost:true solo si pidieron otra publicación.' : 'Ese borrador tiene un envío en curso o sin confirmar. No puedo afirmar que se publicó ni repetirlo ahora.',
+          already_posted: draft.postedMessageIds.length > 0,
           posted_message_ids: draft.postedMessageIds,
         },
       };
@@ -1334,7 +1341,7 @@ export class CalendarToolSource implements ToolSource {
         payload: { error: 'No puedo publicar anuncios desde aquí (no tengo el contexto del servidor).' },
       };
     }
-    if (!this.store.markDraftPosted(draft.token, [])) {
+    if (!this.store.markDraftPosted(draft.token, draft.postedMessageIds)) {
       return {
         status: 'error',
         payload: { error: 'Ese anuncio ya se publicó — no lo voy a publicar dos veces.', already_posted: true },
@@ -1343,16 +1350,30 @@ export class CalendarToolSource implements ToolSource {
 
     const mentions: BroadcastMentions = { roleIds: draft.roleIds, everyone: draft.everyone };
     const posted: Array<{ channel_id: string; message_id: string }> = [];
-    const failed: Array<{ channel_id: string; error: string }> = [];
+    const failed: Array<{ channel_id: string; error: string; retry_after_iso?: string }> = [];
     const deduped: string[] = [];
     for (const target of draft.targets) {
-      const reservation = this.store.reserveBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, draft.token, this.nowMs);
+      const key = `${draft.eventId}:${draft.occurrenceStartAt}:${target.id}`;
+      // A repost is one explicit action per user turn, not permission for the
+      // model to loop with different drafts/wording and ring the role repeatedly.
+      const attempted = this.broadcastAttempts.has(key);
+      this.broadcastAttempts.add(key);
+      let reservation = this.store.reserveBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, draft.token, this.nowMs);
+      if (!reservation.reserved && reservation.messageId && !attempted) {
+        const replace = draft.repost || await broadcaster.checkReceipt?.(target, reservation.messageId).catch(() => 'unknown') === 'deleted';
+        if (replace && this.store.forgetBroadcastReceipt(draft.eventId, draft.occurrenceStartAt, target.id, reservation.messageId)) {
+          log.info({ eventId: draft.eventId, channelId: target.id, repost: draft.repost }, 'calendar.broadcast.receipt_replaced');
+        }
+        // Re-read after the async check: another turn may have acquired a lease.
+        reservation = this.store.reserveBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, draft.token, this.nowMs);
+      }
       if (!reservation.reserved) {
         log.info({ eventId: draft.eventId, channelId: target.id, outcome: reservation.outcome }, 'calendar.broadcast.duplicate_suppressed');
         if (reservation.messageId) {
           posted.push({ channel_id: target.id, message_id: reservation.messageId });
           deduped.push(target.id);
-        } else failed.push({ channel_id: target.id, error: 'previous_delivery_unconfirmed_no_retry' });
+        } else failed.push({ channel_id: target.id, error: 'previous_delivery_unconfirmed_no_retry',
+          ...(reservation.retryAfterMs ? { retry_after_iso: new Date(reservation.retryAfterMs).toISOString() } : {}) });
         continue;
       }
       const res = await broadcaster.post({
@@ -1362,19 +1383,23 @@ export class CalendarToolSource implements ToolSource {
         imageUrl: null,
         threadTitle: draft.threadTitle,
         token: reservation.token,
-      });
+        repost: draft.repost,
+      }).catch((err: unknown) => ({ ok: false as const, error: err instanceof Error ? err.message : String(err) }));
       if (res.ok) {
         this.store.finishBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, reservation.token, res.messageId,
           { channelId: resolveAnnounceSettings(this.store).channelId, discordEventId: draft.discordEventId, nowMs: this.nowMs });
         posted.push({ channel_id: target.id, message_id: res.messageId });
       }
       else {
-        if (PRE_SEND_BROADCAST_ERRORS.has(res.error))
+        const retrySafe = PRE_SEND_BROADCAST_ERRORS.has(res.error) || ('retrySafe' in res && res.retrySafe);
+        if (retrySafe)
           this.store.releaseBroadcast(draft.eventId, draft.occurrenceStartAt, target.id, reservation.token);
-        failed.push({ channel_id: target.id, error: res.error });
+        failed.push({ channel_id: target.id, error: res.error,
+          ...(!retrySafe ? { retry_after_iso: new Date(this.nowMs + 10 * 60_000).toISOString() } : {}) });
       }
     }
-    this.store.markDraftPosted(draft.token, posted.map((p) => p.message_id));
+    this.store.finishAnnouncementDraft(draft.token, [...draft.postedMessageIds, ...posted.map((p) => p.message_id)],
+      draft.targets.filter(t => failed.some(f => f.channel_id === t.id)));
 
     log.info(
       {
@@ -1382,6 +1407,8 @@ export class CalendarToolSource implements ToolSource {
         token: draft.token,
         eventId: draft.eventId,
         posted: posted.length,
+        sent: posted.length - deduped.length,
+        deduped: deduped.length,
         failed: failed.length,
         ms: Date.now() - t0,
       },
@@ -1391,13 +1418,14 @@ export class CalendarToolSource implements ToolSource {
     if (posted.length === 0) {
       return {
         status: 'error',
-        payload: { error: 'No pude publicar en ninguno de los canales.', failed },
+        payload: { error: 'No pude publicar en ninguno de los canales.', posted: false, token: draft.token, failed,
+          note: 'El borrador conserva los destinos fallidos. Un envío sin confirmar no prueba fallo: no lo fuerces ni prometas reintentar solo. Una vez aclarado, reintenta este token. Los errores previos al envío permiten reintento inmediato tras corregir la causa.' },
       };
     }
     return {
       status: 'success',
       payload: {
-        posted: true,
+        posted: posted.length > deduped.length,
         event_id: draft.eventId,
         ...(deduped.length ? { deduped_channel_ids: deduped, already_posted: true } : {}),
         channels: posted.map((p) => ({ ...p, mention: `<#${p.channel_id}>` })),

@@ -392,6 +392,26 @@ describe('calendar_draft_announcement', () => {
 });
 
 describe('calendar_send_announcement', () => {
+  test('retrying a partial failure sends only failed targets and keeps all receipts', async () => {
+    const ev = createSeries();
+    const p = await draft(makeSource(), { event_id: ev.id, channels: ['eventos', 'general'] });
+    postResult = (channelId) => channelId === CHANNELS.general.id
+      ? { ok: false, error: 'channel_not_sendable' } : { ok: true, messageId: 'first-receipt' };
+    await makeSource().handle('calendar_send_announcement', { token: p.payload.token });
+    postResult = () => ({ ok: true, messageId: 'second-receipt' });
+    const retry = await makeSource().handle('calendar_send_announcement', { token: p.payload.token });
+    expect(retry.status).toBe('success');
+    expect(posts.map(p => p.channelId)).toEqual([CHANNELS.eventos.id, CHANNELS.general.id, CHANNELS.general.id]);
+    expect(store.getAnnouncementDraft(String(p.payload.token))?.postedMessageIds).toEqual(['first-receipt', 'second-receipt']);
+    expect((await makeSource().handle('calendar_send_announcement', { token: p.payload.token })).status).toBe('error');
+  });
+  test('an explicit token cannot send a draft from another source channel', async () => {
+    const ev = createSeries();
+    const p = await draft(makeSource(), { event_id: ev.id, channels: ['general'] });
+    const other = new CalendarToolSource(store, 'mod-user', NOW, undefined, { broadcaster: fakeBroadcaster(), sourceChannelId: 'OTHER' });
+    expect((await other.handle('calendar_send_announcement', { token: p.payload.token })).status).toBe('error');
+    expect(posts).toHaveLength(0);
+  });
   async function drafted(): Promise<string> {
     const ev = createSeries();
     const { payload: p } = await draft(makeSource(), {
