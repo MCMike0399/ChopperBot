@@ -56,8 +56,21 @@ describe("general-chat instruction boundaries", () => {
       expect(prompt).toContain(
          "no tienes voto, mando ni autoridad constituyente",
       );
-      expect(prompt).toContain("apelaciones");
-      expect(prompt).toContain("no amplía las herramientas");
+      expect(prompt).toContain("Apelación por ticket");
+      expect(prompt).toContain(
+         "nunca autorizan al bot a sancionar automáticamente",
+      );
+      expect(prompt).toContain(
+         "Sin gravedad ni pruebas, Moderación no puede sancionar",
+      );
+      expect(prompt).toContain(
+         "una falta de pruebas no demuestra falsificación",
+      );
+      expect(prompt).toContain("Tres ausencias consecutivas");
+      expect(prompt).toContain("no llevas un cómputo ni retiras roles");
+      expect(prompt).toContain("Video es subcomisión");
+      expect(prompt).toContain("aprobación en asamblea");
+      expect(prompt).toContain("sin inventar números de artículo");
    });
 
    test("display names and channel names remain quoted metadata in the per-turn tail", () => {

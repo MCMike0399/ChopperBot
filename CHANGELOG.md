@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.15.1 — 2026-11-03
+
+- **ChopperBot se pone al día con los Estatutos del 31 de octubre.** Afinamos cómo orienta sobre denuncias, sanciones y apelaciones: atender una denuncia grave no depende de tener capturas, y los conflictos no graves sin pruebas se encaminan a mediación.
+- Aclara los requisitos de las tres comisiones, el paso de los videos por asamblea y las diferencias entre comités estatales, alianzas de servidores y el Frente Unido Popular.
+- La Asamblea conserva su autoridad y las sanciones siguen siendo decisión de moderación. El bot no vota, no aprueba reformas ni retira roles por su cuenta; la verificación de identidad corresponde a las personas responsables.
+
 ## 2.15.0 — 2026-11-03
 
 - **ChopperBot puede buscar lo que no encuentras en Discord.** Si preguntas por una minuta, un acuerdo o una publicación, puede revisar mensajes de los últimos 30 días en varios canales y darte el enlace a lo que encuentre.
