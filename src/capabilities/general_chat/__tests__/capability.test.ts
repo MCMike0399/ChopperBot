@@ -362,7 +362,13 @@ describe("GeneralChatCapability — RevZ guild profile", () => {
          "server_list_channels",
          "server_list_discord_events",
          "server_member_lookup",
+         "server_search_messages",
       ]);
+      expect(turn.system).toContain(
+         "consulta server_search_messages antes de afirmar",
+      );
+      expect(turn.system).toContain("ChopperBot sí puede grabar");
+      expect(turn.system).toContain("retoma la búsqueda");
       h.memory.close();
    });
 

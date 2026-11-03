@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.15.0 — 2026-11-03
+
+- **ChopperBot puede buscar lo que no encuentras en Discord.** Si preguntas por una minuta, un acuerdo o una publicación, puede revisar mensajes de los últimos 30 días en varios canales y darte el enlace a lo que encuentre.
+- Si le dices «está en tal canal», puede retomar la búsqueda y corregir una respuesta anterior. Reconoce que sí graba y publica minutas cuando moderación inicia una sesión, y distingue publicarlas de su aprobación por la asamblea.
+- Las búsquedas respetan el acceso a cada canal y explican sus límites: no encontrar algo en lo revisado no significa que nunca haya existido. Las fechas de publicación incluyen la hora de CDMX para ubicar bien «ayer».
+
 ## 2.14.2 — 2026-11-02
 
 - **Ya puedes corregir y volver a publicar un anuncio.** Si el equipo pide «anúncialo otra vez», ChopperBot puede hacerlo al momento. Si borraste el anuncio anterior, comprueba que ya no existe y permite enviarlo de nuevo, también después de revisar el borrador y decir «va».

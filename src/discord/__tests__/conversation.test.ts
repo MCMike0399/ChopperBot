@@ -12,6 +12,7 @@ import {
    type ConversationMessage,
    type ConversationProvider,
 } from "../conversation.js";
+import { ConversationToolSource } from "../../capabilities/general_chat/conversation-tools.js";
 import { gatherTurnContext } from "../handlers.js";
 
 const NOW = Date.parse("2026-10-04T16:00:00Z");
@@ -293,6 +294,44 @@ describe("live access gates", () => {
       h.guild.members.fetch.mockRejectedValueOnce(new Error("not found"));
       await expect(source.fetchPage(CID, undefined, 100)).rejects.toThrow();
       expect(h.fetchMessages).toHaveBeenCalledTimes(1);
+   });
+
+   test("message discovery cannot export restricted history even for a caller who can read it", async () => {
+      const h = accessHarness();
+      h.setPublic(null);
+      const source = new ConversationToolSource(
+         createDiscordConversationProvider(
+            () => h.client,
+            "guild",
+            "caller",
+            "other",
+            "bot",
+         ),
+         "other",
+         NOW,
+         undefined,
+         false,
+         async () => false,
+         {
+            listViewableChannels: async () => [
+               {
+                  id: CID,
+                  name: "secret-minutas",
+                  type: "texto",
+                  categoryName: null,
+                  categoryPosition: 0,
+                  position: 0,
+                  topic: null,
+               },
+            ],
+         },
+      );
+      const result = await source.handle("server_search_messages", {
+         query: "minuta",
+      });
+      expect(h.fetchMessages).not.toHaveBeenCalled();
+      expect(JSON.stringify(result.payload)).not.toContain("secret-minutas");
+      expect(JSON.stringify(result.payload)).not.toContain(CID);
    });
 
    test("private history cannot flow to a different destination", async () => {

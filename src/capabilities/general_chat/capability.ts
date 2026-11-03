@@ -158,6 +158,9 @@ export class GeneralChatCapability implements Capability {
       const banRequest =
          parsedBan && ctx.messageId && this.db ? parsedBan : null;
       const client = this.getDiscordClient();
+      const directory = ctx.guildId
+         ? createDiscordDirectoryProvider(() => client, ctx.guildId, ctx.userId)
+         : undefined;
       const access =
          ctx.guildId &&
          moderator &&
@@ -218,6 +221,7 @@ export class GeneralChatCapability implements Capability {
                      ctx.userId,
                      this.db,
                   ),
+               directory,
             ),
          );
          if (partner)
@@ -396,15 +400,7 @@ export class GeneralChatCapability implements Capability {
                /* no member effect; degraded DB cannot authorize one */
             }
          }
-         sources.push(
-            new ServerDirectoryToolSource(
-               createDiscordDirectoryProvider(
-                  () => getClient(),
-                  ctx.guildId,
-                  ctx.userId,
-               ),
-            ),
-         );
+         sources.push(new ServerDirectoryToolSource(directory!));
          liveHowTo = await loadHowToBlock(
             () => getClient(),
             ctx.guildId,
