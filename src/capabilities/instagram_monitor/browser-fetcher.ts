@@ -274,7 +274,6 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
    readonly requestsPerPoll = BROWSER_REQUESTS_PER_POLL;
    private readonly auth: InstagramAuth | null;
    private readonly userAgent: string | undefined;
-   private readonly executablePath: string | null;
    private readonly idleShutdownMs: number;
    private readonly navigationTimeoutMs: number;
    private readonly timelineTimeoutMs: number;
@@ -294,7 +293,6 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
    ) {
       this.auth = auth;
       this.userAgent = userAgent;
-      this.executablePath = resolveBrowserExecutable();
       this.idleShutdownMs = options.idleShutdownMs ?? DEFAULT_IDLE_SHUTDOWN_MS;
       this.navigationTimeoutMs =
          options.navigationTimeoutMs ?? DEFAULT_NAVIGATION_TIMEOUT_MS;
@@ -342,14 +340,17 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
 
    private async ensureContext(): Promise<BrowserContext> {
       if (this.context && this.browser?.isConnected()) return this.context;
-      if (!this.executablePath) {
+      // Playwright's shared cache can replace/collect a revision while this
+      // long-lived fetcher is idle. Resolve again for each browser launch.
+      const executablePath = resolveBrowserExecutable();
+      if (!executablePath) {
          throw new Error(
             "No Chromium executable found for the Instagram browser fetcher. Install chromium " +
                "or set IG_BROWSER_EXECUTABLE_PATH.",
          );
       }
       const launched = await chromium.launch({
-         executablePath: this.executablePath,
+         executablePath,
          headless: true,
          args: [
             // The service runs as an unprivileged user without user namespaces on
@@ -373,7 +374,7 @@ export class BrowserInstagramFetcher implements InstagramFetcher {
       });
       await context.addCookies(authCookies(this.auth));
       log.info(
-         { executablePath: this.executablePath, authed: this.auth !== null },
+         { executablePath, authed: this.auth !== null },
          "instagram_monitor.browser.launched",
       );
       this.context = context;

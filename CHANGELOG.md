@@ -14,6 +14,10 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.15.2 — 2026-11-10
+
+- **Se recupera el monitor de Instagram.** Corregimos un fallo que impedía revisar las cuentas seguidas cuando se actualizaba el navegador del servidor.
+
 ## 2.15.1 — 2026-11-03
 
 - **ChopperBot se pone al día con los Estatutos del 31 de octubre.** Afinamos cómo orienta sobre denuncias, sanciones y apelaciones: atender una denuncia grave no depende de tener capturas, y los conflictos no graves sin pruebas se encaminan a mediación.

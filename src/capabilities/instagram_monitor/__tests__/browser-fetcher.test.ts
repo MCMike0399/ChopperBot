@@ -1,4 +1,13 @@
 import { EventEmitter } from "node:events";
+import {
+   existsSync,
+   mkdirSync,
+   mkdtempSync,
+   rmSync,
+   writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { chromium } from "playwright-core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -263,6 +272,68 @@ describe("BrowserInstagramFetcher response capture", () => {
    afterEach(() => {
       vi.restoreAllMocks();
       vi.unstubAllEnvs();
+   });
+
+   it("keeps fetching after a cached Chromium revision is replaced between polls", async () => {
+      const cache = mkdtempSync(join(tmpdir(), "ig-browser-cache-"));
+      vi.stubEnv("IG_BROWSER_EXECUTABLE_PATH", "");
+      vi.stubEnv("PLAYWRIGHT_BROWSERS_PATH", cache);
+      const install = (revision: string): string => {
+         const dir = join(cache, revision, "chrome-linux-arm64");
+         mkdirSync(dir, { recursive: true });
+         const executable = join(dir, "chrome");
+         writeFileSync(executable, "test browser");
+         return executable;
+      };
+      const oldExecutable = install("chromium-1000");
+      const page = Object.assign(new EventEmitter(), {
+         goto: vi.fn(async () => {
+            page.emit("response", {
+               url: () => "https://www.instagram.com/api/graphql",
+               json: async () => timelinePayload,
+            });
+         }),
+         close: vi.fn(async () => {}),
+      });
+      const browser = {
+         newContext: vi.fn(async () => ({
+            addInitScript: vi.fn(async () => {}),
+            addCookies: vi.fn(async () => {}),
+            newPage: vi.fn(async () => page),
+         })),
+         close: vi.fn(async () => {}),
+         isConnected: () => true,
+      };
+      const launch = vi
+         .spyOn(chromium, "launch")
+         .mockImplementation(async (options) => {
+            if (
+               !options?.executablePath ||
+               !existsSync(options.executablePath)
+            ) {
+               throw new Error("Chromium executable no longer exists");
+            }
+            return browser as never;
+         });
+      const fetcher = new BrowserInstagramFetcher(null);
+      try {
+         expect(await fetcher.fetchRecentPosts("example")).toHaveLength(3);
+         expect(launch).toHaveBeenLastCalledWith(
+            expect.objectContaining({ executablePath: oldExecutable }),
+         );
+         // Production closes idle browsers; another project's Playwright install
+         // can garbage-collect the old shared revision before the next poll.
+         await fetcher.dispose();
+         rmSync(join(cache, "chromium-1000"), { recursive: true });
+         const newExecutable = install("chromium-1001");
+         expect(await fetcher.fetchRecentPosts("example")).toHaveLength(3);
+         expect(launch).toHaveBeenLastCalledWith(
+            expect.objectContaining({ executablePath: newExecutable }),
+         );
+      } finally {
+         await fetcher.dispose();
+         rmSync(cache, { recursive: true, force: true });
+      }
    });
 
    it.each(["/api/graphql", "/graphql/query"])(
