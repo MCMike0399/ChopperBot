@@ -41,6 +41,26 @@ describe("WorkshopStore settings", () => {
       expect(store.getSettings().reaction_emoji).toBe("🧠");
       mem.close();
    });
+
+   test("the plan line follows the env seed until the operator picks a value", async () => {
+      const { store, mem } = await newStore();
+      // Never configured → whatever the env seed says, both ways.
+      expect(store.getSettings().plan_updates).toBeNull();
+      expect(store.planUpdatesEnabled(true)).toBe(true);
+      expect(store.planUpdatesEnabled(false)).toBe(false);
+
+      // The operator's choice wins over the seed…
+      store.setPlanUpdates(false);
+      expect(store.planUpdatesEnabled(true)).toBe(false);
+      store.setPlanUpdates(true);
+      expect(store.planUpdatesEnabled(false)).toBe(true);
+
+      // …and clearing it hands control back to the seed.
+      store.setPlanUpdates(null);
+      expect(store.getSettings().plan_updates).toBeNull();
+      expect(store.planUpdatesEnabled(false)).toBe(false);
+      mem.close();
+   });
 });
 
 describe("WorkshopStore sessions", () => {

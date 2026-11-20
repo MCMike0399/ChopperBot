@@ -36,6 +36,15 @@ const ChannelCapabilityConfigSchema = z.object({
 // treated as "not set" — not as an invalid empty string that crashes boot.
 const emptyToUndefined = (v: unknown) => (v === "" ? undefined : v);
 
+// Env flags: accept the common spellings, since `z.coerce.boolean()` is unusable
+// here — it turns the string "false" into `true`. Unset/blank → undefined so the
+// schema default applies.
+const flagFromEnv = (v: unknown): boolean | undefined => {
+   if (v === undefined || v === null || v === "") return undefined;
+   if (typeof v === "boolean") return v;
+   return !/^(0|false|no|off)$/i.test(String(v).trim());
+};
+
 const ConfigSchema = z
    .object({
       DISCORD_TOKEN: z.string().min(1, "DISCORD_TOKEN is required"),
@@ -442,6 +451,16 @@ const ConfigSchema = z
       // Wall-clock cap for one sandboxed python run, seconds (the tool may ask for
       // less; never more).
       WORKSHOP_PY_TIMEOUT_S: z.coerce.number().int().positive().default(60),
+      // The "starting up message": before the tool trace starts, the live status
+      // line shows ONE plain-language line saying what the turn will do
+      // ("🧭 Reviso tu PDF y te armo el resumen en Word"). Costs one cheap
+      // `low`-effort call per turn; off = only the spinner/trace. Seeds the DB
+      // setting on first boot — after that the DB wins (`config_workshop
+      // action:set_plan_updates`).
+      WORKSHOP_PLAN_UPDATES: z.preprocess(
+         flagFromEnv,
+         z.boolean().default(true),
+      ),
 
       // ── Minutas (voice/stage meeting recorder → minutes) ───────────────────────
       // Passive capability (own listeners, not channel-routed): `/chopperbot-join`

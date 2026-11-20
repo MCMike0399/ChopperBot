@@ -265,4 +265,29 @@ describe("WorkshopTurnPresenter (taller conversation style)", () => {
       expect(ops).toContain("delete");
       expect(ops.filter((o) => o.startsWith("reply:"))).toHaveLength(0);
    });
+
+   test("the announced plan shows first and yields to the tool trace", async () => {
+      const { ops, message } = fakeMessage();
+      const p = new WorkshopTurnPresenter(message, "bot");
+      await p.begin();
+      await vi.advanceTimersByTimeAsync(2_000); // past the edit throttle
+
+      p.announce("Reviso tu PDF y te armo el resumen en Word");
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(ops).toContain(
+         "edit:-# 🧭 Reviso tu PDF y te armo el resumen en Word",
+      );
+
+      p.onPhase("tool", "workshop_run_python");
+      await vi.advanceTimersByTimeAsync(2_000);
+      // A plan that lands after a step started never rewrites the trace.
+      p.announce("Otra cosa");
+      await vi.advanceTimersByTimeAsync(2_000);
+      const edits = ops.filter((o) => o.startsWith("edit:"));
+      expect(edits[edits.length - 1]).toContain("🐍 Ejecutando código");
+      expect(ops.join("\n")).not.toContain("Otra cosa");
+
+      await p.deliver(["aquí está"]);
+      expect(ops).toContain("edit:aquí está");
+   });
 });

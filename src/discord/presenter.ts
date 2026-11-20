@@ -208,8 +208,9 @@ export class ReactionTurnPresenter extends BasePresenter {
 /**
  * Workshop (taller) style: the full live status line. ⏳ covers the queue
  * wait; once the turn starts, ONE subtext message is edited in place through
- * thinking/tool phases (with a ticking elapsed time) and finally morphs into
- * the reply itself — no delete/send flicker, no leftover noise.
+ * the plan (🧭 what I'm about to do) and thinking/tool phases (with a ticking
+ * elapsed time) and finally morphs into the reply itself — no delete/send
+ * flicker, no leftover noise.
  */
 export class WorkshopTurnPresenter extends BasePresenter {
    private readonly status: LiveStatusMessage;
@@ -220,6 +221,7 @@ export class WorkshopTurnPresenter extends BasePresenter {
       toolName: undefined as string | undefined,
       step: 0,
       startedAt: 0,
+      plan: undefined as string | undefined,
    };
 
    constructor(
@@ -261,6 +263,18 @@ export class WorkshopTurnPresenter extends BasePresenter {
          this.progress.toolName = detail;
          this.progress.step += 1;
       }
+      this.status.update(this.statusText());
+   }
+
+   /**
+    * The turn's one-line plan ("🧭 Reviso tu PDF y te armo el resumen en
+    * Word"): shown in the status line until the first tool runs, then the tool
+    * trace takes over. Late arrivals (a plan that lands after a tool started)
+    * are dropped — replacing a real step with stale intent would be a lie.
+    */
+   announce(plan: string): void {
+      if (this.done || !this.begun || this.progress.step > 0) return;
+      this.progress.plan = plan;
       this.status.update(this.statusText());
    }
 

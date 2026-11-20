@@ -114,6 +114,9 @@ export class WorkshopCapability implements Capability {
          reactionEmoji: () => this.store?.getSettings().reaction_emoji ?? "🎓",
          maxSessionsPerUser: config.WORKSHOP_MAX_SESSIONS_PER_USER,
          pyTimeoutMs: config.WORKSHOP_PY_TIMEOUT_S * 1000,
+         planUpdates: () =>
+            this.store?.planUpdatesEnabled(config.WORKSHOP_PLAN_UPDATES) ??
+            config.WORKSHOP_PLAN_UPDATES,
          onSessionsChanged: () => this.invalidateSessionCache(),
          storage: this.storage,
       });

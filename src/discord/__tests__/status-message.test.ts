@@ -42,6 +42,28 @@ describe("composeStatusText", () => {
          composeStatusText({ phase: "thinking", step: 0, elapsedMs: 135_000 }),
       ).toBe("-# 🤔 Pensando… · 2m 15s");
    });
+
+   test("the turn's plan replaces the spinner until the first tool runs", () => {
+      expect(
+         composeStatusText({
+            phase: "thinking",
+            step: 0,
+            elapsedMs: 5_000,
+            plan: "Reviso tu PDF y te armo el resumen en Word",
+         }),
+      ).toBe("-# 🧭 Reviso tu PDF y te armo el resumen en Word");
+
+      // From the first step on, the trace is the more useful signal.
+      expect(
+         composeStatusText({
+            phase: "tool",
+            toolName: "workshop_run_python",
+            step: 1,
+            elapsedMs: 45_000,
+            plan: "Reviso tu PDF y te armo el resumen en Word",
+         }),
+      ).toBe("-# 🐍 Ejecutando código · paso 1 · 45s");
+   });
 });
 
 /** Fake message/channel capturing sends/edits/deletes. */

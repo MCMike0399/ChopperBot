@@ -64,6 +64,7 @@ import {
 import { sandboxAvailable } from "./sandbox.js";
 import { buildChannelHistory, type ChannelHistoryResult } from "./history.js";
 import { compactConversation, shouldCompact } from "./compact.js";
+import { PLAN_CONTEXT_TURNS, planTurn } from "./plan.js";
 import {
    renderPanelContent,
    renderSessionIntro,
@@ -90,6 +91,12 @@ export interface WorkshopWatcherDeps {
    reactionEmoji: () => string;
    maxSessionsPerUser: number;
    pyTimeoutMs: number;
+   /**
+    * Whether each turn announces a one-line plan before the tool trace
+    * (`config_workshop action:set_plan_updates` / `WORKSHOP_PLAN_UPDATES`).
+    * Read per turn, so a live toggle applies to the next message.
+    */
+   planUpdates: () => boolean;
    /** Fired whenever a session is created or closed (cache invalidation). */
    onSessionsChanged?: () => void;
    /**
@@ -540,6 +547,20 @@ export class WorkshopWatcher {
             },
             "workshop.turn",
          );
+         // The "starting up message": ONE line of intent before the tool trace,
+         // so the member reads what is about to happen instead of a bare
+         // spinner during the first (long, max-effort) model request. Best
+         // effort by construction: planTurn never throws and a null plan just
+         // leaves the spinner. `turns` ends with the current message.
+         if (this.deps.planUpdates()) {
+            const plan = await planTurn({
+               userText: text,
+               uploads: savedUploads,
+               files: workspace.list().map((f) => f.path),
+               contextTurns: turns.slice(0, -1).slice(-PLAN_CONTEXT_TURNS),
+            });
+            if (plan) presenter.announce(plan);
+         }
          reply = await ask({
             webSearch: true,
             webSearchRequestText: text,

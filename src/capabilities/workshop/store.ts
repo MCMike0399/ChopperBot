@@ -8,6 +8,13 @@ export interface WorkshopSettings {
    welcome_message_id: string | null;
    category_id: string | null;
    reaction_emoji: string;
+   /**
+    * Whether a turn's live status line starts with a one-line plan (🧭 what
+    * the bot is about to do). `null` = never configured → follow the env seed
+    * (`WORKSHOP_PLAN_UPDATES`, default on); 0/1 = the operator's live choice
+    * from `config_workshop`.
+    */
+   plan_updates: number | null;
    updated_at: number | null;
 }
 
@@ -116,6 +123,16 @@ export const WORKSHOP_MIGRATIONS: Migration[] = [
       ALTER TABLE workshop_files ADD COLUMN storage_key TEXT;
     `,
    },
+   {
+      version: 4,
+      up: `
+      -- The "starting up message": one plain-language line in the live status
+      -- line saying what the turn is about to do. NULL = never configured from
+      -- the config channel → follow WORKSHOP_PLAN_UPDATES (default on);
+      -- 0 = off, 1 = on.
+      ALTER TABLE workshop_settings ADD COLUMN plan_updates INTEGER;
+    `,
+   },
 ];
 
 export class WorkshopStore {
@@ -126,7 +143,7 @@ export class WorkshopStore {
    getSettings(): WorkshopSettings {
       return this.db
          .prepare(
-            `SELECT welcome_channel_id, welcome_message_id, category_id, reaction_emoji, updated_at
+            `SELECT welcome_channel_id, welcome_message_id, category_id, reaction_emoji, plan_updates, updated_at
          FROM workshop_settings WHERE id = 1`,
          )
          .get() as WorkshopSettings;
@@ -178,6 +195,25 @@ export class WorkshopStore {
             "UPDATE workshop_settings SET reaction_emoji = ?, updated_at = ? WHERE id = 1",
          )
          .run(emoji, Date.now());
+   }
+
+   /** `null` clears the operator choice (back to the env seed). */
+   setPlanUpdates(enabled: boolean | null): void {
+      this.db
+         .prepare(
+            "UPDATE workshop_settings SET plan_updates = ?, updated_at = ? WHERE id = 1",
+         )
+         .run(enabled === null ? null : enabled ? 1 : 0, Date.now());
+   }
+
+   /**
+    * The effective choice: the operator's live setting, else `fallback` (the
+    * env seed). ONE definition, shared by the turn pipeline and the admin
+    * console, so what `config_workshop status` reports is what turns do.
+    */
+   planUpdatesEnabled(fallback: boolean): boolean {
+      const value = this.getSettings().plan_updates;
+      return value === null ? fallback : value === 1;
    }
 
    // ── Sessions ──────────────────────────────────────────────────────────────

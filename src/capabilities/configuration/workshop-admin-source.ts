@@ -51,6 +51,7 @@ export class ConfigWorkshopAdminSource implements ToolSource {
                '• "close_session" {channel_id} — cierra y ELIMINA el canal de una sesión.\n' +
                '• "set_channels" {welcome_channel_id, category_id} — cambia el canal de bienvenida y/o la categoría (repostea el mensaje de bienvenida).\n' +
                '• "set_emoji" {emoji} — cambia el emoji de reacción.\n' +
+               '• "set_plan_updates" {enabled} — prende/apaga el aviso de arranque de cada turno (la línea «🧭 qué voy a hacer» que aparece en el estado antes de la primera herramienta). Sin `enabled` vuelve al valor por defecto del entorno.\n' +
                '• "repost_welcome" — asegura/repostea el mensaje de bienvenida con el emoji.',
             inputSchema: {
                type: "object",
@@ -63,6 +64,7 @@ export class ConfigWorkshopAdminSource implements ToolSource {
                         "close_session",
                         "set_channels",
                         "set_emoji",
+                        "set_plan_updates",
                         "repost_welcome",
                      ],
                   },
@@ -70,6 +72,11 @@ export class ConfigWorkshopAdminSource implements ToolSource {
                   welcome_channel_id: { type: "string" },
                   category_id: { type: "string" },
                   emoji: { type: "string" },
+                  enabled: {
+                     type: "boolean",
+                     description:
+                        "Para set_plan_updates: true/false. Omitido → vuelve al valor por defecto del entorno.",
+                  },
                },
                required: ["action"],
             },
@@ -102,6 +109,9 @@ export class ConfigWorkshopAdminSource implements ToolSource {
                      welcome_message_id: settings.welcome_message_id,
                      category_id: settings.category_id,
                      reaction_emoji: settings.reaction_emoji,
+                     plan_updates: this.store.planUpdatesEnabled(
+                        config.WORKSHOP_PLAN_UPDATES,
+                     ),
                      sessions: counts,
                      max_sessions_per_user:
                         config.WORKSHOP_MAX_SESSIONS_PER_USER,
@@ -201,6 +211,31 @@ export class ConfigWorkshopAdminSource implements ToolSource {
                   await this.deps.workshop.adminEnsureWelcome();
                return { status: "success", payload: { reaction_emoji: emoji } };
             }
+            case "set_plan_updates": {
+               const enabled = parseOptionalFlag(obj.enabled);
+               if (enabled === undefined) {
+                  return {
+                     status: "error",
+                     payload: {
+                        error: 'Para set_plan_updates mandá `enabled: true` o `enabled: false` (omitilo, o decí "default", para volver al valor del entorno).',
+                     },
+                  };
+               }
+               this.store.setPlanUpdates(enabled);
+               log.info(
+                  { enabled, by: this.deps.callerUserId },
+                  "workshop.plan_updates_set",
+               );
+               return {
+                  status: "success",
+                  payload: {
+                     plan_updates: this.store.planUpdatesEnabled(
+                        config.WORKSHOP_PLAN_UPDATES,
+                     ),
+                     note: "Aplica desde el próximo mensaje del taller.",
+                  },
+               };
+            }
             case "repost_welcome": {
                if (!this.deps.workshop) {
                   return {
@@ -240,4 +275,22 @@ function normalizeId(value: unknown): string | null {
       .replace(/[<#>]/g, "")
       .trim();
    return /^\d{17,20}$/.test(s) ? s : null;
+}
+
+/**
+ * Tri-state flag from a tool call: `true`/`false` = the operator's choice,
+ * `null` = clear it and fall back to the env seed (omitted input, or the words
+ * "default"/"env"/"reset"), `undefined` = unusable input (a typo must not
+ * silently reset the setting).
+ */
+function parseOptionalFlag(value: unknown): boolean | null | undefined {
+   if (value === undefined || value === null || value === "") return null;
+   if (typeof value === "boolean") return value;
+   if (typeof value === "string") {
+      const s = value.trim().toLowerCase();
+      if (s === "default" || s === "env" || s === "reset") return null;
+      if (/^(true|1|on|si|sí|yes)$/.test(s)) return true;
+      if (/^(false|0|off|no)$/.test(s)) return false;
+   }
+   return undefined;
 }

@@ -49,9 +49,19 @@ export function composeStatusText(input: {
    toolName?: string;
    step: number;
    elapsedMs: number;
+   /**
+    * The turn's plain-language intent ("te armo el resumen en Word"), shown
+    * instead of the bare spinner UNTIL the first tool runs — from then on the
+    * tool trace is the more useful signal.
+    */
+   plan?: string;
 }): string {
    const base =
-      input.phase === "tool" ? toolLabel(input.toolName) : "🤔 Pensando…";
+      input.plan && input.step === 0
+         ? `🧭 ${input.plan}`
+         : input.phase === "tool"
+           ? toolLabel(input.toolName)
+           : "🤔 Pensando…";
    const parts = [base];
    if (input.step > 0) parts.push(`paso ${input.step}`);
    const secs = Math.floor(input.elapsedMs / 1000);

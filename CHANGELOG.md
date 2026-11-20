@@ -14,6 +14,13 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.17.0 — 2026-11-19
+
+- **El taller ahora te dice qué va a hacer, antes de hacerlo.** Cuando escribes en tu canal de taller, lo primero que ves es una línea con el plan: «🧭 Reviso el PDF que subiste y te armo el resumen en Word». Así sabes qué esperar en vez de ver solo «pensando».
+- **El plan no estorba al progreso.** En cuanto empieza el trabajo, la línea deja su lugar al aviso de siempre (🐍 código, 📎 preparando tu archivo, 📚 indexando el documento) y al final se convierte en la respuesta, como hasta ahora.
+- Si el plan no se puede generar, no pasa nada: el taller responde igual, solo sin esa línea.
+- **Se puede apagar si prefieres la vista anterior.** El equipo de configuración puede desactivarlo y, desde ese momento, el taller vuelve a mostrar solo el aviso de progreso de siempre.
+
 ## 2.16.0 — 2026-11-19
 
 - **Tus archivos del taller llegan ordenados y una sola vez.** Antes podía pasarte el mismo archivo dos veces (una copia de trabajo y la buena, con el mismo nombre) o mandarte cada archivo en un mensaje aparte. Ahora lo que se genera en una misma respuesta llega junto, sin copias repetidas y sin versiones sueltas: un solo archivo final por tema.
