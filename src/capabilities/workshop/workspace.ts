@@ -42,8 +42,21 @@ export interface WorkspaceFile {
 
 /** Files/dirs never shown to the model nor sent to Discord. `.workshop` is
  * the per-run staging dir (wiped after each python run); `.docindex` holds the
- * document indexes (see docindex.ts) and persists between turns. */
-const HIDDEN_PREFIXES = [".workshop", ".docindex"];
+ * document indexes (see docindex.ts) and persists between turns.
+ *
+ * `.scratch` and `recalc` are WORK dirs: LibreOffice recalculates a copy of a
+ * workbook there, and the converted-preview dir of the pdf recipe lives there
+ * too. They are hidden because a scratch copy is not a deliverable and, when it
+ * carries the same basename as the real file, the auto-delivery net used to
+ * attach BOTH (live 2026-11-16/17, two sessions: `Control_cooperativa_puntos
+ * .xlsx` arrived twice with different sizes, once from `recalc/`). Hiding them
+ * keeps them out of the model's listing AND out of the delivery net, while
+ * `read_file` can still reach them by explicit path. */
+const SCRATCH_PREFIXES = [".scratch", "recalc"];
+const HIDDEN_PREFIXES = [".workshop", ".docindex", ...SCRATCH_PREFIXES];
+
+/** Work dirs the GC may wipe for an idle session (recomputable copies only). */
+export const SCRATCH_DIRS: readonly string[] = SCRATCH_PREFIXES;
 
 export class PathEscapeError extends Error {
    constructor(requested: string) {
@@ -298,16 +311,51 @@ export function isDeliverablePath(relPath: string): boolean {
  * 2026-08-09: a session's estatutos .docx/.pdf were generated but the model
  * ended the turn without `workshop_send_file` — the user never got them and
  * the model couldn't tell. The watcher sends whatever this returns.
+ *
+ * Two rules keep the net from spamming a member:
+ * - files over `maxBytes` are left out (Discord rejects them; the ledger shows
+ *   ⚠️ next turn so the model can zip or split them);
+ * - ONE file per basename: a member never needs two `foo.xlsx` attachments, and
+ *   the shallowest path wins (the root-level file is the real deliverable, a
+ *   deeper one is a work copy).
  */
 export function listUndeliveredDeliverables(
    before: Map<string, number>,
    after: WorkspaceFile[],
    skip: ReadonlySet<string>,
+   maxBytes = Number.POSITIVE_INFINITY,
 ): WorkspaceFile[] {
-   return after.filter(
+   const candidates = after.filter(
       (f) =>
          isDeliverablePath(f.path) &&
          before.get(f.path) !== f.modifiedAt && // created or rewritten this turn
-         !skip.has(f.path),
+         !skip.has(f.path) &&
+         f.bytes <= maxBytes,
    );
+   const byName = new Map<string, WorkspaceFile>();
+   for (const f of candidates) {
+      const name = f.path.slice(f.path.lastIndexOf("/") + 1);
+      const seen = byName.get(name);
+      if (!seen || depth(f.path) < depth(seen.path)) byName.set(name, f);
+   }
+   return [...byName.values()].sort((a, b) => a.path.localeCompare(b.path));
+}
+
+/** Path depth (number of separators) — used to prefer the root-level copy. */
+function depth(relPath: string): number {
+   return relPath.split("/").length;
+}
+
+/** Discord's per-message attachment ceiling for grouped deliveries. */
+export const MAX_ATTACHMENTS_PER_MESSAGE = 10;
+
+/** Split a list into groups of at most `size` (keeps input order). */
+export function batchForSend<T>(
+   items: readonly T[],
+   size = MAX_ATTACHMENTS_PER_MESSAGE,
+): T[][] {
+   const out: T[][] = [];
+   for (let i = 0; i < items.length; i += size)
+      out.push(items.slice(i, i + size));
+   return out;
 }

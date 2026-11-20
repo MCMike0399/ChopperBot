@@ -1,7 +1,5 @@
-import { checkWorkshopFile } from "./artifact-check.js";
 import {
    ActionRowBuilder,
-   AttachmentBuilder,
    ButtonBuilder,
    ButtonStyle,
    ChannelType,
@@ -23,7 +21,7 @@ import {
 /** The Message shape the MessageCreate gateway event actually delivers. */
 type GatewayMessage = OmitPartialGroupDMChannel<Message>;
 import { basename, join } from "node:path";
-import { existsSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, rmSync, statSync } from "node:fs";
 import { textBrainDisplayName } from "../../config.js";
 import { log } from "../../log.js";
 import { ask, TurnAbortedError } from "../../llm/client.js";
@@ -42,9 +40,9 @@ import { composeToolSources } from "../../tools/source.js";
 import type { ObjectStorage } from "../../storage/object-storage.js";
 import type { WorkshopStore, WorkshopSession } from "./store.js";
 import {
+   SCRATCH_DIRS,
    SessionWorkspace,
    workspaceDirFor,
-   listUndeliveredDeliverables,
 } from "./workspace.js";
 import {
    deleteSessionObjects,
@@ -57,6 +55,12 @@ import {
    type SessionActions,
 } from "./tools.js";
 import { archiveSessionFiles } from "./archive.js";
+import {
+   autoDeliverForgotten,
+   deliverQueuedFiles,
+   type DeliverChannel,
+   type DeliverPort,
+} from "./deliver.js";
 import { sandboxAvailable } from "./sandbox.js";
 import { buildChannelHistory, type ChannelHistoryResult } from "./history.js";
 import { compactConversation, shouldCompact } from "./compact.js";
@@ -581,22 +585,30 @@ export class WorkshopWatcher {
       const anchor = await presenter.deliver(chunkBotReply(reply));
 
       // Deferred effects, in a safe order: files → purge → close.
-      for (const f of pendingFiles) {
-         await this.sendWorkspaceFile(message, workspace, f.relPath, f.caption);
-      }
+      // The delivery itself (artifact check → attach → manifest → MinIO) lives in
+      // deliver.ts so the queued sends and the safety net cannot drift apart.
+      const deliverPort = () => this.deliverPort(message, workspace);
+      await deliverQueuedFiles(
+         deliverPort(),
+         pendingFiles.map((f) => ({
+            relPath: f.relPath,
+            caption: f.caption,
+         })),
+      );
       // Auto-delivery safety net (live 2026-08-09: a session's estatutos
       // .docx/.pdf were generated but the model ended the turn without
       // workshop_send_file, then insisted "ya te lo envié"). Attach whatever
-      // deliverable THIS turn created/rewrote that nobody queued; the ledger
-      // shows it as ✅ from the next turn on. Pointless if the channel is
-      // about to be deleted.
+      // deliverable THIS turn created/rewrote that nobody queued — grouped in
+      // ONE message; the ledger shows it as ✅ from the next turn on. Pointless
+      // if the channel is about to be deleted.
       if (!pendingClose) {
-         await this.autoSendForgottenDeliverables(
-            message,
-            workspace,
-            filesBefore,
-            pendingFiles,
-         );
+         const skip = this.deliveredPaths(session.channel_id);
+         for (const f of pendingFiles) skip.add(f.relPath);
+         await autoDeliverForgotten(deliverPort(), {
+            before: filesBefore,
+            skip,
+            maxBytes: MAX_SEND_FILE_BYTES,
+         });
       }
       if (pendingClear) {
          await this.purgeChannel(message.channel, session, anchor?.id ?? null);
@@ -783,63 +795,24 @@ export class WorkshopWatcher {
       }
    }
 
-   private async sendWorkspaceFile(
+   /**
+    * Adapt the live Discord message into the delivery port (see deliver.ts).
+    * The channel is structurally compatible with DeliverChannel; the cast keeps
+    * discord.js's full send() overloads out of the module's interface.
+    */
+   private deliverPort(
       message: GatewayMessage,
       workspace: SessionWorkspace,
-      relPath: string,
-      caption: string | null,
-   ): Promise<void> {
-      try {
-         const check = await checkWorkshopFile(
-            workspace,
-            relPath,
-            this.venvDir(),
-         );
-         if (!check.ok) {
-            log.warn(
-               { channelId: message.channelId, file: relPath, check },
-               "workshop.file_check_failed",
-            );
-            await message.channel
-               .send(
-                  `⚠️ No adjunté \`${basename(relPath)}\`: no pasó la revisión del archivo. Pídeme corregirlo.`,
-               )
-               .catch(() => {});
-            return;
-         }
-         const abs = workspace.absolute(relPath);
-         const file = new AttachmentBuilder(abs, { name: basename(relPath) });
-         if (!message.channel.isSendable()) return;
-         const sent = await message.channel.send({
-            content: caption ?? undefined,
-            files: [file],
-         });
-         // The channel message is now the fallback durable copy of this
-         // deliverable; MinIO (HDD) gets the primary one.
-         this.deps.store.recordFile({
-            channelId: message.channelId,
-            relPath,
-            messageId: sent.id,
-            bytes: workspace.stat(relPath).bytes,
-            nowMs: this.now(),
-         });
-         if (this.deps.storage) {
-            await uploadToStorage(this.deps.storage, this.deps.store, {
-               channelId: message.channelId,
-               relPath,
-               bytes: workspace.readBytes(relPath),
-            });
-         }
-         log.info(
-            { channelId: message.channelId, file: relPath },
-            "workshop.file_sent",
-         );
-      } catch (err) {
-         log.warn({ err, file: relPath }, "workshop.file_send_failed");
-         await message.channel
-            .send(`⚠️ No pude subir \`${relPath}\` — inténtalo de nuevo.`)
-            .catch(() => {});
-      }
+   ): DeliverPort {
+      return {
+         channelId: message.channelId,
+         channel: message.channel as unknown as DeliverChannel,
+         workspace,
+         store: this.deps.store,
+         storage: this.deps.storage,
+         venvDir: this.venvDir(),
+         now: () => this.now(),
+      };
    }
 
    /** One backfill pass at a time (it can fetch from Discord — keep it single). */
@@ -902,38 +875,6 @@ export class WorkshopWatcher {
       return new Set(
          this.deps.store.fileManifest(channelId).map((f) => f.rel_path),
       );
-   }
-
-   /**
-    * Attach deliverables this turn created or rewrote that the model forgot to
-    * send (and that were never delivered before). Oversized ones are skipped —
-    * the ledger will flag them ⚠️ next turn so the model can zip/split them.
-    */
-   private async autoSendForgottenDeliverables(
-      message: GatewayMessage,
-      workspace: SessionWorkspace,
-      filesBefore: Map<string, number>,
-      pendingFiles: Array<{ relPath: string; caption: string | null }>,
-   ): Promise<void> {
-      const skip = this.deliveredPaths(message.channelId);
-      for (const f of pendingFiles) skip.add(f.relPath);
-      const forgotten = listUndeliveredDeliverables(
-         filesBefore,
-         workspace.list(),
-         skip,
-      ).filter((f) => f.bytes <= MAX_SEND_FILE_BYTES);
-      for (const f of forgotten) {
-         log.info(
-            { channelId: message.channelId, file: f.path },
-            "workshop.file_auto_send",
-         );
-         await this.sendWorkspaceFile(
-            message,
-            workspace,
-            f.path,
-            `📎 Esto lo generé en esta vuelta y casi se me pasa adjuntarlo: \`${basename(f.path)}\``,
-         );
-      }
    }
 
    private async renameChannel(
@@ -1132,6 +1073,17 @@ export class WorkshopWatcher {
                } catch {
                   /* stat/unlink race — next sweep */
                }
+            }
+            // Work copies (`.scratch/`, `recalc/`) are invisible to list() and
+            // never delivered, so they are not part of the loop above: wipe them
+            // for an idle session so they don't accumulate until close.
+            for (const scratch of SCRATCH_DIRS) {
+               const dir = join(ws.root, scratch);
+               if (!existsSync(dir)) continue;
+               const before = dirBytes(dir);
+               rmSync(dir, { recursive: true, force: true });
+               bytesFreed += before;
+               dirsRemoved += 1;
             }
          }
 
@@ -1342,4 +1294,18 @@ export function attachmentNameMatches(
       sanitizeFileName(attName) === wanted ||
       fold(attName) === fold(wanted)
    );
+}
+
+/** Bytes under a directory (best-effort, for GC accounting). */
+function dirBytes(dir: string): number {
+   let total = 0;
+   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = join(dir, entry.name);
+      try {
+         total += entry.isDirectory() ? dirBytes(abs) : statSync(abs).size;
+      } catch {
+         /* vanished mid-walk */
+      }
+   }
+   return total;
 }

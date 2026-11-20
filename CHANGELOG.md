@@ -14,6 +14,14 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.16.0 — 2026-11-19
+
+- **Tus archivos del taller llegan ordenados y una sola vez.** Antes podía pasarte el mismo archivo dos veces (una copia de trabajo y la buena, con el mismo nombre) o mandarte cada archivo en un mensaje aparte. Ahora lo que se genera en una misma respuesta llega junto, sin copias repetidas y sin versiones sueltas: un solo archivo final por tema.
+- **Se acabó el «no alcancé a adjuntarlo — pídeme que te lo envíe».** Si el archivo se generó, se adjunta solo con la respuesta; el taller ya no te pide que vuelvas a pedirlo ni te hace dar una vuelta extra para recibirlo.
+- **Mejor criterio al crear documentos.** Si solo tienes una duda, la respuesta va en el chat y el archivo se ofrece al final; y cuando sí se genera, se entrega con un nombre claro en vez de acumular copias con nombres distintos.
+- **Hojas de cálculo más confiables al llenarlas.** Los modelos de Excel ya no quedan topados a cierta fila: lo que captures más abajo también suma. Y las copias que se usan para comprobar los cálculos se guardan aparte, invisibles, para que nunca te lleguen mezcladas con el archivo bueno.
+- **Word y PDF con una sola versión final.** Cuando se corrige o se convierte un documento, recibes el archivo definitivo listo para entregar.
+
 ## 2.15.2 — 2026-11-10
 
 - **Se recupera el monitor de Instagram.** Corregimos un fallo que impedía revisar las cuentas seguidas cuando se actualizaba el navegador del servidor.

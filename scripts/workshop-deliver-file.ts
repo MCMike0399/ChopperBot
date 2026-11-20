@@ -11,19 +11,20 @@
  * Default caption: a brief apology note. --dry-run prints what would happen.
  */
 import "dotenv/config";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
-import {
-   AttachmentBuilder,
-   ChannelType,
-   Client,
-   GatewayIntentBits,
-} from "discord.js";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { ChannelType, Client, GatewayIntentBits } from "discord.js";
 import { config } from "../src/config.js";
 import { SqliteMemoryStore } from "../src/memory/store.js";
 import { WorkshopStore } from "../src/capabilities/workshop/store.js";
-import { workspaceDirFor } from "../src/capabilities/workshop/workspace.js";
-import { uploadToStorage } from "../src/capabilities/workshop/storage.js";
+import {
+   SessionWorkspace,
+   workspaceDirFor,
+} from "../src/capabilities/workshop/workspace.js";
+import {
+   deliverQueuedFiles,
+   type DeliverChannel,
+} from "../src/capabilities/workshop/deliver.js";
 import { createObjectStorage } from "../src/storage/index.js";
 
 const args = process.argv.slice(2).filter((a) => a !== "--dry-run");
@@ -69,10 +70,6 @@ async function main(): Promise<void> {
          throw new Error(`el canal ${channelId} no es un canal de texto`);
       }
 
-      const files = relPaths.map(
-         (rel) =>
-            new AttachmentBuilder(join(wsRoot, rel), { name: basename(rel) }),
-      );
       if (DRY_RUN) {
          console.log(
             `dry-run: enviaría ${relPaths.join(", ")} a #${channel.name} con caption:`,
@@ -80,30 +77,28 @@ async function main(): Promise<void> {
          console.log(`> ${caption}`);
          return;
       }
-      const sent = await channel.send({ content: caption, files });
-      console.log(
-         `✅ mensaje ${sent.id} enviado a #${channel.name} (${session.user_tag})`,
-      );
-
-      for (const rel of relPaths) {
-         const bytes = readFileSync(join(wsRoot, rel));
-         store.recordFile({
+      // Same code path the watcher uses after a turn: artifact check → attach →
+      // manifest row → MinIO copy. A repair must not skip the structural check
+      // or leave the ledger out of sync (this script used to do its own thing).
+      const outcome = await deliverQueuedFiles(
+         {
             channelId,
-            relPath: rel,
-            messageId: sent.id,
-            bytes: bytes.length,
-            nowMs: Date.now(),
-         });
-         console.log(`  ✓ manifest: ${rel} (${bytes.length} B)`);
-         if (storage) {
-            const ok = await uploadToStorage(storage, store, {
-               channelId,
-               relPath: rel,
-               bytes,
-            });
-            console.log(`  ${ok ? "✓" : "✗"} minio: ${rel}`);
-         }
-      }
+            channel: channel as unknown as DeliverChannel,
+            workspace: new SessionWorkspace(wsRoot),
+            store,
+            storage,
+            venvDir: resolve(dataDir, "workshop", "venv"),
+            now: () => Date.now(),
+         },
+         relPaths.map((rel) => ({ relPath: rel, caption })),
+      );
+      for (const rel of outcome.sent)
+         console.log(`  ✓ entregado + manifest + minio: ${rel}`);
+      for (const rel of outcome.blocked)
+         console.log(`  ✗ bloqueado por la revisión del archivo: ${rel}`);
+      for (const rel of outcome.failed)
+         console.log(`  ✗ falló el envío: ${rel}`);
+      if (outcome.sent.length === 0) process.exitCode = 1;
    } finally {
       await client.destroy();
       mem.close();

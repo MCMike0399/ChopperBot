@@ -16,6 +16,7 @@ import {
    workspaceDirFor,
    isDeliverablePath,
    listUndeliveredDeliverables,
+   batchForSend,
 } from "../workspace.js";
 
 let root: string;
@@ -236,5 +237,63 @@ describe("listUndeliveredDeliverables", () => {
 
    test("empty workspace yields nothing", () => {
       expect(listUndeliveredDeliverables(new Map(), [], new Set())).toEqual([]);
+   });
+
+   test("one file per basename, preferring the shallowest path", () => {
+      const before = new Map<string, number>();
+      const after = [
+         file("recalc/presupuesto.xlsx", 2000),
+         file("presupuesto.xlsx", 2000),
+         file("otra/figura.png", 2000),
+         file("figura.png", 2000),
+      ];
+      expect(
+         listUndeliveredDeliverables(before, after, new Set()).map(
+            (f) => f.path,
+         ),
+      ).toEqual(["figura.png", "presupuesto.xlsx"]);
+   });
+
+   test("leaves out files past the send cap", () => {
+      const after = [
+         file("grande.pdf", 2000, 9_600_000),
+         file("ok.pdf", 2000, 100),
+      ];
+      expect(
+         listUndeliveredDeliverables(
+            new Map(),
+            after,
+            new Set(),
+            9_500_000,
+         ).map((f) => f.path),
+      ).toEqual(["ok.pdf"]);
+   });
+});
+
+describe("scratch work dirs", () => {
+   test("list() hides .scratch/ and recalc/ but read_file can still reach them", () => {
+      const ws = new SessionWorkspace(root);
+      ws.writeText("entrega.docx", "x");
+      ws.writeText("recalc/entrega.xlsx", "copia");
+      ws.writeText(".scratch/vista_previa/entrega.pdf", "preview");
+      ws.writeText("sub/nota.txt", "visible");
+      expect(ws.list().map((f) => f.path)).toEqual([
+         "entrega.docx",
+         "sub/nota.txt",
+      ]);
+      expect(ws.exists("recalc/entrega.xlsx")).toBe(true);
+      expect(
+         ws.readText(".scratch/vista_previa/entrega.pdf", 100).content,
+      ).toBe("preview");
+   });
+});
+
+describe("batchForSend", () => {
+   test("groups by the attachment cap and keeps order", () => {
+      expect(batchForSend([1, 2, 3], 2)).toEqual([[1, 2], [3]]);
+      expect(batchForSend([], 10)).toEqual([]);
+      expect(
+         batchForSend(Array.from({ length: 21 }, (_, i) => i)),
+      ).toHaveLength(3);
    });
 });

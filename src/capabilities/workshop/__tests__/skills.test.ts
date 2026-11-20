@@ -102,6 +102,25 @@ describe.skipIf(!live)(
    },
 );
 
+describe("recipes that encode live failures", () => {
+   test("xlsx: work copies go to .scratch/ and ranges must not cap data entry", () => {
+      // Live 2026-11-16/17: a LibreOffice recalculated copy left in `recalc/`
+      // was delivered next to the real workbook (same basename, other size), and
+      // an audited model summed only to a hardcoded row 300.
+      expect(WORKSHOP_SKILLS.xlsx).toContain(".scratch/recalc");
+      expect(WORKSHOP_SKILLS.xlsx).toContain("NUNCA dejes topes fijos");
+   });
+
+   test("pdf: conversion previews stay out of the deliverables", () => {
+      expect(WORKSHOP_SKILLS.pdf).toContain(".scratch/vista_previa");
+      expect(WORKSHOP_SKILLS.pdf).not.toContain("--outdir', 'vista_previa'");
+   });
+
+   test("docx: one final version, not a pile of corrected copies", () => {
+      expect(WORKSHOP_SKILLS.docx).toContain("UNA sola versión final");
+   });
+});
+
 describe("review limits", () => {
    test("unsupported formats and missing venv report unverified, never claim passed checks", async () => {
       ws.writeText("notes.txt", "hi");

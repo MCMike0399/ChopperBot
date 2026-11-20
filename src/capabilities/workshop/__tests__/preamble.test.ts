@@ -67,6 +67,23 @@ describe("renderWorkshopPrompt", () => {
       expect(prompt).toContain("no le llegó");
    });
 
+   test("delivery wording: never deny a send the safety net will make anyway", () => {
+      // Live 2026-11-16/17, three sessions: the model wrote "no alcancé a
+      // adjuntarlo — pídeme que te lo envíe" and the net attached the file
+      // seconds later, so the member read a contradiction and had to ask for
+      // something that had already been sent.
+      const prompt = renderWorkshopPrompt(ctx());
+      expect(prompt).toContain("el sistema lo adjunta solo");
+      expect(prompt).toContain('NUNCA escribas "no alcancé a adjuntarlo"');
+      expect(prompt).toContain("No pidas permiso para enviar");
+   });
+
+   test("one final deliverable per format, work copies in .scratch/", () => {
+      const prompt = renderWorkshopPrompt(ctx());
+      expect(prompt).toContain("Un solo entregable final por tema y formato");
+      expect(prompt).toContain("`.scratch/`");
+   });
+
    test("no deliveredPaths → every generated file shows as not delivered", () => {
       const prompt = renderWorkshopPrompt(ctx({ files: [file("nuevo.docx")] }));
       expect(prompt).toContain("nuevo.docx (100 B) — ⚠️ NO entregado");

@@ -1,7 +1,7 @@
 /** Curated, on-demand recipes. Kept out of the base prompt to preserve turn budget. */
 export const WORKSHOP_SKILLS = {
    docx: `# Word: documentos editables y legibles
-Lee primero el archivo original y conserva hechos, fechas, nombres y restricciones; no inventes credenciales ni resultados. Si corriges, guarda una versión nueva. Usa estilos reales (Title, Heading 1/2, Normal) en vez de simular encabezados con negritas. Define márgenes, fuente y espaciado; respeta el formato solicitado. Tablas con encabezados, anchos que sumen el área útil y texto ajustado; evita celdas y párrafos gigantes. Encabezados con keep_with_next; no mantengas toda una sección junta si crea páginas vacías. Para CV: una columna, contacto como texto, sin iconos, no prometas una página sin medirla.
+Lee primero el archivo original y conserva hechos, fechas, nombres y restricciones; no inventes credenciales ni resultados. Si corriges, entrega UNA sola versión final con nombre estable (no dejes \`_corregido_v2\`, \`borrador1\`, \`final_final\`): el usuario debe saber qué archivo abrir. Usa estilos reales (Title, Heading 1/2, Normal) en vez de simular encabezados con negritas. Define márgenes, fuente y espaciado; respeta el formato solicitado. Tablas con encabezados, anchos que sumen el área útil y texto ajustado; evita celdas y párrafos gigantes. Encabezados con keep_with_next; no mantengas toda una sección junta si crea páginas vacías. Para CV: una columna, contacto como texto, sin iconos, no prometas una página sin medirla.
 Ejemplo mínimo ejecutable:
 \`\`\`python
 from docx import Document
@@ -57,7 +57,8 @@ wb.save('presupuesto.xlsx')
 assert 3 * 25 == 75
 assert load_workbook('presupuesto.xlsx')['Presupuesto']['D2'].value == '=B2*C2'
 \`\`\`
-openpyxl NO calcula fórmulas. data_only=True lee valores guardados, no verifica el cálculo. Para obtener valores de vista previa, recalcula una copia con LibreOffice (receta pdf, --convert-to xlsx --outdir en otro directorio), reabre con data_only=True y compara con cuentas independientes de Python; conserva fórmulas. Si no puedes recalcular, dilo: se calcularán al abrir en Excel/Calc. No afirmes que comprobaste resultados por haber guardado el libro. Ejecuta workshop_check_file.
+openpyxl NO calcula fórmulas. data_only=True lee valores guardados, no verifica el cálculo. Para obtener valores de vista previa, recalcula una copia con LibreOffice dentro de \`.scratch/\` (receta pdf, --convert-to xlsx --outdir .scratch/recalc), reabre con data_only=True y compara con cuentas independientes de Python; conserva fórmulas y borra la copia al terminar. Si no puedes recalcular, dilo: se calcularán al abrir en Excel/Calc. No afirmes que comprobaste resultados por haber guardado el libro. Ejecuta workshop_check_file.
+Rangos: NUNCA dejes topes fijos tipo $A$2:$A$300 en un modelo que se va a llenar — lo que se capture debajo existe en pantalla pero no suma (un miembro recibió un libro así, auditado en vivo). Usa columnas enteras (SUMIFS(A:A,…) con la columna de criterio acotada), o extiende el rango muy por encima de las filas de ejemplo (p. ej. hasta la fila 5000), o una tabla de Excel. Si eliges un tope, decláralo en la hoja de instrucciones.
 Fuente: https://openpyxl.readthedocs.io/en/stable/simple_formulae.html`,
    pptx: `# PowerPoint: diapositivas para exponer
 Define audiencia, tiempo y mensaje central. Usa formato panorámico, un mensaje por diapositiva, título informativo y pocas líneas. Cuerpo de 20–24 pt o más, títulos de 30–36 pt; evita reducir letra para meter un ensayo. Si no cabe, divide la diapositiva. Márgenes y contraste consistentes; imágenes con proporción conservada y fuentes en notas o una diapositiva final. Usa gráficos y texto editables cuando se pueda. No inventes evidencia ni fotografías.
@@ -101,14 +102,14 @@ t = Table(rows, colWidths=[doc.width * 0.4, doc.width * 0.6], repeatRows=1)
 t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.HexColor('#EAF1F8')), ('VALIGN',(0,0),(-1,-1),'TOP'), ('BOTTOMPADDING',(0,0),(-1,-1),8)]))
 doc.build([Paragraph('Guía', styles['Title']), Spacer(1,12), t])
 \`\`\`
-Si ya existe Word o PowerPoint y se pide PDF, convierte ESE archivo para conservar el contenido. LibreOffice puede usarse desde el sandbox, sin red y con perfil temporal propio:
+Si ya existe Word o PowerPoint y se pide PDF, convierte ESE archivo para conservar el contenido. LibreOffice puede usarse desde el sandbox, sin red y con perfil temporal propio. Las vistas previas y copias de verificación van a \`.scratch/\` (invisible, nunca se entrega); solo el PDF que el usuario pidió se guarda en la raíz. Si el usuario pidió el PDF de su propio documento, convierte directamente al nombre final en la raíz:
 \`\`\`python
 import subprocess
 from pathlib import Path
-Path('vista_previa').mkdir(exist_ok=True)
-r = subprocess.run(['libreoffice', '-env:UserInstallation=file:///tmp/lo-taller', '--headless', '--convert-to', 'pdf', '--outdir', 'vista_previa', 'guia.docx'], capture_output=True, text=True, timeout=45)
+Path('.scratch/vista_previa').mkdir(parents=True, exist_ok=True)
+r = subprocess.run(['libreoffice', '-env:UserInstallation=file:///tmp/lo-taller', '--headless', '--convert-to', 'pdf', '--outdir', '.scratch/vista_previa', 'guia.docx'], capture_output=True, text=True, timeout=45)
 assert r.returncode == 0, r.stderr
-assert Path('vista_previa/guia.pdf').is_file(), r.stdout
+assert Path('.scratch/vista_previa/guia.pdf').is_file(), r.stdout
 \`\`\`
 Después usa pypdf.PdfReader para contar páginas y verificar texto. Para revisión visual puedes producir PNG con pdftoppm -scale-to 1400 -png; eso genera una imagen, NO demuestra por sí mismo que revisaste el diseño. Ejecuta workshop_check_file sobre el PDF y explica límites reales. Si la conversión falla dos veces, entrega el original editable y explica qué falta; no lo reconstruyas perdiendo contenido.
 Fuentes: https://docs.reportlab.com/reportlab/userguide/ch7_tables/ ; https://help.libreoffice.org/latest/en-US/text/shared/guide/start_parameters.html`,
