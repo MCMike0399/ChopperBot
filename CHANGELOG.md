@@ -14,6 +14,10 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.17.1 — 2026-11-19
+
+- **Mantenimiento interno.** Ajustamos la prueba automática del taller que verifica el aviso de arranque («🧭 qué voy a hacer») para que pueda crear y borrar sola su canal de prueba. No cambia nada de lo que ves en Discord: el taller sigue funcionando igual que en la 2.17.0.
+
 ## 2.17.0 — 2026-11-19
 
 - **El taller ahora te dice qué va a hacer, antes de hacerlo.** Cuando escribes en tu canal de taller, lo primero que ves es una línea con el plan: «🧭 Reviso el PDF que subiste y te armo el resumen en Word». Así sabes qué esperar en vez de ver solo «pensando».

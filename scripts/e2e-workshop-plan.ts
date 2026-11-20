@@ -145,7 +145,7 @@ async function main(): Promise<number> {
                        allow: [
                           PermissionFlagsBits.ViewChannel,
                           PermissionFlagsBits.SendMessages,
-                          PermissionFlagsBits.Reactions,
+                          PermissionFlagsBits.AddReactions,
                        ],
                     },
                  ]
