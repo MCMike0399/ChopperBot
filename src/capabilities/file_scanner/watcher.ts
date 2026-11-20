@@ -7,6 +7,8 @@ import {
    peekMagicBytes,
    type ScanOutcome,
 } from "./scanner.js";
+import { deleteMaliciousMessage } from "./actions.js";
+import { nextPendingCheck } from "./pending.js";
 import {
    isVideoAttachment,
    renderScanMessage,
@@ -31,6 +33,11 @@ export interface AttachmentLike {
 /** Alert dedup: one budget/auth admin alert per this window. */
 const ALERT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 
+/** A confirmed 🛑 verdict (as opposed to suspicious/clean/pending). */
+function isMalicious(outcome: ScanOutcome): boolean {
+   return outcome.kind === "verdict" && outcome.verdict === "malicious";
+}
+
 export interface FileScanWatcherDeps {
    scanner: FileScanner;
    store: FileScannerStore;
@@ -42,6 +49,8 @@ export interface FileScanWatcherDeps {
    maxFiles: number;
    /** `skip` = media-native channel (don't scan genuine videos). */
    videoPolicyFor: (channelId: string) => VideoPolicy;
+   /** Delete the upload message when a file is confirmed malicious. */
+   deleteMalicious: boolean;
    /** Sends operator alerts (budget exhausted / VT auth). Errors swallowed by caller. */
    alert: (lines: string[]) => Promise<void>;
    now?: () => number;
@@ -132,6 +141,27 @@ export class FileScanWatcher {
 
             const outcome = await this.scanOne(att, message.author?.id ?? null);
             lines[i].status = outcome;
+
+            if (isMalicious(outcome)) {
+               // Discord can't delete a single attachment: the whole upload
+               // message goes (its text and all attachments). The hash, counts
+               // and uploader stay in the audit table + this verdict card.
+               lines[i].deleted = await deleteMaliciousMessage(message, {
+                  enabled: this.deps.deleteMalicious,
+                  fileName: att.name,
+               });
+            }
+
+            if (outcome.kind === "pending") {
+               this.scheduleRecheck({
+                  outcome,
+                  fileName: att.name,
+                  uploader: message.author?.id ?? null,
+                  card: reply,
+                  message,
+               });
+            }
+
             await this.edit(reply, lines);
             await this.maybeAlert(outcome, att.name);
          }
@@ -240,6 +270,43 @@ export class FileScanWatcher {
    private async edit(reply: Message | null, lines: FileLine[]): Promise<void> {
       if (!reply) return;
       await reply.edit(renderScanMessage(lines)).catch(() => {});
+   }
+
+   /**
+    * Persist an unfinished analysis so {@link PendingReconciler} can come back to
+    * it. VirusTotal finishes analyzing server-side whether or not we keep polling,
+    * so the verdict (and, if malicious, the deletion) is still reachable later.
+    */
+   private scheduleRecheck(input: {
+      outcome: Extract<ScanOutcome, { kind: "pending" }>;
+      fileName: string;
+      uploader: string | null;
+      card: Message | null;
+      message: Message;
+   }): void {
+      const now = this.now();
+      try {
+         this.deps.store.upsertPending({
+            sha256: input.outcome.sha256,
+            fileName: input.fileName,
+            uploader: input.uploader,
+            cardChannelId: input.card?.channelId ?? input.message.channelId,
+            cardMessageId: input.card?.id ?? null,
+            sourceChannelId: input.message.channelId,
+            sourceMessageId: input.message.id,
+            nowMs: now,
+            nextCheckAt: nextPendingCheck(0, now),
+         });
+         log.info(
+            { sha256: input.outcome.sha256, fileName: input.fileName },
+            "file_scanner.watcher.recheck_scheduled",
+         );
+      } catch (err) {
+         log.error(
+            { err, sha256: input.outcome.sha256 },
+            "file_scanner.watcher.recheck_schedule_failed",
+         );
+      }
    }
 
    /** One operator alert per cooldown window on budget-exhaustion or a bad API key. */

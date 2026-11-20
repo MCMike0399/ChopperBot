@@ -14,6 +14,12 @@ Versionado semántico (`MAYOR.MENOR.PARCHE`):
 
 ---
 
+## 2.18.0 — 2026-11-19
+
+- **Los análisis de archivos ya siempre terminan en un veredicto.** A veces VirusTotal tardaba más de la cuenta y el mensaje se quedaba para siempre en «⏳ aún lo está analizando», aunque el análisis sí había terminado minutos después. Ahora, si el análisis no acaba a tiempo, vuelvo a preguntar solo, en segundo plano, y edito el mismo mensaje con el resultado real en cuanto lo tengo (✅ limpio, ⚠️ sospechoso o 🛑 malicioso). Si aun así no consigo confirmarlo, el mensaje ya no te miente: te avisa de que no lo pude confirmar y te deja el enlace para revisarlo tú.
+- **Si un archivo es malicioso, ahora lo borro.** Cuando VirusTotal confirma que un archivo es peligroso, elimino el mensaje con el que se subió (con todo lo que traía adjunto), aviso con un 🛑 y menciono al equipo de moderación. El registro del archivo (qué era, cuántos antivirus lo detectaron y quién lo subió) se conserva, así que queda constancia aunque el archivo ya no esté.
+- **Si el bot no tiene permiso para borrar, no borra nada.** En ese caso solo avisa como antes; el equipo de configuración también puede desactivar los borrados si prefiere revisar el archivo primero.
+
 ## 2.17.1 — 2026-11-19
 
 - **Mantenimiento interno.** Ajustamos la prueba automática del taller que verifica el aviso de arranque («🧭 qué voy a hacer») para que pueda crear y borrar sola su canal de prueba. No cambia nada de lo que ves en Discord: el taller sigue funcionando igual que en la 2.17.0.

@@ -98,6 +98,7 @@ export class ConfigFileScannerAdminSource implements ToolSource {
                   enabled: !!config.VIRUSTOTAL_API_KEY,
                   watchedChannels: this.store.getWatchedChannels(),
                   mediaNativeChannels: this.store.getMediaChannels(),
+                  pending: this.store.pendingCount(),
                   used24h: this.store.requestsInWindow(nowMs, WINDOW_MS),
                   budget: config.VIRUSTOTAL_DAILY_REQUEST_BUDGET,
                   minIntervalMs: config.VIRUSTOTAL_MIN_REQUEST_INTERVAL_MS,

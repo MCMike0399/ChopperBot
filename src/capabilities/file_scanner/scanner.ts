@@ -182,9 +182,9 @@ export class FileScanner {
       sha256: string,
       stats: VerdictStats,
       meta: { fileName: string; uploader: string | null },
-      size: number,
+      size: number | null,
       source: VerdictSource,
-   ): ScanOutcome {
+   ): Extract<ScanOutcome, { kind: "verdict" }> {
       const verdict = verdictFrom(stats, this.deps.maliciousThreshold);
       this.deps.store.recordScan({
          sha256,
@@ -197,6 +197,48 @@ export class FileScanner {
       });
       log.info({ sha256, verdict, source, ...stats }, "file_scanner.scan.done");
       return { kind: "verdict", verdict, stats, sha256, source };
+   }
+
+   /**
+    * Re-check a file we already uploaded whose analysis was still running when
+    * the poll budget ran out (outcome `pending`). One budgeted hash lookup — no
+    * upload, no polling. Returns the verdict once VirusTotal knows the file, or
+    * null while it is still processing (the caller reschedules).
+    *
+    * This is the piece that makes an unfinished analysis converge: VirusTotal
+    * keeps analyzing server-side after we stop polling, so a later lookup
+    * normally finds the finished verdict (that's how the 2026-10-13 epub got its
+    * `clean` verdict on a re-upload — nothing had ever gone back to ask).
+    */
+   async recheckByHash(
+      sha256: string,
+      meta: { fileName: string; uploader: string | null },
+   ): Promise<Extract<ScanOutcome, { kind: "verdict" }> | null> {
+      const { client, limiter } = this.deps;
+      try {
+         const stats = await limiter.schedule("lookup", () =>
+            client.lookupByHash(sha256),
+         );
+         if (!stats) {
+            log.info({ sha256 }, "file_scanner.scan.recheck_still_pending");
+            return null;
+         }
+         return this.finalize(sha256, stats, meta, null, "hash");
+      } catch (err) {
+         // Budget/queue pressure is temporary: the caller reschedules the row.
+         if (
+            err instanceof BudgetExhaustedError ||
+            err instanceof QueueFullError
+         ) {
+            log.warn(
+               { sha256, kind: err.name },
+               "file_scanner.scan.recheck_deferred",
+            );
+            return null;
+         }
+         log.error({ err, sha256 }, "file_scanner.scan.recheck_error");
+         return null;
+      }
    }
 }
 

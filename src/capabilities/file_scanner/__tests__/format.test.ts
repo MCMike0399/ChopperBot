@@ -1,6 +1,7 @@
 import { describe, test, expect } from "vitest";
 import { toStats, verdictFrom } from "../virustotal.js";
 import {
+   appendMaliciousFooter,
    isImageAttachment,
    isVideoAttachment,
    isAudioAttachment,
@@ -240,5 +241,49 @@ describe("renderScanMessage", () => {
       expect(msg).toContain("pesa de más");
       expect(msg).toContain("abc123");
       expect(msg).toContain("virustotal.com/gui/file/abc123");
+   });
+});
+
+describe("malicious deletion + unresolved states", () => {
+   const malicious: FileLine["status"] = {
+      kind: "verdict",
+      verdict: "malicious",
+      stats: {
+         malicious: 40,
+         suspicious: 0,
+         harmless: 10,
+         undetected: 5,
+         total: 55,
+      },
+      sha256: "HASH",
+      source: "hash",
+   };
+
+   test("a deleted upload is reported on the malicious line", () => {
+      const kept = renderScanMessage([
+         { fileName: "f.exe", status: malicious },
+      ]);
+      const gone = renderScanMessage([
+         { fileName: "f.exe", status: malicious, deleted: true },
+      ]);
+      expect(kept).not.toContain("Borré el mensaje");
+      expect(gone).toContain("Borré el mensaje con el archivo");
+      expect(gone).toContain("virustotal.com/gui/file/HASH");
+      expect(gone).toContain("@here");
+   });
+
+   test("unresolved says so honestly and still links the hash", () => {
+      const msg = renderScanMessage([
+         { fileName: "f.exe", status: { kind: "unresolved", sha256: "abc" } },
+      ]);
+      expect(msg).toContain("no logré confirmar el veredicto");
+      expect(msg).not.toContain("aún lo está analizando");
+      expect(msg).toContain("virustotal.com/gui/file/abc");
+   });
+
+   test("appendMaliciousFooter is idempotent", () => {
+      const once = appendMaliciousFooter("body");
+      expect(appendMaliciousFooter(once)).toBe(once);
+      expect(once).toContain("@here");
    });
 });

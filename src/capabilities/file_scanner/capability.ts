@@ -18,6 +18,7 @@ import { VirusTotalClient } from "./virustotal.js";
 import { ScanRateLimiter } from "./rate-limiter.js";
 import { FileScanner } from "./scanner.js";
 import { FileScanWatcher } from "./watcher.js";
+import { PendingReconciler } from "./pending.js";
 import { renderFileScannerPrompt } from "./preamble.js";
 import { DEFAULT_MEDIA_NATIVE_CHANNEL_IDS } from "./media-channels.js";
 
@@ -44,6 +45,7 @@ export class FileScannerCapability implements Capability {
    private store: FileScannerStore | null = null;
    private scanner: FileScanner | null = null;
    private watcher: FileScanWatcher | null = null;
+   private reconciler: PendingReconciler | null = null;
    private listener: ((message: Message) => void) | null = null;
    private boundClient: Client | null = null;
    private watchedCache: {
@@ -113,8 +115,20 @@ export class FileScannerCapability implements Capability {
          maxFiles: config.MAX_ATTACHMENT_COUNT,
          videoPolicyFor: (channelId) =>
             this.isMediaNative(channelId) ? "skip" : "scan",
+         deleteMalicious: config.VIRUSTOTAL_DELETE_MALICIOUS,
          alert: (lines) => sendAdminAlert(client, lines, "file_scanner.alert"),
       });
+
+      // Background sweeper for analyses that outlived the poll budget: re-check
+      // the hash, edit the card, delete if malicious. Rows are in SQLite, so a
+      // restart mid-wait resumes instead of stranding the verdict.
+      this.reconciler = new PendingReconciler({
+         scanner: this.scanner,
+         store: this.store,
+         client,
+         deleteMalicious: config.VIRUSTOTAL_DELETE_MALICIOUS,
+      });
+      this.reconciler.start();
 
       // Dedicated listener (independent of the main mention-gated handler). We
       // only act when a non-bot message with attachments lands in a watched
@@ -149,6 +163,8 @@ export class FileScannerCapability implements Capability {
    }
 
    async dispose(): Promise<void> {
+      this.reconciler?.stop();
+      this.reconciler = null;
       if (this.boundClient && this.listener) {
          this.boundClient.off(Events.MessageCreate, this.listener);
          this.listener = null;

@@ -48,13 +48,28 @@ const AUDIO_EXTENSIONS = new Set([
 ]);
 const AUDIO_MIME_PREFIX = "audio/";
 
+/**
+ * Terminal state for a file whose fresh upload never finished analyzing in the
+ * synchronous poll budget and whose later re-checks ran out too. Rendered as an
+ * honest "I couldn't confirm it" instead of an eternal "still analyzing".
+ */
+export interface UnresolvedOutcome {
+   kind: "unresolved";
+   sha256: string;
+}
+
 /** Per-file line state as the scan progresses (edited in place). */
 export type LineStatus =
-   { phase: "queued" } | { phase: "scanning" } | ScanOutcome;
+   | { phase: "queued" }
+   | { phase: "scanning" }
+   | ScanOutcome
+   | UnresolvedOutcome;
 
 export interface FileLine {
    fileName: string;
    status: LineStatus;
+   /** The 🛑 malicious upload message was deleted from the channel. */
+   deleted?: boolean;
 }
 
 /**
@@ -105,6 +120,7 @@ const code = (s: string) => "`" + s.replace(/`/g, "") + "`";
 function verdictLine(
    fileName: string,
    o: Extract<ScanOutcome, { kind: "verdict" }>,
+   deleted = false,
 ): string {
    const { verdict, stats, sha256, source } = o;
    const flagged = stats.malicious + stats.suspicious;
@@ -113,7 +129,11 @@ function verdictLine(
       case "malicious":
          return (
             `🛑 ${code(fileName)} — **¡MALICIOSO!** ${stats.malicious}/${stats.total} motores lo detectan como dañino. ` +
-            `**No lo abras ni lo descargues.**\n   🔗 ${VT_LINK(sha256)}${cached}`
+            `**No lo abras ni lo descargues.**` +
+            (deleted
+               ? `\n   🗑️ Borré el mensaje con el archivo (y todo lo que traía adjunto).`
+               : "") +
+            `\n   🔗 ${VT_LINK(sha256)}${cached}`
          );
       case "suspicious":
          return (
@@ -126,7 +146,7 @@ function verdictLine(
 }
 
 /** One status line for a single file, given its current phase/outcome. */
-export function renderLine({ fileName, status }: FileLine): string {
+export function renderLine({ fileName, status, deleted }: FileLine): string {
    if ("phase" in status) {
       return status.phase === "queued"
          ? `⏳ ${code(fileName)} — en cola…`
@@ -134,11 +154,16 @@ export function renderLine({ fileName, status }: FileLine): string {
    }
    switch (status.kind) {
       case "verdict":
-         return verdictLine(fileName, status);
+         return verdictLine(fileName, status, deleted === true);
       case "pending":
          return (
-            `⏳ ${code(fileName)} — VirusTotal aún lo está analizando. Revisa el resultado en un momento:\n` +
+            `⏳ ${code(fileName)} — VirusTotal aún lo está analizando. Vuelvo con el resultado en cuanto esté, y si no, aquí queda el enlace:\n` +
             `   🔗 ${VT_LINK(status.sha256)}`
+         );
+      case "unresolved":
+         return (
+            `⚠️ ${code(fileName)} — no logré confirmar el veredicto (VirusTotal tardó más de la cuenta). ` +
+            `Revísalo tú antes de fiarte:\n   🔗 ${VT_LINK(status.sha256)}`
          );
       case "budget_exhausted":
          return `😴 ${code(fileName)} — alcancé el límite diario de análisis de VirusTotal. Intenta de nuevo más tarde.`;
@@ -154,9 +179,25 @@ export function renderLine({ fileName, status }: FileLine): string {
    }
 }
 
+/** Card header shared by the initial post and every later in-place edit. */
+export const SCAN_HEADER = "🔎 **Análisis de seguridad (VirusTotal)**";
+
+/** Appended once to a card that carries a 🛑 malicious verdict. */
+export const MALICIOUS_FOOTER =
+   "\n\n@here ⚠️ Se detectó un archivo potencialmente peligroso. Modera con precaución.";
+
+const MALICIOUS_FOOTER_MARKER =
+   "Se detectó un archivo potencialmente peligroso";
+
+/** Idempotently add the mod ping to a card body (used by in-place edits). */
+export function appendMaliciousFooter(content: string): string {
+   return content.includes(MALICIOUS_FOOTER_MARKER)
+      ? content
+      : content + MALICIOUS_FOOTER;
+}
+
 /** The full scan message body (header + one line per file). Edited in place. */
 export function renderScanMessage(lines: FileLine[]): string {
-   const header = "🔎 **Análisis de seguridad (VirusTotal)**";
    const anyMalicious = lines.some(
       (l) =>
          !("phase" in l.status) &&
@@ -164,10 +205,7 @@ export function renderScanMessage(lines: FileLine[]): string {
          l.status.verdict === "malicious",
    );
    const body = lines.map(renderLine).join("\n");
-   const footer = anyMalicious
-      ? "\n\n@here ⚠️ Se detectó un archivo potencialmente peligroso. Modera con precaución."
-      : "";
-   return `${header}\n${body}${footer}`;
+   return `${SCAN_HEADER}\n${body}${anyMalicious ? MALICIOUS_FOOTER : ""}`;
 }
 
 /** Compact admin-facing status block (shared by config_filescanner status). */
@@ -175,6 +213,8 @@ export function formatScannerStatus(input: {
    enabled: boolean;
    watchedChannels: string[];
    mediaNativeChannels: string[];
+   /** Analyses still waiting on VirusTotal (the reconciler's queue). */
+   pending: number;
    used24h: number;
    budget: number;
    minIntervalMs: number;
@@ -191,6 +231,7 @@ export function formatScannerStatus(input: {
       enabled,
       watchedChannels,
       mediaNativeChannels,
+      pending,
       used24h,
       budget,
       minIntervalMs,
@@ -220,6 +261,11 @@ export function formatScannerStatus(input: {
    );
    lines.push(
       `Análisis en caché: ${counts.total} (🛑 ${counts.malicious} · ⚠️ ${counts.suspicious} · ✅ ${counts.clean})`,
+   );
+   lines.push(
+      pending > 0
+         ? `Análisis esperando veredicto: ${pending} (los reviso solos hasta ~1.5 h)`
+         : "Análisis esperando veredicto: ninguno",
    );
    if (recent.length > 0) {
       lines.push("", "Últimos análisis:");

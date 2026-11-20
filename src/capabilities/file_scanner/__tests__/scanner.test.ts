@@ -166,3 +166,55 @@ describe("FileScanner", () => {
       mem.close();
    });
 });
+
+describe("FileScanner.recheckByHash (pending reconciler)", () => {
+   const SHA = "f".repeat(64);
+
+   test("a finished analysis is turned into a verdict and cached", async () => {
+      const lookupByHash = vi.fn().mockResolvedValue({ ...CLEAN, total: 75 });
+      const { store, scanner, mem } = await harness({
+         client: { lookupByHash },
+      });
+
+      const out = await scanner.recheckByHash(SHA, {
+         fileName: "late.pdf",
+         uploader: "U",
+      });
+
+      expect(out).toMatchObject({
+         kind: "verdict",
+         verdict: "clean",
+         source: "hash",
+      });
+      expect(store.getScan(SHA)?.verdict).toBe("clean");
+      mem.close();
+   });
+
+   test("still unknown → null, nothing cached, no upload attempt", async () => {
+      const lookupByHash = vi.fn().mockResolvedValue(null);
+      const uploadFile = vi.fn();
+      const { store, scanner, mem } = await harness({
+         client: { lookupByHash, uploadFile },
+      });
+
+      await expect(
+         scanner.recheckByHash(SHA, { fileName: "slow.zip", uploader: null }),
+      ).resolves.toBeNull();
+      expect(uploadFile).not.toHaveBeenCalled();
+      expect(store.getScan(SHA)).toBeUndefined();
+      mem.close();
+   });
+
+   test("budget exhaustion defers instead of failing the row", async () => {
+      const lookupByHash = vi.fn().mockResolvedValue({ ...CLEAN, total: 75 });
+      const { scanner, mem } = await harness({
+         client: { lookupByHash },
+         dailyBudget: 0,
+      });
+
+      await expect(
+         scanner.recheckByHash(SHA, { fileName: "x", uploader: null }),
+      ).resolves.toBeNull();
+      mem.close();
+   });
+});

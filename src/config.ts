@@ -335,9 +335,20 @@ const ConfigSchema = z
          .int()
          .positive()
          .default(16_000),
-      // Max analysis polls before giving up on a fresh upload (each poll is one
-      // budgeted, spaced call; ~8 polls ≈ a couple of minutes of VT queue time).
+      // Max analysis polls before handing a fresh upload to the pending
+      // reconciler (each poll is one budgeted, spaced call; ~8 polls ≈ a couple
+      // of minutes of VT queue time). The reconciler keeps re-checking by hash
+      // in the background, so an analysis that outlives this budget still ends
+      // in a verdict on the original card.
       VIRUSTOTAL_MAX_POLLS: z.coerce.number().int().positive().default(8),
+      // Delete the upload message when a file is confirmed malicious (🛑).
+      // Discord has no per-attachment delete, so the whole message goes — its
+      // text and every attachment on it. Default on; set to `false` for
+      // warn-only channels where a mod must see the file before it's removed.
+      VIRUSTOTAL_DELETE_MALICIOUS: z.preprocess(
+         flagFromEnv,
+         z.boolean().default(true),
+      ),
       // Files larger than this are not uploaded to VirusTotal (simple /files
       // endpoint caps around 32 MB). They can still be hashed and looked up.
       VIRUSTOTAL_MAX_FILE_BYTES: z.coerce

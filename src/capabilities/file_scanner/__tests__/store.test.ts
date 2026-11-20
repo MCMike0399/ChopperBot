@@ -124,3 +124,74 @@ describe("parseChannelIdEnv", () => {
       expect(parseChannelIdEnv("")).toEqual([]);
    });
 });
+
+describe("FileScannerStore pending re-checks", () => {
+   const base = {
+      sha256: "a".repeat(64),
+      fileName: "f.exe",
+      uploader: "u-1",
+      cardChannelId: "card-chan",
+      cardMessageId: "card-1",
+      sourceChannelId: "src-chan",
+      sourceMessageId: "src-1",
+      nowMs: 1_000,
+      nextCheckAt: 2_000,
+   };
+
+   test("due rows come back oldest-first, only when due", async () => {
+      const { store, mem } = await newStore();
+      store.upsertPending({
+         ...base,
+         sha256: "a".repeat(64),
+         nextCheckAt: 5_000,
+      });
+      store.upsertPending({
+         ...base,
+         sha256: "b".repeat(64),
+         nextCheckAt: 3_000,
+      });
+
+      expect(store.duePending(2_000, 10)).toHaveLength(0);
+      expect(store.duePending(9_000, 10).map((r) => r.sha256)).toEqual([
+         "b".repeat(64),
+         "a".repeat(64),
+      ]);
+      expect(store.duePending(9_000, 1)).toHaveLength(1);
+      mem.close();
+   });
+
+   test("re-upload of the same hash re-points the row and restarts attempts", async () => {
+      const { store, mem } = await newStore();
+      store.upsertPending(base);
+      store.reschedulePending(base.sha256, {
+         attempts: 3,
+         nextCheckAt: 9_999,
+         lastCheckedAt: 8_000,
+      });
+
+      store.upsertPending({
+         ...base,
+         cardMessageId: "card-2",
+         uploader: "u-2",
+      });
+
+      const row = store.getPending(base.sha256);
+      expect(row).toMatchObject({
+         card_message_id: "card-2",
+         uploader: "u-2",
+         attempts: 0,
+         last_checked_at: null,
+      });
+      expect(store.pendingCount()).toBe(1);
+      mem.close();
+   });
+
+   test("resolvePending drops the row", async () => {
+      const { store, mem } = await newStore();
+      store.upsertPending(base);
+      store.resolvePending(base.sha256);
+      expect(store.getPending(base.sha256)).toBeUndefined();
+      expect(store.pendingCount()).toBe(0);
+      mem.close();
+   });
+});

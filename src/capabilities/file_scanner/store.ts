@@ -37,6 +37,28 @@ export interface FileScannerRuntime {
    updated_at: number | null;
 }
 
+/**
+ * A scan that ended as `pending` (a fresh upload whose analysis hadn't finished
+ * within the poll budget) and must be re-checked later. Persisted so a restart
+ * doesn't strand the verdict card on "aún lo está analizando" forever.
+ */
+export interface PendingScanRow {
+   sha256: string;
+   file_name: string | null;
+   uploader: string | null;
+   /** Channel holding the verdict card we edit when the verdict lands. */
+   card_channel_id: string;
+   /** The card message itself (null when the initial post failed). */
+   card_message_id: string | null;
+   /** Channel + message of the original upload (deleted if malicious). */
+   source_channel_id: string;
+   source_message_id: string;
+   created_at: number;
+   next_check_at: number;
+   attempts: number;
+   last_checked_at: number | null;
+}
+
 export const FILE_SCANNER_MIGRATIONS: Migration[] = [
    {
       version: 1,
@@ -90,6 +112,30 @@ export const FILE_SCANNER_MIGRATIONS: Migration[] = [
       -- boot after this migration; operator edits via config_filescanner win.
       ALTER TABLE file_scanner_settings
         ADD COLUMN media_channels_json TEXT NOT NULL DEFAULT '[]';
+    `,
+   },
+   {
+      version: 3,
+      up: `
+      -- Scans that ended as "pending": a fresh upload VirusTotal hadn't finished
+      -- analyzing within the poll budget. The reconciler re-checks the hash later
+      -- (one cheap lookup per attempt) and then edits the verdict card in place,
+      -- deleting the upload message if the late verdict turns out malicious.
+      CREATE TABLE IF NOT EXISTS file_scanner_pending (
+        sha256            TEXT    PRIMARY KEY,
+        file_name         TEXT,
+        uploader          TEXT,
+        card_channel_id   TEXT    NOT NULL,
+        card_message_id   TEXT,
+        source_channel_id TEXT    NOT NULL,
+        source_message_id TEXT    NOT NULL,
+        created_at        INTEGER NOT NULL,
+        next_check_at     INTEGER NOT NULL,
+        attempts          INTEGER NOT NULL DEFAULT 0,
+        last_checked_at   INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS file_scanner_pending_next_check
+        ON file_scanner_pending (next_check_at ASC);
     `,
    },
 ];
@@ -221,6 +267,96 @@ export class FileScannerStore {
             "UPDATE file_scanner_runtime SET request_times_json = ?, updated_at = ? WHERE id = 1",
          )
          .run(JSON.stringify(times), nowMs);
+   }
+
+   // ── Pending re-checks ───────────────────────────────────────────────────
+
+   /**
+    * Remember a scan that ended `pending` so it gets re-checked later. Upserts on
+    * the hash: a re-upload of the same bytes re-points the row at the newest card
+    * and message and restarts the attempt counter.
+    */
+   upsertPending(input: {
+      sha256: string;
+      fileName: string | null;
+      uploader: string | null;
+      cardChannelId: string;
+      cardMessageId: string | null;
+      sourceChannelId: string;
+      sourceMessageId: string;
+      nowMs: number;
+      nextCheckAt: number;
+   }): void {
+      this.db
+         .prepare(
+            `INSERT INTO file_scanner_pending
+               (sha256, file_name, uploader, card_channel_id, card_message_id,
+                source_channel_id, source_message_id, created_at, next_check_at, attempts)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0)
+             ON CONFLICT(sha256) DO UPDATE SET
+               file_name         = excluded.file_name,
+               uploader          = excluded.uploader,
+               card_channel_id   = excluded.card_channel_id,
+               card_message_id   = excluded.card_message_id,
+               source_channel_id = excluded.source_channel_id,
+               source_message_id = excluded.source_message_id,
+               created_at        = excluded.created_at,
+               next_check_at     = excluded.next_check_at,
+               attempts          = 0,
+               last_checked_at   = NULL`,
+         )
+         .run(
+            input.sha256,
+            input.fileName,
+            input.uploader,
+            input.cardChannelId,
+            input.cardMessageId,
+            input.sourceChannelId,
+            input.sourceMessageId,
+            input.nowMs,
+            input.nextCheckAt,
+         );
+   }
+
+   /** Rows whose next re-check is due, oldest first. */
+   duePending(nowMs: number, limit: number): PendingScanRow[] {
+      return this.db
+         .prepare(
+            "SELECT * FROM file_scanner_pending WHERE next_check_at <= ? ORDER BY next_check_at ASC LIMIT ?",
+         )
+         .all(nowMs, limit) as PendingScanRow[];
+   }
+
+   getPending(sha256: string): PendingScanRow | undefined {
+      return this.db
+         .prepare("SELECT * FROM file_scanner_pending WHERE sha256 = ?")
+         .get(sha256) as PendingScanRow | undefined;
+   }
+
+   /** Push a still-unresolved scan's next attempt further out. */
+   reschedulePending(
+      sha256: string,
+      input: { attempts: number; nextCheckAt: number; lastCheckedAt: number },
+   ): void {
+      this.db
+         .prepare(
+            "UPDATE file_scanner_pending SET attempts = ?, next_check_at = ?, last_checked_at = ? WHERE sha256 = ?",
+         )
+         .run(input.attempts, input.nextCheckAt, input.lastCheckedAt, sha256);
+   }
+
+   /** Drop a pending row (resolved, expired, or gone). */
+   resolvePending(sha256: string): void {
+      this.db
+         .prepare("DELETE FROM file_scanner_pending WHERE sha256 = ?")
+         .run(sha256);
+   }
+
+   pendingCount(): number {
+      const row = this.db
+         .prepare("SELECT COUNT(*) AS n FROM file_scanner_pending")
+         .get() as { n: number };
+      return row.n;
    }
 
    // ── Verdict cache / audit ───────────────────────────────────────────────────
